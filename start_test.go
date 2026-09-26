@@ -32,12 +32,11 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if !args.Bool["psql"] {
 		t.Fatalf("psql not selected: %#v", args)
 	}
-	named, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "psql", "harbor-kxmnpq"}, true, "", false)
-	if err != nil {
-		t.Fatal(err)
+	if strings.Contains(manifest.CLI.Doc, "psql [<name>]") {
+		t.Fatal("a bare <name> before psql arguments captures redis-cli PING and other console args")
 	}
-	if named.String["<name>"] != "harbor-kxmnpq" {
-		t.Fatalf("name: %#v", named.String)
+	if !strings.Contains(manifest.CLI.Doc, "pg-<word>-<6 letters>") {
+		t.Fatal("psql help should describe the resource app name")
 	}
 	var cli struct {
 		CLI struct {
