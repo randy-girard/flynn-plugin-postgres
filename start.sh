@@ -31,6 +31,17 @@ grep -q "^unix_socket_directories" "${conf}" || echo "unix_socket_directories = 
 if ! grep -q "0.0.0.0/0" /data/pg_hba.conf; then
   printf '%s\n' "host all all 0.0.0.0/0 md5" "host all all ::/0 md5" >> /data/pg_hba.conf
 fi
+# sslmode=require encrypts but does not verify the CA. A local cert is enough.
+if [[ ! -s /data/server.crt || ! -s /data/server.key ]]; then
+  openssl req -new -x509 -days 3650 -nodes -text \
+    -out /data/server.crt -keyout /data/server.key \
+    -subj "/CN=postgres"
+  chown postgres:postgres /data/server.crt /data/server.key
+  chmod 600 /data/server.key
+fi
+grep -q "^ssl " "${conf}" || echo "ssl = on" >> "${conf}"
+grep -q "^ssl_cert_file" "${conf}" || echo "ssl_cert_file = '/data/server.crt'" >> "${conf}"
+grep -q "^ssl_key_file" "${conf}" || echo "ssl_key_file = '/data/server.key'" >> "${conf}"
 
 if [[ ! -f /data/.flynn-bootstrapped ]]; then
   user="${POSTGRES_USER:?POSTGRES_USER is required}"

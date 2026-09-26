@@ -63,6 +63,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "exec /bin/flynn-postgres serve") {
 		t.Fatal("the postgres process must stay up under the discoverd supervisor")
 	}
+	if !strings.Contains(src, "ssl = on") || !strings.Contains(src, "ssl_cert_file") {
+		t.Fatal("connection strings use sslmode=require, so the server must speak TLS")
+	}
 }
 
 func TestServeRegistersAfterPostgresListens(t *testing.T) {

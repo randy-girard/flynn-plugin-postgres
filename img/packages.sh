@@ -8,6 +8,7 @@ apt-get update -o Acquire::Retries=5
 apt-get install -y --no-install-recommends \
   postgresql \
   postgresql-contrib \
+  openssl \
   curl
 
 # ---- Data directory ----
