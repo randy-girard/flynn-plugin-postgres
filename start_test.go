@@ -72,6 +72,18 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "ssl = on") || !strings.Contains(src, "ssl_cert_file") {
 		t.Fatal("connection strings use sslmode=require, so the server must speak TLS")
 	}
+	if !strings.Contains(src, "shared_preload_libraries = 'timescaledb'") {
+		t.Fatal("timescaledb must be preloaded or CREATE EXTENSION fails")
+	}
+	pkgs, err := os.ReadFile("img/packages.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"postgresql-16-postgis-3", "postgresql-16-pgrouting", "timescaledb-2-postgresql-16"} {
+		if !strings.Contains(string(pkgs), name) {
+			t.Fatalf("packages.sh missing %s", name)
+		}
+	}
 }
 
 func TestServeRegistersAfterPostgresListens(t *testing.T) {

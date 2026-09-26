@@ -42,6 +42,8 @@ fi
 grep -q "^ssl " "${conf}" || echo "ssl = on" >> "${conf}"
 grep -q "^ssl_cert_file" "${conf}" || echo "ssl_cert_file = '/data/server.crt'" >> "${conf}"
 grep -q "^ssl_key_file" "${conf}" || echo "ssl_key_file = '/data/server.key'" >> "${conf}"
+grep -q "^shared_preload_libraries" "${conf}" || echo "shared_preload_libraries = 'timescaledb'" >> "${conf}"
+grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max_background_workers = 8" >> "${conf}"
 
 if [[ ! -f /data/.flynn-bootstrapped ]]; then
   user="${POSTGRES_USER:?POSTGRES_USER is required}"
