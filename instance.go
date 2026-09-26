@@ -130,6 +130,8 @@ type Store struct {
 	byID        map[string]*Instance
 	providerURL string
 	contacts    []string
+	// NameTaken reports app names that already exist outside this process.
+	NameTaken func(name string) bool
 }
 
 // NewStore returns a store aimed at this plugin's discoverd host.
@@ -188,7 +190,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	inst := &Instance{
 		ID:                id,
 		Tenant:            firstNonEmpty(req.Tenant, req.App),
-		App:               "pginst-" + id,
+		App:               s.uniqueApp("pg"),
 		Volume:            "vol-" + id,
 		Superuser:         "su_" + id,
 		SuperuserPassword: "supw_" + newID(),

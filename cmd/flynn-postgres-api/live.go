@@ -29,6 +29,7 @@ func (h *handler) startInstance(inst *postgres.Instance) error {
 		"POSTGRES_USER":     inst.AppUser,
 		"POSTGRES_PASSWORD": inst.AppPassword,
 		"POSTGRES_DB":       db,
+		"POSTGRES_URL":      inst.ConnectionURL(),
 	}
 	release := &ct.Release{
 		ArtifactIDs: []string{h.imageID},

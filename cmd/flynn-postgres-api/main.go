@@ -34,6 +34,10 @@ func main() {
 			shutdown.Fatal(err)
 		}
 		h.client = client
+		store.NameTaken = func(name string) bool {
+			_, err := client.GetApp(name)
+			return err == nil
+		}
 	}
 	addr := ":3000"
 	if port := os.Getenv("PORT"); port != "" {

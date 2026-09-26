@@ -32,6 +32,13 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if !args.Bool["psql"] {
 		t.Fatalf("psql not selected: %#v", args)
 	}
+	named, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "psql", "harbor-kxmnpq"}, true, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if named.String["<name>"] != "harbor-kxmnpq" {
+		t.Fatalf("name: %#v", named.String)
+	}
 	var cli struct {
 		CLI struct {
 			ResourceEnv string `json:"resource_env"`
