@@ -54,4 +54,5 @@ SQL
   chown postgres:postgres /data/.flynn-bootstrapped
 fi
 
-exec as_postgres "${PG_BIN}/postgres" -D /data
+# exec cannot invoke a shell function.
+exec setpriv --reuid=postgres --regid=postgres --init-groups --inh-caps=-all "${PG_BIN}/postgres" -D /data
