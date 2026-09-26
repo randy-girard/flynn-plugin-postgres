@@ -1,0 +1,16 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  bin = "./tmp/dashboard-dev"
+  cmd = "go build -o ./tmp/dashboard-dev ./cmd/flynn-postgres-api"
+  delay = 400
+  exclude_dir = ["tmp", "dist", "coverage", ".plugin-build-cache", ".git"]
+  include_ext = ["go"]
+  poll = true
+  poll_interval = 1000
+  send_interrupt = true
+  kill_delay = "2s"
+
+[log]
+  time = true

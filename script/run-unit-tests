@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Run plugin unit tests.
+#
+# On Linux, runs natively. On macOS/Windows (or PLUGIN_BUILD_DOCKER=1), runs in
+# the script/docker/dev image — same split as Flynn script/run-unit-tests.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${ROOT}"
+# shellcheck source=script/lib/linux-container.sh
+PLUGIN_LINUX_IMAGE="${PLUGIN_LINUX_IMAGE:-flynn-plugin-postgres-dev:24.04}"
+source "${ROOT}/script/lib/linux-container.sh"
+
+run_native() {
+  export CGO_ENABLED="${CGO_ENABLED:-0}"
+  export GOFLAGS="${GOFLAGS:--mod=mod -buildvcs=false}"
+  echo "==> gofmt -s"
+  unformatted="$(gofmt -s -l .)"
+  if [[ -n "${unformatted}" ]]; then
+    echo "gofmt -s needed on:" >&2
+    echo "${unformatted}" >&2
+    exit 1
+  fi
+  echo "==> release notes"
+  "${ROOT}/script/test-release-notes.sh"
+  COVER_DIR="${COVERAGE_DIR:-${ROOT}/coverage}"
+  mkdir -p "${COVER_DIR}"
+  echo "==> go test ./..."
+  set +e
+  go test -covermode=atomic -coverprofile="${COVER_DIR}/pkg.out" ./... "$@"
+  status=$?
+  set -e
+  if [[ "${PLUGIN_SKIP_COVERAGE:-}" != "1" ]]; then
+    "${ROOT}/script/report-unit-coverage" "${COVER_DIR}/pkg.out"
+  fi
+  exit "${status}"
+}
+
+if plugin_should_use_container; then
+  plugin_run_in_linux ./script/run-unit-tests "$@"
+else
+  run_native "$@"
+fi

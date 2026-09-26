@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Build Flynn plugin squashfs layers + Artifact JSON (see cmd/plugin-build).
+#
+# On Linux, overlays Flynn's GitHub ubuntu-noble layer, then chroot + mksquashfs.
+# On macOS/Windows, uses Docker Desktop (linux/amd64 or linux/arm64 to match
+# the host / Flynn cluster) like Flynn script/run-unit-tests.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+# shellcheck source=script/lib/linux-container.sh
+PLUGIN_LINUX_IMAGE="${PLUGIN_LINUX_IMAGE:-flynn-plugin-postgres-dev:24.04}"
+source "${ROOT}/script/lib/linux-container.sh"
+
+if plugin_should_use_container; then
+  plugin_run_in_linux ./script/plugin-build "$@"
+  exit $?
+fi
+
+export CGO_ENABLED="${CGO_ENABLED:-0}"
+# Resolve Flynn from go.mod (github.com/randy-girard/flynn).
+export GOFLAGS="-mod=mod -buildvcs=false"
+exec go run ./cmd/plugin-build "$@"

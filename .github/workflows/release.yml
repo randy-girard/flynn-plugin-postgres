@@ -1,0 +1,154 @@
+name: Build and Release
+
+# Manual release only. Unit tests run via the separate CI workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v20260917.2.0). Leave empty for the next vYYYYMMDD.N.P. Plugin-only rebuilds increment the last number."
+        required: false
+        type: string
+        default: ""
+      draft:
+        description: "Create as a draft (unpublished until you publish it in GitHub)"
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: false
+        type: boolean
+        default: false
+      runner:
+        description: "GitHub Actions runner label (use a larger runner if your org has one)"
+        required: false
+        type: string
+        default: "ubuntu-24.04"
+      flynn_version:
+        description: "Flynn GitHub release to take ubuntu-noble from (empty = latest published)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.24"
+
+jobs:
+  release:
+    name: Build squashfs Artifact and publish GitHub Release
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -eo pipefail
+          git fetch --tags --force
+          VERSION="${{ inputs.version }}"
+          if [[ -z "${VERSION}" ]]; then
+            # shellcheck source=script/lib/calver.sh
+            source ./script/lib/calver.sh
+            VERSION="$(next_release_version_from_tags)"
+            echo "Using next version ${VERSION}"
+          elif [[ "${VERSION}" =~ ^v[0-9]{8}\.[0-9]+$ ]]; then
+            VERSION="${VERSION}.0"
+            echo "Normalized Flynn-style tag to plugin version ${VERSION}"
+          elif [[ ! "${VERSION}" =~ ^v[0-9]{8}\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: version must look like vYYYYMMDD.N.P (got '${VERSION}')" >&2
+            exit 1
+          fi
+          if git rev-parse "${VERSION}" >/dev/null 2>&1; then
+            echo "Git tag ${VERSION} already exists; GitHub release publish will resume an incomplete upload"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building plugin image for ${VERSION}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Use private Flynn module
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE=github.com/randy-girard/*
+          go env -w GOPROXY=direct
+          go env -w GOSUMDB=off
+
+      - name: Install squashfs-tools
+        run: |
+          set -eo pipefail
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools
+
+      - name: plugin-build
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-mod=mod -buildvcs=false"
+          GOPRIVATE: github.com/randy-girard/*
+          GOPROXY: direct
+          GOSUMDB: off
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FLYNN_VERSION: ${{ inputs.flynn_version }}
+        run: |
+          ./script/plugin-build \
+            -version "${{ steps.version.outputs.VERSION }}" \
+            -github-repo "${GITHUB_REPOSITORY}"
+
+      - name: Flatten layer assets for the release
+        run: |
+          set -eo pipefail
+          # GitHub Release assets are a flat list. Publish only the plugin
+          # overlay delta. Flynn ubuntu-noble is already on the Flynn GitHub
+          # Release (same layer id); re-uploading it from every plugin 502s
+          # uploads.github.com.
+          # shellcheck source=script/lib/flatten-plugin-release.sh
+          source ./script/lib/flatten-plugin-release.sh
+          flatten_plugin_release_assets dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_RELEASE_CHANNEL_WEBHOOK_URL: ${{ vars.DISCORD_RELEASE_CHANNEL_WEBHOOK_URL || secrets.DISCORD_RELEASE_CHANNEL_WEBHOOK_URL }}
+        run: |
+          set -eo pipefail
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          # shellcheck source=/dev/null
+          source script/lib/release-notes.sh
+          NOTES_FILE="$(mktemp)"
+          plugin_github_release_notes "${VERSION}" "${GITHUB_REPOSITORY}" > "${NOTES_FILE}"
+          echo "----- release notes (grouped) -----"
+          cat "${NOTES_FILE}"
+          echo "-----------------------------------"
+          NAME="$(plugin_manifest_name)"
+          if [[ -z "${NAME}" ]]; then
+            NAME="${GITHUB_REPOSITORY##*/}"
+          fi
+          if ! compgen -G "dist/*.squashfs" >/dev/null; then
+            echo "ERROR: expected plugin delta squashfs in dist/" >&2
+            ls -la dist dist/layers || true
+            exit 1
+          fi
+          # shellcheck source=script/lib/github-release-upload.sh
+          source ./script/lib/github-release-upload.sh
+          github_release_publish \
+            --version "${VERSION}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${NAME} ${VERSION}" \
+            --notes-file "${NOTES_FILE}" \
+            --dir dist \
+            --draft "${{ inputs.draft }}" \
+            --prerelease "${{ inputs.prerelease }}"

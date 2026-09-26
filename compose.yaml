@@ -1,0 +1,28 @@
+# Local add-on UI with mock data. Not copied into the plugin image.
+name: flynn-postgres-dashboard-dev
+
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: mock/Dockerfile
+    working_dir: /src
+    volumes:
+      - .:/src
+      - postgres-dash-gomod:/go/pkg/mod
+      - postgres-dash-gocache:/root/.cache/go-build
+    environment:
+      DASHBOARD_DEV: "1"
+      DASHBOARD_SSO_OPTIONAL: "1"
+      PORT: "8091"
+      GOPRIVATE: github.com/randy-girard/*
+      GOPROXY: direct
+      GOSUMDB: off
+      GOFLAGS: "-mod=mod -buildvcs=false"
+      CGO_ENABLED: "0"
+    ports:
+      - "8091:8091"
+
+volumes:
+  postgres-dash-gomod:
+  postgres-dash-gocache:

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Commit .github/badges/coverage.svg on the branch that ran CI so READMEs
+# can embed a relative image. raw.githubusercontent.com 404s for private
+# repos, and GitHub's image proxy cannot authenticate to a side branch.
+#
+# Requires GITHUB_TOKEN, GITHUB_REPOSITORY, and GITHUB_REF (set in Actions).
+# Pushes with GITHUB_TOKEN do not start a new workflow run.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DIR="${COVERAGE_DIR:-${ROOT}/coverage}"
+DEST_DIR="${ROOT}/.github/badges"
+REF="${GITHUB_REF:-}"
+
+if [[ ! -f "${DIR}/badge.svg" ]]; then
+  echo "coverage badge missing at ${DIR}/badge.svg" >&2
+  exit 1
+fi
+
+if [[ -z "${REF}" || "${REF}" != refs/heads/* ]]; then
+  echo "GITHUB_REF must be a branch (got '${REF:-unset}')" >&2
+  exit 1
+fi
+
+TOKEN="${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+
+mkdir -p "${DEST_DIR}"
+cp "${DIR}/badge.svg" "${DEST_DIR}/coverage.svg"
+if [[ -f "${DIR}/shields.json" ]]; then
+  cp "${DIR}/shields.json" "${DEST_DIR}/coverage.json"
+fi
+
+cd "${ROOT}"
+git add .github/badges/coverage.svg
+if [[ -f "${DEST_DIR}/coverage.json" ]]; then
+  git add .github/badges/coverage.json
+fi
+if git diff --cached --quiet; then
+  echo "==> Coverage badge unchanged"
+  exit 0
+fi
+
+git -c user.name="github-actions[bot]" \
+  -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+  commit -qm "ci: update coverage badge [skip ci]"
+git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:${REF}"
+echo "==> Pushed coverage badge to ${REPO}@${REF}"

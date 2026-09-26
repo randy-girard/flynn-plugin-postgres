@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.24"
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Use private Flynn module
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE=github.com/randy-girard/*
+          go env -w GOPROXY=direct
+          go env -w GOSUMDB=off
+
+      - name: gofmt
+        run: |
+          set -eo pipefail
+          unformatted="$(gofmt -s -l .)"
+          if [[ -n "${unformatted}" ]]; then
+            echo "gofmt -s needed on:" >&2
+            echo "${unformatted}" >&2
+            exit 1
+          fi
+
+      - name: Release notes
+        run: ./script/test-release-notes.sh
+
+      - name: Local compose contract
+        run: ./script/test-local-compose.sh
+
+      - name: go test
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-mod=mod -buildvcs=false"
+          GOPRIVATE: github.com/randy-girard/*
+          GOPROXY: direct
+          GOSUMDB: off
+        run: |
+          mkdir -p coverage
+          go test -covermode=atomic -coverprofile=coverage/pkg.out ./...
+          ./script/report-unit-coverage coverage/pkg.out
+
+      - name: Upload coverage HTML
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  coverage-badge:
+    name: Coverage badge
+    needs: test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && needs.test.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download coverage
+        uses: actions/download-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage
+
+      - name: Publish coverage badge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./script/ci-push-coverage-badge

@@ -1,0 +1,97 @@
+{
+  "name": "postgres",
+  "kind": "resource-provider",
+  "tenant_safe": true,
+  "github_repo": "randy-girard/flynn-plugin-postgres",
+  "provider": {
+    "name": "postgres",
+    "url": "http://postgres-plugin.discoverd/databases"
+  },
+  "app": {
+    "name": "postgres-plugin",
+    "meta": {
+      "flynn-system-app": "true",
+      "flynn-plugin": "true",
+      "flynn-datastore": "true",
+      "flynn-expose-port": "5432",
+      "flynn-expose-tls": "required"
+    },
+    "processes": {
+      "web": {
+        "args": ["/bin/start-flynn-postgres", "api"],
+        "ports": [{"port": 80, "proto": "tcp", "service": {"name": "postgres-plugin", "create": true, "check": {"type": "http", "path": "/ping"}}}]
+      }
+    }
+  },
+  "inject_env": ["CONTROLLER_KEY", "SINGLETON", "CLUSTER_DOMAIN"],
+  "image_env": {
+    "POSTGRES_IMAGE_ID": "self"
+  },
+  "env": {
+    "POSTGRES_TLS_ENABLED": "true"
+  },
+  "expose": {
+    "port": 5432,
+    "proto": "tcp",
+    "tls": true,
+    "leader": true,
+    "service_env": "FLYNN_POSTGRES"
+  },
+  "dashboard": {
+    "base_url": "http://postgres-plugin.discoverd/dashboard",
+    "surfaces": ["app.resources"],
+    "card": {
+      "title": "Postgres",
+      "description": "One isolated Postgres instance per resource",
+      "icon": "postgres"
+    },
+    "routes": [
+      {"path": "/", "title": "Overview"},
+      {"path": "/databases", "title": "Databases"},
+      {"path": "/users", "title": "Users"},
+      {"path": "/backup", "title": "Backup"},
+      {"path": "/replication", "title": "Follow"}
+    ]
+  },
+  "cli": {
+    "command": "pg",
+    "usage": "manage an isolated postgres instance",
+    "subcommands": ["info", "follow", "wait", "promote", "unfollow", "psql"],
+    "doc": "usage: flynn pg:info\n       flynn pg:follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg:wait <resource>\n       flynn pg:promote <follower>\n       flynn pg:unfollow <follower>\n       flynn pg:psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\nfollow, wait until caught up, then promote.\n\nCommands:\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tpsql      Open psql against this instance's URL only\n",
+    "resource_env": "DATABASE_URL",
+    "resource_missing": "No postgres database found. Provision one with `flynn resource:add postgres`",
+    "actions": [
+      {
+        "name": "psql",
+        "args": ["psql", "${app.DATABASE_URL}"],
+        "append": "<argument>",
+        "env": {
+          "PAGER": "less",
+          "LESS": "--ignore-case --LONG-PROMPT --SILENT --tabs=4 --quit-if-one-screen --no-init --quit-at-eof"
+        }
+      }
+    ]
+  },
+  "hooks": {
+    "uninstall": "script/uninstall.sh"
+  },
+  "build": {
+    "base": {
+      "repo": "randy-girard/flynn",
+      "version": "latest",
+      "image": "ubuntu-noble"
+    },
+    "entrypoint": ["/bin/start-flynn-postgres"],
+    "packages": "img/packages.sh",
+    "go": {
+      "./cmd/flynn-postgres": "/bin/flynn-postgres",
+      "./cmd/flynn-postgres-api": "/bin/flynn-postgres-api"
+    },
+    "copy": {
+      "start.sh": "/bin/start-flynn-postgres"
+    }
+  },
+  "artifacts": {
+    "image": ""
+  }
+}

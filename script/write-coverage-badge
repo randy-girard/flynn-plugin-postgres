@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Write coverage/badge.svg, coverage/shields.json, and (in GitHub Actions)
+# a job summary + notice from coverage/summary.txt.
+#
+# Usage:
+#   script/write-coverage-badge [coverage-dir]
+set -euo pipefail
+
+DIR="${1:-${COVERAGE_DIR:-coverage}}"
+summary="${DIR}/summary.txt"
+if [[ ! -s "${summary}" ]]; then
+  echo "==> No coverage summary at ${summary}; skipping badge" >&2
+  exit 0
+fi
+
+# go tool cover -func last line: "total: (statements) 12.3%"
+pct="$(awk '/^total:/{gsub(/%/,"",$NF); print $NF; exit}' "${summary}")"
+if [[ -z "${pct}" ]]; then
+  echo "==> Could not parse coverage percent from ${summary}; skipping badge" >&2
+  exit 0
+fi
+
+color="red"
+hex="#e05d44"
+if awk -v p="${pct}" 'BEGIN { exit !(p+0 >= 80) }'; then
+  color="brightgreen"
+  hex="#4c1"
+elif awk -v p="${pct}" 'BEGIN { exit !(p+0 >= 60) }'; then
+  color="yellow"
+  hex="#dfb317"
+fi
+
+msg="${pct}%"
+label="coverage"
+label_w=70
+msg_w=$((12 + ${#msg} * 8))
+width=$((label_w + msg_w))
+
+mkdir -p "${DIR}"
+cat >"${DIR}/badge.svg" <<EOF
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" role="img" aria-label="${label}: ${msg}">
+  <title>${label}: ${msg}</title>
+  <rect width="${label_w}" height="20" fill="#555"/>
+  <rect x="${label_w}" width="${msg_w}" height="20" fill="${hex}"/>
+  <g fill="#fff" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    <text x="6" y="14">${label}</text>
+    <text x="$((label_w + 6))" y="14">${msg}</text>
+  </g>
+</svg>
+EOF
+
+python3 -c 'import json,sys; print(json.dumps({"schemaVersion":1,"label":"coverage","message":sys.argv[1],"color":sys.argv[2]}))' \
+  "${msg}" "${color}" >"${DIR}/shields.json"
+
+echo "==> Coverage badge: ${msg} (${color}) -> ${DIR}/badge.svg"
+
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  {
+    echo "## Unit test coverage"
+    echo
+    echo "**${msg}** of statements"
+    echo
+    echo "HTML report is the \`coverage-html\` artifact on this run."
+    echo
+    echo '```'
+    cat "${summary}"
+    echo '```'
+  } >>"${GITHUB_STEP_SUMMARY}"
+fi
+
+if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+  echo "::notice title=Unit coverage::${msg} of statements"
+fi
