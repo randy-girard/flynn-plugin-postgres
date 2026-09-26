@@ -32,6 +32,23 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if !args.Bool["psql"] {
 		t.Fatalf("psql not selected: %#v", args)
 	}
+	var cli struct {
+		CLI struct {
+			ResourceEnv string `json:"resource_env"`
+			Actions     []struct {
+				Args []string `json:"args"`
+			} `json:"actions"`
+		} `json:"cli"`
+	}
+	if err := json.Unmarshal(b, &cli); err != nil {
+		t.Fatal(err)
+	}
+	if cli.CLI.ResourceEnv != "FLYNN_POSTGRES" {
+		t.Fatalf("resource_env=%q, want the instance app name", cli.CLI.ResourceEnv)
+	}
+	if len(cli.CLI.Actions) == 0 || !strings.Contains(strings.Join(cli.CLI.Actions[0].Args, " "), "POSTGRES_URL") {
+		t.Fatalf("psql args %#v", cli.CLI.Actions)
+	}
 }
 
 func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {

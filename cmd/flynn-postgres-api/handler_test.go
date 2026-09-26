@@ -33,8 +33,11 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["ANALYTICS_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || len(out.Env) != 2 {
+	if out.Env["ANALYTICS_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] == "" || len(out.Env) != 3 {
 		t.Fatalf("env %#v", out.Env)
+	}
+	if out.Env["POSTGRES_URL"] != out.Env["ANALYTICS_URL"] {
+		t.Fatalf("psql URL %#v", out.Env)
 	}
 	if out.Plan.Sirenia || out.Plan.Processes["postgres"] != 1 || len(out.Plan.Processes) != 1 {
 		t.Fatalf("plan %+v", out.Plan)
@@ -60,7 +63,7 @@ func TestHTTPProvisionWithoutAppReturnsDatabaseURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
+	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != out.Env["DATABASE_URL"] {
 		t.Fatalf("env %#v", out.Env)
 	}
 	if strings.Contains(out.Env["DATABASE_URL"], "postgres-api.discoverd") {

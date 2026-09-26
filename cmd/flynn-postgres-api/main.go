@@ -124,6 +124,9 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		env = postgres.AttachmentEnv(body.As, inst.ConnectionURL())
 	}
 	env["FLYNN_POSTGRES"] = inst.App
+	// POSTGRES_URL is the connection string. DATABASE_URL is shared with other
+	// engines on the same app, so a later resource:add must not be what psql uses.
+	env["POSTGRES_URL"] = inst.ConnectionURL()
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,
