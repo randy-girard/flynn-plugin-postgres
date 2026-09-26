@@ -13,6 +13,11 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "serve":
+		if err := servePostgres(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "psql":
 		args, err := postgres.PsqlCommand(os.Getenv("DATABASE_URL"))
 		if err != nil {

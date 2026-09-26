@@ -54,5 +54,7 @@ SQL
   chown postgres:postgres /data/.flynn-bootstrapped
 fi
 
-# exec cannot invoke a shell function.
-exec setpriv --reuid=postgres --regid=postgres --init-groups --inh-caps=-all "${PG_BIN}/postgres" -D /data
+# The Go process stays up so discoverd keeps the registration. exec cannot
+# call a shell function, and a bare postgres process never registers.
+export POSTGRES_BIN="${PG_BIN}/postgres"
+exec /bin/flynn-postgres serve
