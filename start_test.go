@@ -1,10 +1,38 @@
 package postgres
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/flynn/go-docopt"
 )
+
+func TestPluginDocParsesPsql(t *testing.T) {
+	b, err := os.ReadFile("flynn-plugin.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		CLI struct {
+			Doc string `json:"doc"`
+		} `json:"cli"`
+	}
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(manifest.CLI.Doc, "pg:psql") {
+		t.Fatal("docopt argv is \"pg psql\" after flynn pg:psql is expanded; colon usage does not parse")
+	}
+	args, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "psql", "--", "-c", "SELECT 1"}, true, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !args.Bool["psql"] {
+		t.Fatalf("psql not selected: %#v", args)
+	}
+}
 
 func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	b, err := os.ReadFile("start.sh")

@@ -5,6 +5,7 @@ go 1.24.0
 toolchain go1.24.12
 
 require (
+	github.com/flynn/go-docopt v0.0.0-20140912013429-f6dd2ebbb31e
 	github.com/inconshreveable/log15 v0.0.0-20171019012758-0decfc6c20d9
 	github.com/julienschmidt/httprouter v0.0.0-20140925104356-46807412fe50
 	github.com/randy-girard/flynn v0.0.0-20260918165205-684ac031d829

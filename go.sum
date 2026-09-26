@@ -1,5 +1,7 @@
 github.com/docker/go-units v0.3.0 h1:69LhctGQbg0wZ2bTvwFsuPXPnhe6T2+0UMsxh+rBYZg=
 github.com/docker/go-units v0.3.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
+github.com/flynn/go-docopt v0.0.0-20140912013429-f6dd2ebbb31e h1:Ss/B3/5wWRh8+emnK0++g5zQzwDTi30W10pKxKc4JXI=
+github.com/flynn/go-docopt v0.0.0-20140912013429-f6dd2ebbb31e/go.mod h1:HyVoz1Mz5Co8TFO8EupIdlcpwShBmY98dkT2xeHkvEI=
 github.com/go-stack/stack v1.7.0 h1:S04+lLfST9FvL8dl4R31wVUC/paZp/WQZbLmUgWboGw=
 github.com/go-stack/stack v1.7.0/go.mod h1:v0f6uXyyMGvRgIKkXu+yp6POWl0qKG85gN/melR3HDY=
 github.com/inconshreveable/log15 v0.0.0-20171019012758-0decfc6c20d9 h1:LmBUkXNSSmEV5hExb65hKje7sDuuDug3xsPAba7x5fw=
