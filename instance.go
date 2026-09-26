@@ -624,6 +624,9 @@ func (i *Instance) visibleTo(app string) bool {
 	return false
 }
 
+// ConnectionURL is the app role URL for this instance.
+func (i *Instance) ConnectionURL() string { return i.appURL() }
+
 func (i *Instance) appURL() string {
 	db := "postgres"
 	if len(i.Databases) > 0 && i.Databases[0].Name != "" {

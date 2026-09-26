@@ -19,4 +19,5 @@ require (
 	github.com/mattn/go-isatty v0.0.0-20151211000621-56b76bdf51f7 // indirect
 	github.com/tent/canonical-json-go v0.0.0-20130607151641-96e4ba3a7613 // indirect
 	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/oauth2 v0.7.0 // indirect
 )

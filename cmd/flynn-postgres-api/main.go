@@ -13,6 +13,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
+	"github.com/randy-girard/flynn/controller/client"
 	"github.com/randy-girard/flynn/pkg/httphelper"
 	"github.com/randy-girard/flynn/pkg/shutdown"
 )
@@ -25,6 +26,15 @@ func main() {
 	log := log15.New("app", "postgres-api")
 	store := postgres.NewStore()
 	h := newHandler(store)
+	h.log = log
+	h.imageID = os.Getenv("POSTGRES_IMAGE_ID")
+	if key := os.Getenv("CONTROLLER_KEY"); key != "" && h.imageID != "" {
+		client, err := controller.NewClient("", key)
+		if err != nil {
+			shutdown.Fatal(err)
+		}
+		h.client = client
+	}
 	addr := ":3000"
 	if port := os.Getenv("PORT"); port != "" {
 		addr = ":" + port
@@ -40,8 +50,11 @@ func main() {
 }
 
 type handler struct {
-	store  *postgres.Store
-	router *httprouter.Router
+	store   *postgres.Store
+	router  *httprouter.Router
+	client  controller.Client
+	imageID string
+	log     log15.Logger
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -101,6 +114,16 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		writeAPIError(w, err)
 		return
 	}
+	if h.live() && body.Follow == "" {
+		if err := h.startInstance(inst); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
+	if len(env) == 0 {
+		env = postgres.AttachmentEnv(body.As, inst.ConnectionURL())
+	}
+	env["FLYNN_POSTGRES"] = inst.App
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,
