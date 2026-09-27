@@ -57,11 +57,13 @@ type Row struct {
 	Value string
 }
 
-// Attachment binds one app to one env var on this resource.
+// Attachment binds one app to this resource. Env holds every *_URL injected
+// for the app. Those keys cannot be changed with env:set while attached.
 type Attachment struct {
 	App string
 	As  string
 	URL string
+	Env map[string]string
 }
 
 // Instance is one Postgres resource: one Flynn app, one volume, one node.
@@ -448,6 +450,9 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 	var rewritten []Attachment
 	for i := range leader.Attachments {
 		leader.Attachments[i].URL = newURL
+		for k := range leader.Attachments[i].Env {
+			leader.Attachments[i].Env[k] = newURL
+		}
 		rewritten = append(rewritten, leader.Attachments[i])
 	}
 	leader.Followers = removeID(leader.Followers, fol.ID)
@@ -534,6 +539,9 @@ func (s *Store) EnvForApp(id, app string) (map[string]string, error) {
 	}
 	for _, a := range inst.Attachments {
 		if a.App == app {
+			if len(a.Env) > 0 {
+				return cloneEnv(a.Env), nil
+			}
 			return AttachmentEnv(a.As, a.URL), nil
 		}
 	}
@@ -570,20 +578,31 @@ func (s *Store) CheckEnvSet(id, app string, updates map[string]*string) error {
 func (s *Store) attachLocked(inst *Instance, app, as string) map[string]string {
 	for i := range inst.Attachments {
 		if inst.Attachments[i].App == app {
-			inst.Attachments[i].URL = inst.appURL()
-			return AttachmentEnv(inst.Attachments[i].As, inst.Attachments[i].URL)
+			url := inst.appURL()
+			inst.Attachments[i].URL = url
+			for k := range inst.Attachments[i].Env {
+				inst.Attachments[i].Env[k] = url
+			}
+			if len(inst.Attachments[i].Env) > 0 {
+				return cloneEnv(inst.Attachments[i].Env)
+			}
+			return AttachmentEnv(inst.Attachments[i].As, url)
 		}
 	}
+	env := AttachmentKeys(as, "DATABASE_URL", inst.App, inst.appURL(), func(k string) bool {
+		return s.urlKeyTaken(app, k)
+	})
 	stem := attachmentName(as)
 	if strings.TrimSpace(as) == "" {
-		key := AttachmentURLKey("DATABASE_URL", inst.App, func(k string) bool {
-			return s.urlKeyTaken(app, k)
-		})
-		stem = strings.TrimSuffix(key, "_URL")
+		for k := range env {
+			if strings.HasSuffix(k, "_DATABASE_URL") {
+				stem = strings.TrimSuffix(k, "_URL")
+				break
+			}
+		}
 	}
-	att := Attachment{App: app, As: stem, URL: inst.appURL()}
-	inst.Attachments = append(inst.Attachments, att)
-	return AttachmentEnv(stem, att.URL)
+	inst.Attachments = append(inst.Attachments, Attachment{App: app, As: stem, URL: inst.appURL(), Env: env})
+	return cloneEnv(env)
 }
 
 func (s *Store) urlKeyTaken(app, key string) bool {
@@ -592,7 +611,13 @@ func (s *Store) urlKeyTaken(app, key string) bool {
 			continue
 		}
 		for _, a := range inst.Attachments {
-			if a.App == app && a.As+"_URL" == key {
+			if a.App != app {
+				continue
+			}
+			if a.As+"_URL" == key {
+				return true
+			}
+			if _, ok := a.Env[key]; ok {
 				return true
 			}
 		}

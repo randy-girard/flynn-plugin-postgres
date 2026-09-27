@@ -33,8 +33,17 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["ANALYTICS_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] == "" || len(out.Env) != 3 {
+	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] == "" {
 		t.Fatalf("env %#v", out.Env)
+	}
+	named := false
+	for k, v := range out.Env {
+		if strings.HasSuffix(k, "_DATABASE_URL") && k != "DATABASE_URL" && v != "" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("missing resource name url: %#v", out.Env)
 	}
 	if out.Env["POSTGRES_URL"] != out.Env["ANALYTICS_URL"] {
 		t.Fatalf("psql URL %#v", out.Env)

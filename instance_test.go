@@ -169,7 +169,7 @@ func TestPromoteRewritesURLAndKeepsOldLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(folEnv) != 1 || folEnv["ANALYTICS_URL"] == "" || folEnv["DATABASE_URL"] != "" {
+	if folEnv["ANALYTICS_URL"] == "" || folEnv["DATABASE_URL"] != "" || !hasNamedDatabaseURL(folEnv) {
 		t.Fatalf("follower env: %#v", folEnv)
 	}
 	still, err := s.EnvForApp(leader.ID, "shop")
@@ -207,7 +207,7 @@ func TestPromoteRewritesURLAndKeepsOldLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(analytics) != 1 || analytics["ANALYTICS_URL"] == "" {
+	if analytics["ANALYTICS_URL"] == "" {
 		t.Fatalf("follower attachment: %#v", analytics)
 	}
 }
@@ -259,18 +259,27 @@ func TestAsSetsOneEnvVarAndDetachRemovesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(env) != 1 || env["ANALYTICS_URL"] == "" {
+	if env["ANALYTICS_URL"] == "" || env["DATABASE_URL"] == "" || !hasNamedDatabaseURL(env) {
 		t.Fatalf("env: %#v", env)
+	}
+	locked := map[string]*string{"ANALYTICS_URL": strPtr("postgres://x"), "DATABASE_URL": strPtr("postgres://y")}
+	for k := range env {
+		if strings.HasSuffix(k, "_DATABASE_URL") && k != "DATABASE_URL" {
+			locked[k] = strPtr("postgres://z")
+		}
+	}
+	if err := s.CheckEnvSet(inst.ID, "shop", locked); err == nil {
+		t.Fatal("attached URLs must be locked")
 	}
 	other, err := s.Attach(inst.ID, "reports", "REPORTS")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(other) != 1 || other["REPORTS_URL"] == "" || other["ANALYTICS_URL"] != "" {
+	if other["REPORTS_URL"] == "" || other["ANALYTICS_URL"] != "" || other["DATABASE_URL"] == "" {
 		t.Fatalf("second attach: %#v", other)
 	}
 	shop, err := s.EnvForApp(inst.ID, "shop")
-	if err != nil || len(shop) != 1 || shop["ANALYTICS_URL"] == "" {
+	if err != nil || shop["ANALYTICS_URL"] == "" || shop["DATABASE_URL"] == "" {
 		t.Fatalf("shop env: %#v %v", shop, err)
 	}
 	if err := s.Detach(inst.ID, "shop"); err != nil {
@@ -415,6 +424,17 @@ func TestSecondDatabaseOnAnAppUsesNamedURL(t *testing.T) {
 		t.Fatalf("env %#v want %s", envB, want)
 	}
 }
+
+func hasNamedDatabaseURL(env map[string]string) bool {
+	for k, v := range env {
+		if strings.HasSuffix(k, "_DATABASE_URL") && v != "" && k != "DATABASE_URL" {
+			return true
+		}
+	}
+	return false
+}
+
+func strPtr(s string) *string { return &s }
 
 func TestNoInPlaceResize(t *testing.T) {
 	s := NewStore()

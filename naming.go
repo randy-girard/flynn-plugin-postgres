@@ -53,22 +53,39 @@ func nameLetters(n int) string {
 	return string(buf)
 }
 
-// AttachmentURLKey is the env var for a resource on an app.
-// The first one uses conventional (DATABASE_URL, REDIS_URL, ...).
-// Another one is PREFIX_WORD_DATABASE_URL from the resource app name.
-func AttachmentURLKey(conventional, resourceApp string, taken func(string) bool) string {
-	if taken == nil || !taken(conventional) {
-		return conventional
+// AttachmentKeys is every *_URL injected for one resource. The resource name
+// is always PREFIX_WORD_DATABASE_URL. --as NAME also sets NAME_URL. The
+// engine's usual variable is set only when the app does not already have it.
+// Every returned key is locked against env:set.
+func AttachmentKeys(as, conventional, resourceApp, rawURL string, taken func(string) bool) map[string]string {
+	out := map[string]string{}
+	busy := func(k string) bool {
+		if _, ok := out[k]; ok {
+			return true
+		}
+		return taken != nil && taken(k)
 	}
 	prefix, word, suffix, ok := splitResourceApp(resourceApp)
-	if !ok {
-		return conventional
+	if ok {
+		key := strings.ToUpper(prefix+"_"+word) + "_DATABASE_URL"
+		if busy(key) {
+			key = strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_DATABASE_URL"
+		}
+		out[key] = rawURL
 	}
-	key := strings.ToUpper(prefix+"_"+word) + "_DATABASE_URL"
-	if taken(key) {
-		key = strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_DATABASE_URL"
+	if as = strings.ToUpper(strings.TrimSpace(as)); as != "" {
+		key := as + "_URL"
+		if !busy(key) {
+			out[key] = rawURL
+		}
 	}
-	return key
+	if conventional != "" && !busy(conventional) {
+		out[conventional] = rawURL
+	}
+	if len(out) == 0 && conventional != "" {
+		out[conventional] = rawURL
+	}
+	return out
 }
 
 func splitResourceApp(resourceApp string) (prefix, word, suffix string, ok bool) {
