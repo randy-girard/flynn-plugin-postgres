@@ -53,6 +53,36 @@ func nameLetters(n int) string {
 	return string(buf)
 }
 
+// AttachmentURLKey is the env var for a resource on an app.
+// The first one uses conventional (DATABASE_URL, REDIS_URL, ...).
+// Another one is PREFIX_WORD_DATABASE_URL from the resource app name.
+func AttachmentURLKey(conventional, resourceApp string, taken func(string) bool) string {
+	if taken == nil || !taken(conventional) {
+		return conventional
+	}
+	prefix, word, suffix, ok := splitResourceApp(resourceApp)
+	if !ok {
+		return conventional
+	}
+	key := strings.ToUpper(prefix+"_"+word) + "_DATABASE_URL"
+	if taken(key) {
+		key = strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_DATABASE_URL"
+	}
+	return key
+}
+
+func splitResourceApp(resourceApp string) (prefix, word, suffix string, ok bool) {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(resourceApp)), "-")
+	if len(parts) < 3 {
+		return "", "", "", false
+	}
+	prefix, word, suffix = parts[0], parts[1], parts[len(parts)-1]
+	if prefix == "" || word == "" || len(suffix) < 6 {
+		return "", "", "", false
+	}
+	return prefix, word, suffix, true
+}
+
 func nameIndex(n int) int {
 	if n <= 1 {
 		return 0

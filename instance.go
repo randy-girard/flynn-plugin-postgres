@@ -568,20 +568,36 @@ func (s *Store) CheckEnvSet(id, app string, updates map[string]*string) error {
 }
 
 func (s *Store) attachLocked(inst *Instance, app, as string) map[string]string {
-	as = attachmentName(as)
-	att := Attachment{App: app, As: as, URL: inst.appURL()}
-	replaced := false
 	for i := range inst.Attachments {
 		if inst.Attachments[i].App == app {
-			inst.Attachments[i] = att
-			replaced = true
-			break
+			inst.Attachments[i].URL = inst.appURL()
+			return AttachmentEnv(inst.Attachments[i].As, inst.Attachments[i].URL)
 		}
 	}
-	if !replaced {
-		inst.Attachments = append(inst.Attachments, att)
+	stem := attachmentName(as)
+	if strings.TrimSpace(as) == "" {
+		key := AttachmentURLKey("DATABASE_URL", inst.App, func(k string) bool {
+			return s.urlKeyTaken(app, k)
+		})
+		stem = strings.TrimSuffix(key, "_URL")
 	}
-	return AttachmentEnv(as, att.URL)
+	att := Attachment{App: app, As: stem, URL: inst.appURL()}
+	inst.Attachments = append(inst.Attachments, att)
+	return AttachmentEnv(stem, att.URL)
+}
+
+func (s *Store) urlKeyTaken(app, key string) bool {
+	for _, inst := range s.byID {
+		if inst == nil {
+			continue
+		}
+		for _, a := range inst.Attachments {
+			if a.App == app && a.As+"_URL" == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Store) catchUpLocked(fol *Instance) {

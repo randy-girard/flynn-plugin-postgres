@@ -397,6 +397,25 @@ func TestPsqlTargetsInstanceURLOnly(t *testing.T) {
 	}
 }
 
+func TestSecondDatabaseOnAnAppUsesNamedURL(t *testing.T) {
+	s := NewStore()
+	if _, envA, err := s.Provision(ProvisionRequest{App: "shop"}); err != nil || envA["DATABASE_URL"] == "" {
+		t.Fatalf("first: %v %#v", err, envA)
+	}
+	b, envB, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envB["DATABASE_URL"] != "" {
+		t.Fatalf("second replaced DATABASE_URL: %#v", envB)
+	}
+	parts := strings.Split(b.App, "-")
+	want := strings.ToUpper(parts[0]+"_"+parts[1]) + "_DATABASE_URL"
+	if envB[want] == "" {
+		t.Fatalf("env %#v want %s", envB, want)
+	}
+}
+
 func TestNoInPlaceResize(t *testing.T) {
 	s := NewStore()
 	if err := s.Resize("any", "perf-l"); !errors.Is(err, ErrNoResize) {
