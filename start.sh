@@ -55,8 +55,12 @@ if [[ ! -f /data/.flynn-bootstrapped ]]; then
   fi
   as_postgres "${PG_BIN}/pg_ctl" -D /data -w start
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres <<SQL
-CREATE ROLE ${user} LOGIN PASSWORD '${pass}';
+CREATE ROLE ${user} LOGIN PASSWORD '${pass}' CONNECTION LIMIT 20 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 CREATE DATABASE ${db} OWNER ${user};
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
+REVOKE CONNECT ON DATABASE ${db} FROM PUBLIC;
+GRANT CONNECT ON DATABASE ${db} TO ${user};
 SQL
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d "${db}" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

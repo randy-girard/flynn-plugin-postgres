@@ -5,9 +5,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn/discoverd/client"
 	"github.com/randy-girard/flynn/pkg/httphelper"
 	"github.com/randy-girard/flynn/pkg/shutdown"
@@ -39,6 +41,10 @@ func servePostgres() error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
+	if err := ensureConnectIsolation(bin); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return err
+	}
 	if err := discoverd.DefaultClient.AddService(service, nil); err != nil && !httphelper.IsObjectExistsError(err) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
@@ -51,6 +57,22 @@ func servePostgres() error {
 	shutdown.BeforeExit(func() { hb.Close() })
 
 	return <-exited
+}
+
+func ensureConnectIsolation(postgresBin string) error {
+	sql, err := postgres.ConnectIsolationSQL(os.Getenv("POSTGRES_USER"), os.Getenv("POSTGRES_DB"))
+	if err != nil {
+		return err
+	}
+	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
+	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
+		psql, "-h", "/tmp", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("postgres CONNECT isolation: %w", err)
+	}
+	return nil
 }
 
 func waitLocalPort(addr string, timeout time.Duration) error {
