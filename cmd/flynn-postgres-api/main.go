@@ -14,6 +14,7 @@ import (
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
 	"github.com/randy-girard/flynn/controller/client"
+	ct "github.com/randy-girard/flynn/controller/types"
 	"github.com/randy-girard/flynn/pkg/httphelper"
 	"github.com/randy-girard/flynn/pkg/shutdown"
 )
@@ -54,11 +55,12 @@ func main() {
 }
 
 type handler struct {
-	store   *postgres.Store
-	router  *httprouter.Router
-	client  controller.Client
-	imageID string
-	log     log15.Logger
+	store         *postgres.Store
+	router        *httprouter.Router
+	client        controller.Client
+	imageID       string
+	log           log15.Logger
+	listResources func(app string) ([]*ct.Resource, error)
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -131,6 +133,17 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 	// POSTGRES_URL is the connection string. DATABASE_URL is shared with other
 	// engines on the same app, so a later resource:add must not be what psql uses.
 	env["POSTGRES_URL"] = inst.ConnectionURL()
+	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
+		db := inst.Databases[0].Name
+		env["PGDATABASE"] = db
+		env["POSTGRES_DB"] = db
+	}
+	if inst.AppUser != "" {
+		env["PGUSER"] = inst.AppUser
+	}
+	if inst.ServiceHost != "" {
+		env["PGHOST"] = inst.ServiceHost
+	}
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,

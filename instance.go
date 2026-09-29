@@ -206,7 +206,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	if hostOf(inst.ServiceHost) == PlatformApplianceHost {
 		return nil, nil, ErrPlatformAppliance
 	}
-	inst.Databases = []Database{{Name: "db_" + id[:8]}}
+	inst.Databases = []Database{{Name: DefaultDatabaseName(inst.App)}}
 
 	if leader != nil {
 		mode := req.Mode

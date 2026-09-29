@@ -30,6 +30,22 @@ func UniqueApp(prefix string, taken func(string) bool) string {
 	return prefix + "-" + nameWords[nameIndex(len(nameWords))] + "-" + nameLetters(8)
 }
 
+// DefaultDatabaseName is the first application database on a new instance.
+// pg-harbor-kxmnpq becomes db_pg_harbor_kxmnpq so the name is unique and
+// longer than db_ plus eight hex characters.
+func DefaultDatabaseName(app string) string {
+	app = strings.ToLower(strings.TrimSpace(app))
+	app = strings.ReplaceAll(app, "-", "_")
+	if app == "" {
+		return "db_app"
+	}
+	name := "db_" + app
+	if len(name) > 63 {
+		return name[:63]
+	}
+	return name
+}
+
 func (s *Store) uniqueApp(prefix string) string {
 	return UniqueApp(prefix, func(name string) bool {
 		for _, inst := range s.byID {

@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
+	ct "github.com/randy-girard/flynn/controller/types"
 )
 
 var dashNav = [][2]string{
@@ -38,7 +40,142 @@ func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
 	if sess == nil {
 		return nil
 	}
-	return h.store.ForApp(sess.AppID)
+	seen := map[string]bool{}
+	var out []*postgres.Instance
+	add := func(list []*postgres.Instance) {
+		for _, inst := range list {
+			if inst == nil {
+				continue
+			}
+			key := inst.ID
+			if key == "" {
+				key = inst.App
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, inst)
+		}
+	}
+	if h.store != nil {
+		add(h.store.ForApp(sess.AppID))
+		if sess.AppName != "" && sess.AppName != sess.AppID {
+			add(h.store.ForApp(sess.AppName))
+		}
+	}
+	if len(out) == 0 {
+		add(h.instancesFromController(sess))
+	}
+	return out
+}
+
+func (h *handler) instancesFromController(sess *dashui.Session) []*postgres.Instance {
+	if h == nil || sess == nil {
+		return nil
+	}
+	app := strings.TrimSpace(sess.AppID)
+	if app == "" {
+		app = strings.TrimSpace(sess.AppName)
+	}
+	if app == "" {
+		return nil
+	}
+	resources, err := h.appResources(app)
+	if err != nil && sess.AppName != "" && sess.AppName != app {
+		resources, err = h.appResources(sess.AppName)
+	}
+	if err != nil || len(resources) == 0 {
+		return nil
+	}
+	var out []*postgres.Instance
+	for _, r := range resources {
+		if inst := instanceFromResource(r, app); inst != nil {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+func (h *handler) appResources(app string) ([]*ct.Resource, error) {
+	if h != nil && h.listResources != nil {
+		return h.listResources(app)
+	}
+	if h == nil || h.client == nil {
+		return nil, nil
+	}
+	return h.client.AppResourceList(app)
+}
+
+func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
+	if r == nil {
+		return nil
+	}
+	env := r.Env
+	if env == nil {
+		env = map[string]string{}
+	}
+	if !postgresResourceEnv(env) && !strings.EqualFold(r.ProviderID, "postgres") {
+		return nil
+	}
+	name := strings.TrimSpace(env["FLYNN_POSTGRES"])
+	db := databaseNameFromEnv(env)
+	inst := &postgres.Instance{
+		ID:  r.ID,
+		App: name,
+		Attachments: []postgres.Attachment{{
+			App: app,
+			Env: env,
+		}},
+	}
+	if db != "" {
+		inst.Databases = []postgres.Database{{Name: db}}
+	}
+	for _, aid := range r.Apps {
+		if aid != "" && aid != app {
+			inst.Attachments = append(inst.Attachments, postgres.Attachment{App: aid, Env: env})
+		}
+	}
+	return inst
+}
+
+func postgresResourceEnv(env map[string]string) bool {
+	if env == nil {
+		return false
+	}
+	return env["FLYNN_POSTGRES"] != "" || env["POSTGRES_URL"] != "" || env["PGDATABASE"] != "" || env["POSTGRES_DB"] != ""
+}
+
+func databaseNameFromEnv(env map[string]string) string {
+	if env == nil {
+		return ""
+	}
+	for _, k := range []string{"PGDATABASE", "POSTGRES_DB"} {
+		if v := strings.TrimSpace(env[k]); v != "" {
+			return v
+		}
+	}
+	for _, k := range []string{"POSTGRES_URL", "DATABASE_URL"} {
+		raw := strings.TrimSpace(env[k])
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if k == "DATABASE_URL" && !strings.HasPrefix(strings.ToLower(u.Scheme), "postgres") {
+			continue
+		}
+		db := strings.Trim(u.Path, "/")
+		if i := strings.IndexByte(db, '/'); i >= 0 {
+			db = db[:i]
+		}
+		if db != "" {
+			return db
+		}
+	}
+	return ""
 }
 
 func writeDash(w http.ResponseWriter, sess *dashui.Session, title, body string) {
@@ -52,14 +189,23 @@ func (h *handler) dashOverview(w http.ResponseWriter, _ *http.Request, sess *das
 func (h *handler) dashCard(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
 	insts := h.instancesFor(sess)
 	status := "empty"
+	summary := "0 postgres instance(s)"
 	if len(insts) > 0 {
 		status = "ok"
+		summary = fmt.Sprintf("%d postgres instance(s)", len(insts))
+		if len(insts) == 1 {
+			if insts[0].App != "" {
+				summary = insts[0].App
+			} else if len(insts[0].Databases) > 0 && insts[0].Databases[0].Name != "" {
+				summary = insts[0].Databases[0].Name
+			}
+		}
 	}
 	dashui.WriteJSON(w, 200, dashui.Card{
 		Status:   status,
 		Attached: len(insts) > 0,
-		Summary:  fmt.Sprintf("%d postgres instance(s)", len(insts)),
-		EnvCount: envCount(insts, sess.AppID),
+		Summary:  summary,
+		EnvCount: envCount(insts, sess.AppID, sess.AppName),
 		Details:  map[string]string{"tls": "required", "nodes": "1"},
 	})
 }
@@ -145,13 +291,29 @@ func overviewHTML(insts []*postgres.Instance) string {
 	return b.String()
 }
 
-func envCount(insts []*postgres.Instance, app string) int {
+func envCount(insts []*postgres.Instance, apps ...string) int {
+	refs := map[string]bool{}
+	for _, app := range apps {
+		if strings.TrimSpace(app) != "" {
+			refs[app] = true
+		}
+	}
 	n := 0
 	for _, inst := range insts {
+		matched := false
 		for _, att := range inst.Attachments {
-			if att.App == app {
-				n++
+			if len(refs) == 0 || refs[att.App] {
+				if len(att.Env) > 0 {
+					n += len(att.Env)
+				} else {
+					n++
+				}
+				matched = true
+				break
 			}
+		}
+		if !matched && len(inst.Attachments) > 0 && len(refs) > 0 {
+			n++
 		}
 	}
 	return n

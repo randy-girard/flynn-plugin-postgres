@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
+	ct "github.com/randy-girard/flynn/controller/types"
 )
 
 func TestDashboardHidesOtherTenants(t *testing.T) {
@@ -48,5 +49,61 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		if path == "/dashboard/databases" && !strings.Contains(body, "tenant_a_only") {
 			t.Fatalf("missing tenant a database: %s", body)
 		}
+	}
+}
+
+func TestDashCardCountsAttachedPostgres(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/card", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"attached":true`) {
+		t.Fatalf("attached: %s", body)
+	}
+	if strings.Contains(body, `"summary":"0 postgres instance(s)"`) {
+		t.Fatalf("zero count: %s", body)
+	}
+	if !strings.Contains(body, inst.App) {
+		t.Fatalf("missing instance name %q: %s", inst.App, body)
+	}
+}
+
+func TestDashCardCountsControllerResourceWhenStoreEmpty(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	h := newHandler(postgres.NewStore())
+	h.listResources = func(app string) ([]*ct.Resource, error) {
+		if app != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+			t.Fatalf("app %q", app)
+		}
+		return []*ct.Resource{{
+			ID:         "res-1",
+			ProviderID: "prov-pg",
+			Env: map[string]string{
+				"FLYNN_POSTGRES": "pg-harbor-kxmnpq",
+				"PGDATABASE":     "db_pg_harbor_kxmnpq",
+			},
+		}}, nil
+	}
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/card", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"attached":true`) || !strings.Contains(body, "pg-harbor-kxmnpq") {
+		t.Fatalf("card: %s", body)
 	}
 }
