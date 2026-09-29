@@ -18,7 +18,7 @@ var dashNav = [][2]string{
 	{"databases", "Databases"},
 	{"users", "Users"},
 	{"backup", "Backup"},
-	{"replication", "Follow"},
+	{"replication", "Followers"},
 }
 
 func (h *handler) mountDashboard() {
@@ -47,12 +47,18 @@ func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
 			if inst == nil {
 				continue
 			}
-			key := inst.ID
+			key := inst.App
 			if key == "" {
-				key = inst.App
+				key = inst.ID
+			}
+			if key == "" {
+				continue
 			}
 			if seen[key] {
 				continue
+			}
+			if inst.ID != "" {
+				seen[inst.ID] = true
 			}
 			seen[key] = true
 			out = append(out, inst)
@@ -64,9 +70,8 @@ func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
 			add(h.store.ForApp(sess.AppName))
 		}
 	}
-	if len(out) == 0 {
-		add(h.instancesFromController(sess))
-	}
+	add(h.instancesFromController(sess))
+	linkFollowerApps(out)
 	return out
 }
 
@@ -91,10 +96,63 @@ func (h *handler) instancesFromController(sess *dashui.Session) []*postgres.Inst
 	var out []*postgres.Instance
 	for _, r := range resources {
 		if inst := instanceFromResource(r, app); inst != nil {
+			h.enrichFromLive(inst)
 			out = append(out, inst)
 		}
 	}
 	return out
+}
+
+func (h *handler) enrichFromLive(inst *postgres.Instance) {
+	if h == nil || inst == nil || strings.TrimSpace(inst.App) == "" || h.client == nil {
+		return
+	}
+	live := loadLivePostgres(h.client, inst.App)
+	if live == nil {
+		return
+	}
+	if live.Role != "" {
+		inst.Role = live.Role
+		inst.ReadOnly = live.ReadOnly
+	}
+	if inst.LeaderID == "" && live.LeaderID != "" {
+		inst.LeaderID = live.LeaderID
+	}
+	if len(inst.Databases) == 0 && len(live.Databases) > 0 {
+		inst.Databases = append([]postgres.Database(nil), live.Databases...)
+	}
+}
+
+func linkFollowerApps(insts []*postgres.Instance) {
+	byApp := map[string]*postgres.Instance{}
+	for _, inst := range insts {
+		if inst != nil && inst.App != "" {
+			byApp[inst.App] = inst
+		}
+	}
+	for _, inst := range insts {
+		if inst == nil || inst.Role != postgres.RoleFollower {
+			continue
+		}
+		leader := byApp[inst.LeaderID]
+		if leader == nil {
+			continue
+		}
+		id := inst.App
+		if id == "" {
+			id = inst.ID
+		}
+		found := false
+		for _, f := range leader.Followers {
+			if f == id {
+				found = true
+				break
+			}
+		}
+		if !found && id != "" {
+			leader.Followers = append(leader.Followers, id)
+		}
+	}
 }
 
 func (h *handler) appResources(app string) ([]*ct.Resource, error) {
@@ -120,9 +178,17 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 	}
 	name := strings.TrimSpace(env["FLYNN_POSTGRES"])
 	db := databaseNameFromEnv(env)
+	role := postgres.RolePrimary
+	leader := strings.TrimSpace(env["POSTGRES_LEADER"])
+	if strings.EqualFold(strings.TrimSpace(env["POSTGRES_ROLE"]), "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
+		role = postgres.RoleFollower
+	}
 	inst := &postgres.Instance{
-		ID:  r.ID,
-		App: name,
+		ID:       r.ID,
+		App:      name,
+		Role:     role,
+		LeaderID: leader,
+		ReadOnly: role == postgres.RoleFollower,
 		Attachments: []postgres.Attachment{{
 			App: app,
 			Env: env,
@@ -212,13 +278,21 @@ func (h *handler) dashCard(w http.ResponseWriter, _ *http.Request, sess *dashui.
 
 func (h *handler) dashDatabases(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
 	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Databases</h2><table><tr><th>Instance</th><th>Database</th></tr>`)
+	b.WriteString(`<div class="card"><h2>Databases</h2><table><tr><th>Instance</th><th>Database</th><th>Role</th></tr>`)
 	for _, inst := range h.instancesFor(sess) {
+		role := string(inst.Role)
+		if role == "" {
+			role = string(postgres.RolePrimary)
+		}
+		if len(inst.Databases) == 0 {
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td class="muted">—</td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(role))
+			continue
+		}
 		for _, db := range inst.Databases {
-			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td></tr>`, html.EscapeString(inst.App), html.EscapeString(db.Name))
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(db.Name), html.EscapeString(role))
 		}
 	}
-	b.WriteString(`</table><p class="muted">Databases belong to this app's instance only.</p></div>`)
+	b.WriteString(`</table><p class="muted">Each attached resource is one instance. A --follow replica is listed even when it copies the leader database.</p></div>`)
 	writeDash(w, sess, "Databases", b.String())
 }
 
@@ -249,16 +323,31 @@ func (h *handler) dashReplication(w http.ResponseWriter, _ *http.Request, sess *
 	b.WriteString(`<div class="card"><h2>Follow</h2><p>A follower is a separate resource with one node. It is read-only until promote or unfollow. Streaming copies the same major version. Logical replication is the major-upgrade path.</p>`)
 	b.WriteString(`<table><tr><th>App</th><th>Role</th><th>Leader</th><th>Followers</th><th>Lag</th><th>Runtime</th><th>Mode</th></tr>`)
 	for _, inst := range h.instancesFor(sess) {
-		info, err := h.store.Info(inst.ID)
-		if err != nil {
-			continue
+		role := string(inst.Role)
+		if role == "" {
+			role = string(postgres.RolePrimary)
+		}
+		leader := inst.LeaderID
+		followers := inst.Followers
+		lag := inst.LagBytes
+		runtime := inst.Runtime
+		mode := string(inst.Mode)
+		if h.store != nil {
+			if info, err := h.store.Info(inst.ID); err == nil {
+				role = string(info.Role)
+				leader = info.LeaderID
+				followers = info.Followers
+				lag = info.LagBytes
+				runtime = info.Runtime
+				mode = string(info.Mode)
+			}
 		}
 		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>`,
-			html.EscapeString(inst.App), html.EscapeString(string(info.Role)), html.EscapeString(info.LeaderID),
-			html.EscapeString(strings.Join(info.Followers, ", ")), info.LagBytes, html.EscapeString(info.Runtime), html.EscapeString(string(info.Mode)))
+			html.EscapeString(inst.App), html.EscapeString(role), html.EscapeString(leader),
+			html.EscapeString(strings.Join(followers, ", ")), lag, html.EscapeString(runtime), html.EscapeString(mode))
 	}
 	b.WriteString(`</table><p class="muted">pg:follow creates the follower. pg:wait blocks until lag is zero. pg:promote rewrites the primary *_URL and leaves the old leader in place. pg:unfollow keeps a writable copy and stops receiving leader writes.</p></div>`)
-	writeDash(w, sess, "Follow", b.String())
+	writeDash(w, sess, "Followers", b.String())
 }
 
 func overviewHTML(insts []*postgres.Instance) string {

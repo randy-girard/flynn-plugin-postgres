@@ -50,7 +50,7 @@
       {"path": "/databases", "title": "Databases"},
       {"path": "/users", "title": "Users"},
       {"path": "/backup", "title": "Backup"},
-      {"path": "/replication", "title": "Follow"}
+      {"path": "/replication", "title": "Followers"}
     ]
   },
   "cli": {

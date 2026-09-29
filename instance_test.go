@@ -217,6 +217,15 @@ func TestInstanceFromEnv(t *testing.T) {
 	if len(inst.Databases) != 1 || inst.Databases[0].Name != "db_pg_orchid_xkhthp" {
 		t.Fatalf("db %#v", inst.Databases)
 	}
+	fol := InstanceFromEnv("id", "pg-willow-abcdef", map[string]string{
+		"FLYNN_POSTGRES":  "pg-willow-abcdef",
+		"POSTGRES_ROLE":   "follower",
+		"POSTGRES_LEADER": "pg-orchid-xkhthp",
+		"POSTGRES_USER":   "app_live",
+	})
+	if fol == nil || fol.Role != RoleFollower || fol.LeaderID != "pg-orchid-xkhthp" {
+		t.Fatalf("follower %+v", fol)
+	}
 	if InstanceFromEnv("id", "shop", map[string]string{"REDIS_URL": "redis://x"}) != nil {
 		t.Fatal("non-postgres env")
 	}

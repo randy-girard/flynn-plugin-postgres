@@ -79,6 +79,62 @@ func TestDashCardCountsAttachedPostgres(t *testing.T) {
 	}
 }
 
+func TestDashReplicationListsControllerFollower(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	h := newHandler(postgres.NewStore())
+	h.listResources = func(app string) ([]*ct.Resource, error) {
+		if app != "shop-a" {
+			t.Fatalf("app %q", app)
+		}
+		return []*ct.Resource{
+			{
+				ID:         "res-leader",
+				ProviderID: "prov-pg",
+				Env: map[string]string{
+					"FLYNN_POSTGRES": "pg-orchid-xkhthp",
+					"PGDATABASE":     "db_a803c7ba",
+					"POSTGRES_ROLE":  "primary",
+				},
+			},
+			{
+				ID:         "res-fol",
+				ProviderID: "prov-pg",
+				Env: map[string]string{
+					"FLYNN_POSTGRES":  "pg-willow-abcdef",
+					"PGDATABASE":      "db_a803c7ba",
+					"POSTGRES_ROLE":   "follower",
+					"POSTGRES_LEADER": "pg-orchid-xkhthp",
+				},
+			},
+		}, nil
+	}
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "pg-willow-abcdef") || !strings.Contains(body, "follower") {
+		t.Fatalf("replication: %s", body)
+	}
+	if !strings.Contains(body, "pg-orchid-xkhthp") {
+		t.Fatalf("leader missing: %s", body)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("databases status %d %s", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	if !strings.Contains(body, "pg-willow-abcdef") || !strings.Contains(body, "db_a803c7ba") {
+		t.Fatalf("databases: %s", body)
+	}
+}
+
 func TestDashCardCountsControllerResourceWhenStoreEmpty(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	h := newHandler(postgres.NewStore())

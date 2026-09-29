@@ -36,6 +36,9 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] == "" {
 		t.Fatalf("env %#v", out.Env)
 	}
+	if out.Env["POSTGRES_ROLE"] != "primary" {
+		t.Fatalf("role %#v", out.Env)
+	}
 	named := false
 	for k, v := range out.Env {
 		if strings.HasSuffix(k, "_DATABASE_URL") && k != "DATABASE_URL" && v != "" {
@@ -77,6 +80,51 @@ func TestHTTPProvisionWithoutAppReturnsDatabaseURL(t *testing.T) {
 	}
 	if strings.Contains(out.Env["DATABASE_URL"], "postgres-api.discoverd") {
 		t.Fatal(out.Env["DATABASE_URL"])
+	}
+}
+
+func TestHTTPProvisionFollowStampsRole(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("leader status %d %s", rec.Code, rec.Body.String())
+	}
+	var leader struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &leader); err != nil {
+		t.Fatal(err)
+	}
+	name := leader.Env["FLYNN_POSTGRES"]
+	if name == "" {
+		t.Fatalf("leader env %#v", leader.Env)
+	}
+	body, err := json.Marshal(map[string]string{"app": "shop", "follow": name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("follower status %d %s", rec.Code, rec.Body.String())
+	}
+	var fol struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err != nil {
+		t.Fatal(err)
+	}
+	if fol.Env["POSTGRES_ROLE"] != "follower" || fol.Env["POSTGRES_LEADER"] != name {
+		t.Fatalf("follower env %#v", fol.Env)
+	}
+	if fol.Env["FLYNN_POSTGRES"] == "" || fol.Env["FLYNN_POSTGRES"] == name {
+		t.Fatalf("follower instance %#v", fol.Env)
+	}
+	if fol.Env["PGDATABASE"] == "" || fol.Env["PGDATABASE"] != leader.Env["PGDATABASE"] {
+		t.Fatalf("copied database leader=%q follower=%q", leader.Env["PGDATABASE"], fol.Env["PGDATABASE"])
 	}
 }
 

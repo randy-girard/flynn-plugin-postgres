@@ -132,21 +132,11 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 	if len(env) == 0 {
 		env = postgres.AttachmentEnv(body.As, inst.ConnectionURL())
 	}
-	env["FLYNN_POSTGRES"] = inst.App
-	// POSTGRES_URL is the connection string. DATABASE_URL is shared with other
-	// engines on the same app, so a later resource:add must not be what psql uses.
-	env["POSTGRES_URL"] = inst.ConnectionURL()
-	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
-		db := inst.Databases[0].Name
-		env["PGDATABASE"] = db
-		env["POSTGRES_DB"] = db
+	var leader *postgres.Instance
+	if inst.LeaderID != "" {
+		leader, _ = h.store.Get(inst.LeaderID)
 	}
-	if inst.AppUser != "" {
-		env["PGUSER"] = inst.AppUser
-	}
-	if inst.ServiceHost != "" {
-		env["PGHOST"] = inst.ServiceHost
-	}
+	applyPostgresResourceEnv(inst, env, leader)
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,
@@ -300,6 +290,38 @@ func (h *handler) envSet(w http.ResponseWriter, r *http.Request, p httprouter.Pa
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// applyPostgresResourceEnv is the controller resource env the dashboard lists.
+// POSTGRES_URL is the connection string. DATABASE_URL is shared with other
+// engines on the same app, so a later resource:add must not be what psql uses.
+// POSTGRES_ROLE/POSTGRES_LEADER mark --follow replicas so the Followers tab
+// can find them after the API restarts.
+func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, leader *postgres.Instance) {
+	if inst == nil || env == nil {
+		return
+	}
+	env["FLYNN_POSTGRES"] = inst.App
+	env["POSTGRES_URL"] = inst.ConnectionURL()
+	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
+		db := inst.Databases[0].Name
+		env["PGDATABASE"] = db
+		env["POSTGRES_DB"] = db
+	}
+	if inst.AppUser != "" {
+		env["PGUSER"] = inst.AppUser
+	}
+	if inst.ServiceHost != "" {
+		env["PGHOST"] = inst.ServiceHost
+	}
+	if inst.Role == postgres.RoleFollower {
+		env["POSTGRES_ROLE"] = "follower"
+		if leader != nil && strings.TrimSpace(leader.App) != "" {
+			env["POSTGRES_LEADER"] = leader.App
+		}
+	} else {
+		env["POSTGRES_ROLE"] = "primary"
+	}
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {

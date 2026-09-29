@@ -184,6 +184,9 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	if ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"] != leader.ConnectionURL() {
 		t.Fatalf("POSTGRES_PRIMARY_URL=%q", ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"])
 	}
+	if ctrl.releases[0].Env["POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["POSTGRES_LEADER"] != "pg-leader" {
+		t.Fatalf("role env %#v", ctrl.releases[0].Env)
+	}
 }
 
 type fakeAppRelease struct {

@@ -137,6 +137,12 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	copyClusterDiscoverdEnv(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {
 		env["POSTGRES_PRIMARY_URL"] = leader.ConnectionURL()
+		env["POSTGRES_ROLE"] = "follower"
+		if leader.App != "" {
+			env["POSTGRES_LEADER"] = leader.App
+		}
+	} else {
+		env["POSTGRES_ROLE"] = "primary"
 	}
 	release := &ct.Release{
 		ArtifactIDs: []string{imageID},
