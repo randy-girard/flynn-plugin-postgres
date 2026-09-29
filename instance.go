@@ -134,6 +134,9 @@ type Store struct {
 	contacts    []string
 	// NameTaken reports app names that already exist outside this process.
 	NameTaken func(name string) bool
+	// LoadMissing loads a live instance (pg-orchid-xkhthp) after this
+	// process restarts. Follow looks up by app name; the in-memory map is empty.
+	LoadMissing func(idOrApp string) *Instance
 }
 
 // NewStore returns a store aimed at this plugin's discoverd host.
@@ -246,11 +249,29 @@ func (s *Store) lookupLocked(idOrApp string) *Instance {
 	if idOrApp == "" {
 		return nil
 	}
+	if inst := s.findLocked(idOrApp); inst != nil {
+		return inst
+	}
+	if s.LoadMissing == nil {
+		return nil
+	}
+	inst := s.LoadMissing(idOrApp)
+	if inst == nil {
+		return nil
+	}
+	if strings.TrimSpace(inst.ID) == "" {
+		inst.ID = firstNonEmpty(inst.App, idOrApp)
+	}
+	s.byID[inst.ID] = inst
+	return inst
+}
+
+func (s *Store) findLocked(idOrApp string) *Instance {
 	if inst := s.byID[idOrApp]; inst != nil {
 		return inst
 	}
 	for _, inst := range s.byID {
-		if inst.App == idOrApp {
+		if inst != nil && inst.App == idOrApp {
 			return inst
 		}
 	}
@@ -261,7 +282,7 @@ func (s *Store) lookupLocked(idOrApp string) *Instance {
 func (s *Store) Get(id string) (*Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return nil, ErrNotFound
 	}
@@ -688,6 +709,54 @@ func (i *Instance) visibleTo(app string) bool {
 
 // ConnectionURL is the app role URL for this instance.
 func (i *Instance) ConnectionURL() string { return i.appURL() }
+
+// InstanceFromEnv rebuilds a live isolated instance from its Flynn app release.
+// Follow uses this when the API process no longer has the in-memory leader.
+func InstanceFromEnv(id, app string, env map[string]string) *Instance {
+	if env == nil {
+		return nil
+	}
+	if strings.TrimSpace(env["FLYNN_POSTGRES"]) == "" && strings.TrimSpace(env["POSTGRES_URL"]) == "" && strings.TrimSpace(env["POSTGRES_USER"]) == "" {
+		return nil
+	}
+	name := firstNonEmpty(env["FLYNN_POSTGRES"], app)
+	db := firstNonEmpty(env["POSTGRES_DB"], env["PGDATABASE"])
+	user := env["POSTGRES_USER"]
+	pass := env["POSTGRES_PASSWORD"]
+	host := ""
+	if raw := strings.TrimSpace(env["POSTGRES_URL"]); raw != "" {
+		if u, err := url.Parse(raw); err == nil {
+			if user == "" && u.User != nil {
+				user = u.User.Username()
+				pass, _ = u.User.Password()
+			}
+			host = u.Hostname()
+			if db == "" {
+				db = strings.Trim(u.Path, "/")
+			}
+		}
+	}
+	if host == "" {
+		host = "leader." + name + ".discoverd"
+	}
+	inst := &Instance{
+		ID:          firstNonEmpty(id, name),
+		App:         name,
+		AppUser:     user,
+		AppPassword: pass,
+		Nodes:       DefaultNodes,
+		Role:        RolePrimary,
+		ServiceHost: host,
+	}
+	if db != "" {
+		inst.Databases = []Database{{Name: db}}
+	}
+	if strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" {
+		inst.Role = RoleFollower
+		inst.ReadOnly = true
+	}
+	return inst
+}
 
 func (i *Instance) appURL() string {
 	db := "postgres"

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
@@ -13,6 +14,37 @@ import (
 // instanceReadyTimeout is how long provision waits for the new postgres
 // process to register in discoverd after initdb and TLS setup.
 const instanceReadyTimeout = 5 * time.Minute
+
+type appReleaseClient interface {
+	GetApp(string) (*ct.App, error)
+	GetAppRelease(string) (*ct.Release, error)
+}
+
+func loadLivePostgres(c appReleaseClient, name string) *postgres.Instance {
+	return loadLivePostgresDepth(c, name, 0)
+}
+
+func loadLivePostgresDepth(c appReleaseClient, name string, depth int) *postgres.Instance {
+	name = strings.TrimSpace(name)
+	if c == nil || name == "" || depth > 2 {
+		return nil
+	}
+	app, err := c.GetApp(name)
+	if err != nil || app == nil {
+		return nil
+	}
+	rel, err := c.GetAppRelease(app.ID)
+	if err != nil || rel == nil || rel.Env == nil {
+		return nil
+	}
+	ident := strings.TrimSpace(rel.Env["FLYNN_POSTGRES"])
+	if ident != "" && ident != app.Name && ident != name {
+		if inst := loadLivePostgresDepth(c, ident, depth+1); inst != nil {
+			return inst
+		}
+	}
+	return postgres.InstanceFromEnv(app.ID, app.Name, rel.Env)
+}
 
 func (h *handler) live() bool {
 	return h != nil && h.client != nil && h.imageID != ""

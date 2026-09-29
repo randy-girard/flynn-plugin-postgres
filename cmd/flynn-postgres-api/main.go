@@ -39,6 +39,9 @@ func main() {
 			_, err := client.GetApp(name)
 			return err == nil
 		}
+		store.LoadMissing = func(name string) *postgres.Instance {
+			return loadLivePostgres(client, name)
+		}
 	}
 	addr := ":3000"
 	if port := os.Getenv("PORT"); port != "" {

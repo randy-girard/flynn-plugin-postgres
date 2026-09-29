@@ -186,4 +186,52 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	}
 }
 
+type fakeAppRelease struct {
+	apps     map[string]*ct.App
+	releases map[string]*ct.Release
+}
+
+func (f fakeAppRelease) GetApp(id string) (*ct.App, error) {
+	if a := f.apps[id]; a != nil {
+		return a, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (f fakeAppRelease) GetAppRelease(id string) (*ct.Release, error) {
+	if r := f.releases[id]; r != nil {
+		return r, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func TestLoadLivePostgresFollowsIdentityEnv(t *testing.T) {
+	c := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"shop":             {ID: "shop-id", Name: "shop"},
+			"pg-orchid-xkhthp": {ID: "pg-id", Name: "pg-orchid-xkhthp"},
+		},
+		releases: map[string]*ct.Release{
+			"shop-id": {Env: map[string]string{"FLYNN_POSTGRES": "pg-orchid-xkhthp"}},
+			"pg-id": {Env: map[string]string{
+				"FLYNN_POSTGRES":    "pg-orchid-xkhthp",
+				"POSTGRES_USER":     "app_live",
+				"POSTGRES_PASSWORD": "secret",
+				"POSTGRES_DB":       "db_pg_orchid_xkhthp",
+			}},
+		},
+	}
+	inst := loadLivePostgres(c, "pg-orchid-xkhthp")
+	if inst == nil || inst.App != "pg-orchid-xkhthp" || inst.AppUser != "app_live" {
+		t.Fatalf("direct %+v", inst)
+	}
+	viaShop := loadLivePostgres(c, "shop")
+	if viaShop == nil || viaShop.App != "pg-orchid-xkhthp" || viaShop.ID != "pg-id" {
+		t.Fatalf("via shop %+v", viaShop)
+	}
+	if loadLivePostgres(c, "missing") != nil {
+		t.Fatal("missing")
+	}
+}
+
 var errDiscoverdWait = errors.New("discoverd wait failed")

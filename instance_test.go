@@ -173,6 +173,55 @@ func TestFollowLooksUpLeaderByAppName(t *testing.T) {
 	}
 }
 
+func TestFollowLoadsMissingLeaderFromLiveApp(t *testing.T) {
+	s := NewStore()
+	var lookedUp string
+	s.LoadMissing = func(name string) *Instance {
+		lookedUp = name
+		if name != "pg-orchid-xkhthp" {
+			return nil
+		}
+		return InstanceFromEnv("app-uuid", "pg-orchid-xkhthp", map[string]string{
+			"FLYNN_POSTGRES":    "pg-orchid-xkhthp",
+			"POSTGRES_USER":     "app_live",
+			"POSTGRES_PASSWORD": "secret",
+			"POSTGRES_DB":       "db_pg_orchid_xkhthp",
+			"POSTGRES_URL":      "postgres://app_live:secret@leader.pg-orchid-xkhthp.discoverd:5432/db_pg_orchid_xkhthp?sslmode=require",
+		})
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: "pg-orchid-xkhthp", As: "FOLLOWER"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lookedUp != "pg-orchid-xkhthp" {
+		t.Fatalf("lookup %q", lookedUp)
+	}
+	if fol.LeaderID != "app-uuid" || fol.AppUser != "app_live" || fol.Role != RoleFollower {
+		t.Fatalf("follower %+v", fol)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestInstanceFromEnv(t *testing.T) {
+	inst := InstanceFromEnv("id", "pg-orchid-xkhthp", map[string]string{
+		"FLYNN_POSTGRES":    "pg-orchid-xkhthp",
+		"POSTGRES_USER":     "app_live",
+		"POSTGRES_PASSWORD": "secret",
+		"POSTGRES_DB":       "db_pg_orchid_xkhthp",
+	})
+	if inst == nil || inst.App != "pg-orchid-xkhthp" || inst.AppUser != "app_live" || inst.Role != RolePrimary {
+		t.Fatalf("%+v", inst)
+	}
+	if len(inst.Databases) != 1 || inst.Databases[0].Name != "db_pg_orchid_xkhthp" {
+		t.Fatalf("db %#v", inst.Databases)
+	}
+	if InstanceFromEnv("id", "shop", map[string]string{"REDIS_URL": "redis://x"}) != nil {
+		t.Fatal("non-postgres env")
+	}
+}
+
 func TestPromoteRewritesURLAndKeepsOldLeader(t *testing.T) {
 	s := NewStore()
 	leader, leaderEnv, err := s.Provision(ProvisionRequest{App: "shop"})
