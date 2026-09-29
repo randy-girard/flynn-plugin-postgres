@@ -17,7 +17,12 @@ as_postgres() {
 
 install -d -o postgres -g postgres -m 0700 /data
 if [[ ! -s /data/PG_VERSION ]]; then
-  as_postgres "${PG_BIN}/initdb" -D /data --auth-local=trust --auth-host=md5
+  if [[ -n "${POSTGRES_PRIMARY_URL:-}" ]]; then
+    as_postgres "${PG_BIN}/pg_basebackup" -d "${POSTGRES_PRIMARY_URL}" -D /data -Fp -Xs -R --no-password
+    chown -R postgres:postgres /data
+  else
+    as_postgres "${PG_BIN}/initdb" -D /data --auth-local=trust --auth-host=md5
+  fi
 fi
 
 conf=/data/postgresql.conf
@@ -28,8 +33,14 @@ sed -i "s/^port =.*/port = 5432/" "${conf}"
 grep -q "^listen_addresses" "${conf}" || echo "listen_addresses = '*'" >> "${conf}"
 grep -q "^port " "${conf}" || echo "port = 5432" >> "${conf}"
 grep -q "^unix_socket_directories" "${conf}" || echo "unix_socket_directories = '/tmp'" >> "${conf}"
+grep -q "^wal_level" "${conf}" || echo "wal_level = replica" >> "${conf}"
+grep -q "^max_wal_senders" "${conf}" || echo "max_wal_senders = 10" >> "${conf}"
+grep -q "^max_replication_slots" "${conf}" || echo "max_replication_slots = 10" >> "${conf}"
 if ! grep -q "0.0.0.0/0" /data/pg_hba.conf; then
   printf '%s\n' "host all all 0.0.0.0/0 md5" "host all all ::/0 md5" >> /data/pg_hba.conf
+fi
+if ! grep -q "host replication" /data/pg_hba.conf; then
+  printf '%s\n' "host replication all 0.0.0.0/0 md5" "host replication all ::/0 md5" >> /data/pg_hba.conf
 fi
 # sslmode=require encrypts but does not verify the CA. A local cert is enough.
 if [[ ! -s /data/server.crt || ! -s /data/server.key ]]; then
@@ -45,7 +56,7 @@ grep -q "^ssl_key_file" "${conf}" || echo "ssl_key_file = '/data/server.key'" >>
 grep -q "^shared_preload_libraries" "${conf}" || echo "shared_preload_libraries = 'timescaledb'" >> "${conf}"
 grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max_background_workers = 8" >> "${conf}"
 
-if [[ ! -f /data/.flynn-bootstrapped ]]; then
+if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
   user="${POSTGRES_USER:?POSTGRES_USER is required}"
   pass="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
   db="${POSTGRES_DB:?POSTGRES_DB is required}"
@@ -55,7 +66,7 @@ if [[ ! -f /data/.flynn-bootstrapped ]]; then
   fi
   as_postgres "${PG_BIN}/pg_ctl" -D /data -w start
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres <<SQL
-CREATE ROLE ${user} LOGIN PASSWORD '${pass}' CONNECTION LIMIT 20 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+CREATE ROLE ${user} LOGIN PASSWORD '${pass}' CONNECTION LIMIT 20 NOSUPERUSER NOCREATEDB NOCREATEROLE REPLICATION;
 CREATE DATABASE ${db} OWNER ${user};
 REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;

@@ -118,7 +118,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		writeAPIError(w, err)
 		return
 	}
-	if h.live() && body.Follow == "" {
+	if h.live() {
 		if err := h.startInstance(inst); err != nil {
 			writeAPIError(w, err)
 			return

@@ -4,7 +4,8 @@
 
 Tenant Postgres for Flynn. Each `flynn resource:add postgres` creates one
 isolated instance: its own Flynn app, its own volume, and exactly one Postgres
-node. It does not start a sirenia pair.
+node. It does not start a sirenia pair. Provision waits until the instance
+registers in discoverd (after `initdb`), not until a 30s job-up scale probe.
 
 This is not the platform appliance. That appliance stays on
 `postgres-api.discoverd` with provider name `platform-postgres` and is only for
@@ -60,6 +61,10 @@ database-runtimes ticket lands later.
 
 The dashboard pages (overview, databases, users, backup, follow) are served by
 this plugin. A signed-in app sees only its own instances.
+
+Cluster `flynn-host backup` does **not** include tenant instance volumes
+(`pg_dumpall` is the platform appliance only). There is no user `flynn pg:dump`;
+use the dashboard Backup page or `pg_dump` against `DATABASE_URL`.
 
 ## State machine
 

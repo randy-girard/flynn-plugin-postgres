@@ -158,6 +158,21 @@ func TestFollowerReadOnlyCannotFollowFollower(t *testing.T) {
 	}
 }
 
+func TestFollowLooksUpLeaderByAppName(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.App, As: "FOLLOWER"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fol.LeaderID != leader.ID || fol.AppUser != leader.AppUser {
+		t.Fatalf("follow by app: %+v leader %+v", fol, leader)
+	}
+}
+
 func TestPromoteRewritesURLAndKeepsOldLeader(t *testing.T) {
 	s := NewStore()
 	leader, leaderEnv, err := s.Provision(ProvisionRequest{App: "shop"})

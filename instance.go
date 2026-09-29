@@ -179,7 +179,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 
 	var leader *Instance
 	if req.Follow != "" {
-		leader = s.byID[req.Follow]
+		leader = s.lookupLocked(req.Follow)
 		if leader == nil {
 			return nil, nil, ErrNotFound
 		}
@@ -220,6 +220,8 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 		inst.ReadOnly = true
 		inst.LeaderID = leader.ID
 		inst.Mode = mode
+		inst.AppUser = leader.AppUser
+		inst.AppPassword = leader.AppPassword
 		inst.Databases = append([]Database(nil), leader.Databases...)
 		inst.Users = append([]User(nil), leader.Users...)
 		inst.Rows = append([]Row(nil), leader.Rows...)
@@ -236,6 +238,23 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 		env = s.attachLocked(inst, req.App, req.As)
 	}
 	return inst.snapshot(), env, nil
+}
+
+// lookupLocked finds a resource by id or by isolated app name (pg-harbor-xxxxxx).
+func (s *Store) lookupLocked(idOrApp string) *Instance {
+	idOrApp = strings.TrimSpace(idOrApp)
+	if idOrApp == "" {
+		return nil
+	}
+	if inst := s.byID[idOrApp]; inst != nil {
+		return inst
+	}
+	for _, inst := range s.byID {
+		if inst.App == idOrApp {
+			return inst
+		}
+	}
+	return nil
 }
 
 // Get returns a copy of the instance.

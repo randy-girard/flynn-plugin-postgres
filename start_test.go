@@ -75,6 +75,12 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "shared_preload_libraries = 'timescaledb'") {
 		t.Fatal("timescaledb must be preloaded or CREATE EXTENSION fails")
 	}
+	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "POSTGRES_PRIMARY_URL") {
+		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
+	}
+	if !strings.Contains(src, "host replication") || !strings.Contains(src, "REPLICATION;") {
+		t.Fatal("primaries must allow streaming replication")
+	}
 	pkgs, err := os.ReadFile("img/packages.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -96,5 +102,22 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	reg := strings.Index(src, "RegisterInstance(")
 	if listen < 0 || reg < 0 || reg < listen {
 		t.Fatal("discoverd registration must follow a listening postgres")
+	}
+}
+
+func TestStartInstanceDoesNotWaitOnScaleStallProbes(t *testing.T) {
+	b, err := os.ReadFile("cmd/flynn-postgres-api/live.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "NoWait:") || !strings.Contains(src, "NoWait") {
+		t.Fatal("resource:add must scale with NoWait; a 5m wait enables 30s stall probes during initdb")
+	}
+	if !strings.Contains(src, "true") {
+		t.Fatal("NoWait must be true")
+	}
+	if !strings.Contains(src, "GetInstances(") && !strings.Contains(src, "waitInstanceReady") {
+		t.Fatal("provision must wait for discoverd, not job-up")
 	}
 }

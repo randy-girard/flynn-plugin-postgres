@@ -23,7 +23,7 @@
       }
     }
   },
-  "inject_env": ["CONTROLLER_KEY", "SINGLETON", "CLUSTER_DOMAIN"],
+  "inject_env": ["CONTROLLER_KEY", "DISCOVERD_AUTH_KEY", "SINGLETON", "CLUSTER_DOMAIN"],
   "image_env": {
     "POSTGRES_IMAGE_ID": "self"
   },
@@ -73,6 +73,8 @@
     ]
   },
   "hooks": {
+    "install": "script/install.sh",
+    "upgrade": "script/install.sh",
     "uninstall": "script/uninstall.sh"
   },
   "build": {
