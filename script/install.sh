@@ -2,6 +2,9 @@
 # Publish small/medium/large database runtimes for this engine after the
 # plugin app is up. Idempotent. flynn-host plugin install also ensures them
 # after this hook, so a missing or old db-runtime:ensure must not fail install.
+# Instance upgrades start from the plugin API on boot and from flynn-host's
+# HTTP client after ping. This hook runs on the host OS and cannot resolve
+# plugin service names.
 set -euo pipefail
 
 : "${FLYNN_PLUGIN_NAME:?}"

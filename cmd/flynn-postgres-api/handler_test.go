@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 )
@@ -241,4 +242,82 @@ func TestHTTPPlatformMarkerRejected(t *testing.T) {
 	if rec.Code == 200 || !strings.Contains(rec.Body.String(), "postgres-api.discoverd") {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestHTTPUpgradeStartsBackgroundTask(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("create: %s %v", rec.Body.String(), err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases/"+created.ID+"/upgrade", strings.NewReader(`{}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 202 {
+		t.Fatalf("upgrade %d %s", rec.Code, rec.Body.String())
+	}
+	var task postgres.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil || task.ID == "" {
+		t.Fatalf("task %s %v", rec.Body.String(), err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req = httptest.NewRequest(http.MethodGet, "/tasks/"+task.ID, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("poll %d %s", rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == postgres.TaskDone {
+			if task.FollowerID == "" {
+				t.Fatal("done task missing follower")
+			}
+			return
+		}
+		if task.Status == postgres.TaskFailed {
+			t.Fatalf("upgrade failed: %s", task.Error)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("upgrade task did not finish")
+}
+
+func TestHTTPClusterUpgradesStartsPrimaries(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/cluster/upgrades", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 202 {
+		t.Fatalf("cluster %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"tasks"`) {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+}
+
+func TestBeginClusterUpgradesEmptyWhenNotLive(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	started, skipped := h.beginClusterUpgrades()
+	if len(started) != 0 {
+		t.Fatalf("started %#v", started)
+	}
+	_ = skipped
+	h.autoStartClusterUpgrades()
 }

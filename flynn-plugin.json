@@ -45,8 +45,9 @@
     "SINGLETON",
     "CLUSTER_DOMAIN"
   ],
-  "image_env": {
-    "POSTGRES_IMAGE_ID": "self"
+	"image_env": {
+    "POSTGRES_IMAGE_ID": "self",
+    "ENGINE_VERSION": "16"
   },
   "env": {
     "POSTGRES_TLS_ENABLED": "true"
@@ -101,13 +102,24 @@
       "wait",
       "promote",
       "unfollow",
+      "upgrade",
       "psql",
       "help"
     ],
-    "doc": "usage: flynn pg\n       flynn pg info\n       flynn pg:list\n       flynn pg:help\n       flynn pg follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\nfollow, wait until caught up, then promote.\n\nCommands:\n\tlist      Same as flynn pg with no subcommand\n\thelp      Same as flynn pg --help\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tpsql      Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
+	"doc": "usage: flynn pg\n       flynn pg info\n       flynn pg:list\n       flynn pg:help\n       flynn pg follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg upgrade\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\npg:upgrade (or dashboard Upgrade) follows, waits until caught up, promotes a new primary, then recreates each follower against that primary.\n\nCommands:\n\tlist      Same as flynn pg with no subcommand\n\thelp      Same as flynn pg --help\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tupgrade   Follow, wait, promote, then recreate followers (same-image skip on plugin:update)\n\tpsql      Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
     "resource_env": "FLYNN_POSTGRES",
     "resource_missing": "No postgres database found. Provision one with `flynn resource:add postgres`",
     "actions": [
+      {
+        "name": "upgrade",
+        "cluster": true,
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "upgrade",
+          "${resource}"
+        ]
+      },
       {
         "name": "psql",
         "args": [

@@ -45,10 +45,11 @@ ends the follow, and rewrites the primary attachment `*_URL`. The old leader
 remains its own resource. `pg:unfollow` stops replication and leaves a
 standalone writable copy that no longer receives leader writes.
 
-There is no in-place resize or upgrade. The path is follow, wait, promote.
-`streaming` is same-major replication. `logical` is the major-upgrade mode.
-Both are recorded on the follower. Runtime sizing is a name string; the
-database-runtimes ticket lands later.
+There is no in-place resize or upgrade. `flynn pg:upgrade` (and
+`flynn-host plugin:update postgres`) follows, waits until caught up, then
+promotes in the background. `streaming` is same-major replication. `logical`
+is the major-upgrade mode. Both are recorded on the follower. Runtime sizing
+is a name string.
 
 | Command | Purpose |
 | --- | --- |
@@ -56,7 +57,7 @@ database-runtimes ticket lands later.
 | `flynn pg:follow` | New read-only follower resource |
 | `flynn pg:wait` | Block until lag is zero |
 | `flynn pg:promote` | Writable primary; rewrite the primary URL |
-| `flynn pg:unfollow` | Stop replication; keep a writable copy |
+| `flynn pg:upgrade` | Follow, wait, and promote in the background |
 | `flynn pg:psql` | `psql` against this instance's URL only |
 
 The dashboard pages (overview, databases, users, backup, follow) are served by

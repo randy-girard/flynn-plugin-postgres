@@ -41,17 +41,19 @@ func servePostgres() error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
+	postgres.LogEngineVersion(os.Stderr)
 	if _, err := os.Stat("/data/standby.signal"); err != nil && os.Getenv("POSTGRES_PRIMARY_URL") == "" {
 		if err := ensureConnectIsolation(bin); err != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			return err
 		}
 	}
-	if err := discoverd.DefaultClient.AddService(service, nil); err != nil && !httphelper.IsObjectExistsError(err) {
+	disc := discoverd.NewClient()
+	if err := disc.AddService(service, nil); err != nil && !httphelper.IsObjectExistsError(err) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
-	hb, err := discoverd.DefaultClient.RegisterInstance(service, &discoverd.Instance{Addr: ":5432"})
+	hb, err := disc.RegisterInstance(service, &discoverd.Instance{Addr: ":5432"})
 	if err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err

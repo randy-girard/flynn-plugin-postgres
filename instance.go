@@ -32,12 +32,15 @@ const (
 )
 
 var (
-	ErrNotFound       = errors.New("postgres instance not found")
-	ErrReadOnly       = errors.New("follower is read-only")
-	ErrFollowFollower = errors.New("a follower cannot follow another follower")
-	ErrNotFollower    = errors.New("only a follower can be promoted or unfollowed")
-	ErrNoResize       = errors.New("no in-place resize or upgrade; create a follower, pg:wait until caught up, then pg:promote")
-	ErrHasFollowers   = errors.New("cannot remove a resource while it still has followers")
+	ErrNotFound          = errors.New("postgres instance not found")
+	ErrReadOnly          = errors.New("follower is read-only")
+	ErrFollowFollower    = errors.New("a follower cannot follow another follower")
+	ErrNotFollower       = errors.New("only a follower can be promoted or unfollowed")
+	ErrNoResize          = errors.New("no in-place resize or upgrade; pg:upgrade follows, waits until caught up, then promotes")
+	ErrHasFollowers      = errors.New("cannot remove a resource while it still has followers")
+	ErrNotPrimary        = errors.New("only a primary can be upgraded")
+	ErrUpgradeInProgress = errors.New("an upgrade is already running for this instance")
+	ErrUpgradeFollower   = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
 )
 
 // User is a role that exists only in one instance's state.
@@ -79,6 +82,7 @@ type Instance struct {
 	AppPassword       string
 	Nodes             int
 	Runtime           string
+	EngineVersion     string
 	Role              Role
 	LeaderID          string
 	Mode              ReplicationMode
@@ -103,9 +107,10 @@ type Info struct {
 	LagBytes  int64           `json:"lag_bytes"`
 	ReadOnly  bool            `json:"read_only"`
 	Nodes     int             `json:"nodes"`
-	Runtime   string          `json:"runtime"`
-	Mode      ReplicationMode `json:"replication,omitempty"`
-	App       string          `json:"app"`
+	Runtime       string          `json:"runtime"`
+	EngineVersion string          `json:"engine_version,omitempty"`
+	Mode          ReplicationMode `json:"replication,omitempty"`
+	App           string          `json:"app"`
 	Volume    string          `json:"volume"`
 	Host      string          `json:"host"`
 }
@@ -138,13 +143,32 @@ type Store struct {
 	// LoadMissing loads a live instance (pg-orchid-xkhthp) after this
 	// process restarts. Follow looks up by app name; the in-memory map is empty.
 	LoadMissing func(idOrApp string) *Instance
+
+	tasks           map[string]*Task
+	upgradeByLeader map[string]string
+}
+
+// Primaries are isolated instances that are not followers.
+func (s *Store) Primaries() []*Instance {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Instance
+	for _, inst := range s.byID {
+		if inst == nil || inst.Role == RoleFollower {
+			continue
+		}
+		out = append(out, inst.snapshot())
+	}
+	return out
 }
 
 // NewStore returns a store aimed at this plugin's discoverd host.
 func NewStore() *Store {
 	return &Store{
-		byID:        map[string]*Instance{},
-		providerURL: ProviderURL(),
+		byID:            map[string]*Instance{},
+		providerURL:     ProviderURL(),
+		tasks:           map[string]*Task{},
+		upgradeByLeader: map[string]string{},
 	}
 }
 
@@ -204,6 +228,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 		AppPassword:       "apppw_" + newID(),
 		Nodes:             DefaultNodes,
 		Runtime:           defaultRuntime(req.Runtime),
+		EngineVersion:     EngineVersion(),
 		Role:              RolePrimary,
 	}
 	inst.ServiceHost = "leader." + inst.App + ".discoverd"
@@ -359,9 +384,10 @@ func (s *Store) Info(id string) (Info, error) {
 		LagBytes:  inst.LagBytes,
 		ReadOnly:  inst.ReadOnly,
 		Nodes:     inst.Nodes,
-		Runtime:   inst.Runtime,
-		Mode:      inst.Mode,
-		App:       inst.App,
+		Runtime:       inst.Runtime,
+		EngineVersion: inst.EngineVersion,
+		Mode:          inst.Mode,
+		App:           inst.App,
 		Volume:    inst.Volume,
 		Host:      inst.ServiceHost,
 	}, nil
@@ -798,8 +824,9 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		AppUser:     user,
 		AppPassword: pass,
 		Nodes:       DefaultNodes,
-		Role:        RolePrimary,
-		ServiceHost: host,
+		Role:          RolePrimary,
+		ServiceHost:   host,
+		EngineVersion: firstNonEmpty(env["ENGINE_VERSION"], env["POSTGRES_VERSION"]),
 	}
 	if db != "" {
 		inst.Databases = []Database{{Name: db}}

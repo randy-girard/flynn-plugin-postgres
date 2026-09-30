@@ -10,6 +10,7 @@ if [[ "${1:-}" != "postgres" ]]; then
 fi
 
 # One data directory, one process. Credentials come from the release env.
+echo "flynn-plugin-postgres engine version ${ENGINE_VERSION:-16} PG_VERSION=$(cat /data/PG_VERSION 2>/dev/null || echo new)"
 PG_BIN="$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)"
 as_postgres() {
   setpriv --reuid=postgres --regid=postgres --init-groups --inh-caps=-all "$@"

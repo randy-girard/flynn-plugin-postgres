@@ -34,6 +34,7 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/users", wrap(h.dashUsers))
 	h.router.GET("/dashboard/backup", wrap(h.dashBackup))
 	h.router.GET("/dashboard/replication", wrap(h.dashReplication))
+	h.router.POST("/dashboard/replication", wrap(h.dashReplication))
 }
 
 func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
@@ -272,8 +273,19 @@ func (h *handler) dashCard(w http.ResponseWriter, _ *http.Request, sess *dashui.
 		Attached: len(insts) > 0,
 		Summary:  summary,
 		EnvCount: envCount(insts, sess.AppID, sess.AppName),
-		Details:  map[string]string{"tls": "required", "nodes": "1"},
+		Details:  mergeDetails(map[string]string{"tls": "required", "nodes": "1"}, postgres.EngineCardDetails(insts)),
 	})
+}
+
+func mergeDetails(base map[string]string, extra map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
 }
 
 func (h *handler) dashDatabases(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
@@ -318,10 +330,23 @@ func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashu
 	writeDash(w, sess, "Backup", b.String())
 }
 
-func (h *handler) dashReplication(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	notice := ""
+	if r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		id := strings.TrimSpace(r.FormValue("instance"))
+		if id == "" {
+			notice = `<p class="banner">Choose a primary to upgrade.</p>`
+		} else if _, err := h.store.StartUpgrade(id, h.upgradeOptions("", "")); err != nil {
+			notice = `<p class="banner">` + html.EscapeString(err.Error()) + `</p>`
+		} else {
+			notice = `<p class="ok">Upgrade started. It promotes a new primary on the current plugin image, then recreates each follower against that primary. The old leader stays as its own resource.</p>`
+		}
+	}
 	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Follow</h2><p>A follower is a separate resource with one node. It is read-only until promote or unfollow. Streaming copies the same major version. Logical replication is the major-upgrade path.</p>`)
-	b.WriteString(`<table><tr><th>App</th><th>Role</th><th>Leader</th><th>Followers</th><th>Lag</th><th>Runtime</th><th>Mode</th></tr>`)
+	b.WriteString(notice)
+	b.WriteString(`<div class="card"><h2>Follow</h2><p>A follower is a separate resource with one node. It is read-only until promote or unfollow. Streaming copies the same major version. Logical replication is the major-upgrade path. <code>pg:upgrade</code> and dashboard Upgrade walk the whole topology: new primary first, then each follower is recreated against that primary.</p>`)
+	b.WriteString(`<table><tr><th>App</th><th>Role</th><th>Leader</th><th>Followers</th><th>Lag</th><th>Runtime</th><th>Mode</th><th></th></tr>`)
 	for _, inst := range h.instancesFor(sess) {
 		role := string(inst.Role)
 		if role == "" {
@@ -342,11 +367,18 @@ func (h *handler) dashReplication(w http.ResponseWriter, _ *http.Request, sess *
 				mode = string(info.Mode)
 			}
 		}
-		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%d</td><td>%s</td><td>%s</td></tr>`,
+		action := ""
+		if inst.Role != postgres.RoleFollower {
+			action = `<form method="post" style="margin:0"><input type="hidden" name="instance" value="` + html.EscapeString(inst.ID) + `"><button class="primary" type="submit">Upgrade</button></form>`
+			if task := h.store.LatestUpgrade(inst.ID); task != nil && task.Status != postgres.TaskDone && task.Status != postgres.TaskFailed {
+				action = `<span class="pill">` + html.EscapeString(task.Status) + `</span>`
+			}
+		}
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
 			html.EscapeString(inst.App), html.EscapeString(role), html.EscapeString(leader),
-			html.EscapeString(strings.Join(followers, ", ")), lag, html.EscapeString(runtime), html.EscapeString(mode))
+			html.EscapeString(strings.Join(followers, ", ")), lag, html.EscapeString(runtime), html.EscapeString(mode), action)
 	}
-	b.WriteString(`</table><p class="muted">pg:follow creates the follower. pg:wait blocks until lag is zero. pg:promote rewrites the primary *_URL and leaves the old leader in place. pg:unfollow keeps a writable copy and stops receiving leader writes.</p></div>`)
+	b.WriteString(`</table><p class="muted">Upgrade creates a follower on the current plugin image, waits until lag is zero, promotes, then recreates each old follower against the new primary. The old leader remains. pg:wait / pg:promote are still available for a follower you created yourself.</p></div>`)
 	writeDash(w, sess, "Followers", b.String())
 }
 

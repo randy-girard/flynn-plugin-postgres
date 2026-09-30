@@ -52,8 +52,25 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if cli.CLI.ResourceEnv != "FLYNN_POSTGRES" {
 		t.Fatalf("resource_env=%q, want the instance app name", cli.CLI.ResourceEnv)
 	}
-	if len(cli.CLI.Actions) == 0 || !strings.Contains(strings.Join(cli.CLI.Actions[0].Args, " "), "POSTGRES_URL") {
-		t.Fatalf("psql args %#v", cli.CLI.Actions)
+	var psqlArgs []string
+	var hasUpgrade bool
+	for _, a := range cli.CLI.Actions {
+		joined := strings.Join(a.Args, " ")
+		if strings.Contains(joined, "POSTGRES_URL") {
+			psqlArgs = a.Args
+		}
+		if strings.Contains(joined, "task upgrade") {
+			hasUpgrade = true
+		}
+	}
+	if len(psqlArgs) == 0 {
+		t.Fatal("psql action missing POSTGRES_URL")
+	}
+	if !hasUpgrade {
+		t.Fatal("upgrade action must run flynn-postgres-api task upgrade")
+	}
+	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "upgrade"}, true, "", false); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -80,6 +97,20 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	}
 	if !strings.Contains(src, "host replication") || !strings.Contains(src, "REPLICATION;") {
 		t.Fatal("primaries must allow streaming replication")
+	}
+	hook, err := os.ReadFile("script/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(hook), "http://") || strings.Contains(string(hook), "curl") {
+		t.Fatal("host hook cannot HTTP the plugin API; flynn-host and the API start upgrades")
+	}
+	mainSrc, err := os.ReadFile("cmd/flynn-postgres-api/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mainSrc), "autoStartClusterUpgrades") {
+		t.Fatal("plugin API must start cluster upgrades on boot")
 	}
 	pkgs, err := os.ReadFile("img/packages.sh")
 	if err != nil {

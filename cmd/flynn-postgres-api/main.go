@@ -21,6 +21,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "task" {
+		if err := runPluginTask(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if dashui.DevEnabled() {
 		runDashboardDev()
 		return
@@ -53,6 +60,7 @@ func main() {
 		shutdown.Fatal(err)
 	}
 	log.Info("listening", "addr", addr, "provider", postgres.ProviderURL())
+	h.autoStartClusterUpgrades()
 	if err := http.Serve(ln, h); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		shutdown.Fatal(err)
 	}
@@ -85,6 +93,13 @@ func newHandler(store *postgres.Store) *handler {
 	h.router.POST("/databases/:id/attach", h.attach)
 	h.router.POST("/databases/:id/detach", h.detach)
 	h.router.POST("/databases/:id/env-set", h.envSet)
+	h.router.POST("/databases/:id/upgrade", h.upgrade)
+	h.router.GET("/databases/:id/upgrade", h.getUpgrade)
+	h.router.GET("/tasks", h.listTasks)
+	h.router.GET("/tasks/:id", h.getTask)
+	h.router.POST("/cluster/upgrades", h.clusterUpgrades)
+	h.router.GET("/cluster/upgrades", h.listTasks)
+	h.router.GET("/version", h.version)
 	h.mountDashboard()
 	return h
 }

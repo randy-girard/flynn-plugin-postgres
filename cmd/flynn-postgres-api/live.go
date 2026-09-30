@@ -133,6 +133,8 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		"POSTGRES_PASSWORD": inst.AppPassword,
 		"POSTGRES_DB":       db,
 		"POSTGRES_URL":      inst.ConnectionURL(),
+		"ENGINE_VERSION":    postgres.EngineVersion(),
+		"POSTGRES_VERSION":  postgres.EngineVersion(),
 	}
 	copyClusterDiscoverdEnv(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {

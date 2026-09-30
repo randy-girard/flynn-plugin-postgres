@@ -163,3 +163,35 @@ func TestDashCardCountsControllerResourceWhenStoreEmpty(t *testing.T) {
 		t.Fatalf("card: %s", body)
 	}
 }
+
+func TestDashReplicationUpgradeButton(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Upgrade") || !strings.Contains(rec.Body.String(), "pg:upgrade") {
+		t.Fatalf("missing upgrade: %s", rec.Body.String())
+	}
+	form := strings.NewReader("instance=" + inst.ID)
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Upgrade started") {
+		t.Fatalf("post body: %s", rec.Body.String())
+	}
+}
