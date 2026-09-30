@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -72,6 +73,7 @@ func newHandler(store *postgres.Store) *handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	h.router.POST("/databases", h.provision)
+	h.router.DELETE("/databases", h.deprovision)
 	h.router.GET("/databases/:id", h.info)
 	h.router.POST("/databases/:id/users", h.addUser)
 	h.router.GET("/databases/:id/users", h.listUsers)
@@ -143,6 +145,70 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		"plan": inst.NodePlan(),
 		"host": inst.ServiceHost,
 	})
+}
+
+func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	id = strings.TrimPrefix(id, "/databases/")
+	if id == "" {
+		writeAPIError(w, postgres.ErrNotFound)
+		return
+	}
+	inst, err := h.store.Get(id)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	followers := h.followerApps(inst)
+	if len(followers) > 0 {
+		writeAPIError(w, fmt.Errorf("%w: %s", postgres.ErrHasFollowers, strings.Join(followers, ", ")))
+		return
+	}
+	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
+		if _, err := h.client.DeleteApp(inst.App); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
+	h.store.Forget(inst.ID)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *handler) followerApps(inst *postgres.Instance) []string {
+	if inst == nil {
+		return nil
+	}
+	names := h.store.FollowerApps(inst.ID)
+	seen := map[string]bool{}
+	for _, n := range names {
+		seen[n] = true
+	}
+	if h.client == nil {
+		return names
+	}
+	apps, err := h.client.AppList()
+	if err != nil {
+		return names
+	}
+	for _, app := range apps {
+		if app == nil {
+			continue
+		}
+		rel, err := h.client.GetAppRelease(app.ID)
+		if err != nil || rel == nil || rel.Env == nil {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(rel.Env["POSTGRES_LEADER"]), inst.App) {
+			continue
+		}
+		n := strings.TrimSpace(app.Name)
+		if n == "" || n == inst.App || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	return names
 }
 
 func (h *handler) info(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {

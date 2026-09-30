@@ -18,12 +18,33 @@
     },
     "processes": {
       "web": {
-        "args": ["/bin/start-flynn-postgres", "api"],
-        "ports": [{"port": 80, "proto": "tcp", "service": {"name": "postgres-plugin", "create": true, "check": {"type": "http", "path": "/ping"}}}]
+        "args": [
+          "/bin/start-flynn-postgres",
+          "api"
+        ],
+        "ports": [
+          {
+            "port": 80,
+            "proto": "tcp",
+            "service": {
+              "name": "postgres-plugin",
+              "create": true,
+              "check": {
+                "type": "http",
+                "path": "/ping"
+              }
+            }
+          }
+        ]
       }
     }
   },
-  "inject_env": ["CONTROLLER_KEY", "DISCOVERD_AUTH_KEY", "SINGLETON", "CLUSTER_DOMAIN"],
+  "inject_env": [
+    "CONTROLLER_KEY",
+    "DISCOVERD_AUTH_KEY",
+    "SINGLETON",
+    "CLUSTER_DOMAIN"
+  ],
   "image_env": {
     "POSTGRES_IMAGE_ID": "self"
   },
@@ -39,31 +60,60 @@
   },
   "dashboard": {
     "base_url": "http://postgres-plugin.discoverd/dashboard",
-    "surfaces": ["app.resources"],
+    "surfaces": [
+      "app.resources"
+    ],
     "card": {
       "title": "Postgres",
       "description": "One isolated Postgres instance per resource",
       "icon": "postgres"
     },
     "routes": [
-      {"path": "/", "title": "Overview"},
-      {"path": "/databases", "title": "Databases"},
-      {"path": "/users", "title": "Users"},
-      {"path": "/backup", "title": "Backup"},
-      {"path": "/replication", "title": "Followers"}
+      {
+        "path": "/",
+        "title": "Overview"
+      },
+      {
+        "path": "/databases",
+        "title": "Databases"
+      },
+      {
+        "path": "/users",
+        "title": "Users"
+      },
+      {
+        "path": "/backup",
+        "title": "Backup"
+      },
+      {
+        "path": "/replication",
+        "title": "Followers"
+      }
     ]
   },
   "cli": {
     "command": "pg",
     "usage": "manage an isolated postgres instance",
-    "subcommands": ["info", "follow", "wait", "promote", "unfollow", "psql"],
-    "doc": "usage: flynn pg info\n       flynn pg follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\nfollow, wait until caught up, then promote.\n\nCommands:\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tpsql      Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
+    "subcommands": [
+      "list",
+      "info",
+      "follow",
+      "wait",
+      "promote",
+      "unfollow",
+      "psql",
+      "help"
+    ],
+    "doc": "usage: flynn pg\n       flynn pg info\n       flynn pg:list\n       flynn pg:help\n       flynn pg follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\nfollow, wait until caught up, then promote.\n\nCommands:\n\tlist      Same as flynn pg with no subcommand\n\thelp      Same as flynn pg --help\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tpsql      Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
     "resource_env": "FLYNN_POSTGRES",
     "resource_missing": "No postgres database found. Provision one with `flynn resource:add postgres`",
     "actions": [
       {
         "name": "psql",
-        "args": ["psql", "${app.POSTGRES_URL}"],
+        "args": [
+          "psql",
+          "${app.POSTGRES_URL}"
+        ],
         "append": "<argument>",
         "env": {
           "PAGER": "less",
@@ -83,7 +133,9 @@
       "version": "latest",
       "image": "ubuntu-noble"
     },
-    "entrypoint": ["/bin/start-flynn-postgres"],
+    "entrypoint": [
+      "/bin/start-flynn-postgres"
+    ],
     "packages": "img/packages.sh",
     "go": {
       "./cmd/flynn-postgres": "/bin/flynn-postgres",

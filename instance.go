@@ -37,6 +37,7 @@ var (
 	ErrFollowFollower = errors.New("a follower cannot follow another follower")
 	ErrNotFollower    = errors.New("only a follower can be promoted or unfollowed")
 	ErrNoResize       = errors.New("no in-place resize or upgrade; create a follower, pg:wait until caught up, then pg:promote")
+	ErrHasFollowers   = errors.New("cannot remove a resource while it still has followers")
 )
 
 // User is a role that exists only in one instance's state.
@@ -289,11 +290,63 @@ func (s *Store) Get(id string) (*Instance, error) {
 	return inst.snapshot(), nil
 }
 
+// FollowerApps is the isolated app names still replicating from id (NAME or ID).
+func (s *Store) FollowerApps(id string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst := s.lookupLocked(id)
+	if inst == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || name == inst.App || name == inst.ID || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for _, fid := range inst.Followers {
+		if fol := s.findLocked(fid); fol != nil {
+			add(firstNonEmpty(fol.App, fol.ID))
+			continue
+		}
+		add(fid)
+	}
+	for _, other := range s.byID {
+		if other == nil || other.ID == inst.ID {
+			continue
+		}
+		if other.LeaderID == inst.ID || other.LeaderID == inst.App {
+			add(firstNonEmpty(other.App, other.ID))
+		}
+	}
+	return names
+}
+
+// Forget drops an instance from the in-memory store after deprovision.
+func (s *Store) Forget(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst := s.findLocked(id)
+	if inst == nil {
+		return
+	}
+	if inst.LeaderID != "" {
+		if leader := s.findLocked(inst.LeaderID); leader != nil {
+			leader.Followers = removeID(leader.Followers, inst.ID)
+		}
+	}
+	delete(s.byID, inst.ID)
+}
+
 // Info is pg:info for one resource.
 func (s *Store) Info(id string) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return Info{}, ErrNotFound
 	}

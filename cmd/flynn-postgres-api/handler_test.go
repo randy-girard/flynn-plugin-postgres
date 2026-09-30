@@ -150,6 +150,52 @@ func TestHTTPEnvSetRejected(t *testing.T) {
 	}
 }
 
+func TestHTTPDestroyByNameAndBlocksFollowers(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("leader %d %s", rec.Code, rec.Body.String())
+	}
+	var leader struct {
+		ID  string            `json:"id"`
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &leader); err != nil {
+		t.Fatal(err)
+	}
+	name := leader.Env["FLYNN_POSTGRES"]
+	body, err := json.Marshal(map[string]string{"app": "shop", "follow": name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("follower %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/databases?id="+name, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == 200 || !strings.Contains(rec.Body.String(), "followers") {
+		t.Fatalf("leader with follower must not delete: %d %s", rec.Code, rec.Body.String())
+	}
+	var fol struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err == nil && fol.Env["FLYNN_POSTGRES"] != "" {
+		t.Fatal("delete response should not be a provision body")
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/databases?id="+leader.ID, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == 200 {
+		t.Fatalf("id delete must also block: %s", rec.Body.String())
+	}
+}
+
 func TestHTTPPlatformMarkerRejected(t *testing.T) {
 	h := newHandler(postgres.NewStore())
 	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"platform":true}`))
