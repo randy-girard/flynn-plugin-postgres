@@ -540,3 +540,27 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		}
 	}
 }
+
+func TestDestroyRejectedWhileFollowersLinked(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := s.FollowerApps(leader.App)
+	if len(names) == 0 {
+		t.Fatal("leader must list the follower")
+	}
+	s.Forget(fol.ID)
+	if names := s.FollowerApps(leader.ID); len(names) != 0 {
+		t.Fatalf("unlinked %q", names)
+	}
+	s.Forget(leader.ID)
+	if _, err := s.Get(leader.ID); err == nil {
+		t.Fatal("forgotten leader still present")
+	}
+}

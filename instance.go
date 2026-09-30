@@ -626,7 +626,7 @@ func (s *Store) Detach(id, app string) error {
 func (s *Store) EnvForApp(id, app string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return nil, ErrNotFound
 	}

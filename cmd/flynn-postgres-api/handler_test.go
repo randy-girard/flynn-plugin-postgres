@@ -196,6 +196,43 @@ func TestHTTPDestroyByNameAndBlocksFollowers(t *testing.T) {
 	}
 }
 
+func TestHTTPDestroyHydratesMissingStoreByName(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("provision %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		ID  string            `json:"id"`
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	name := out.Env["FLYNN_POSTGRES"]
+	if name == "" {
+		t.Fatalf("env %#v", out.Env)
+	}
+	h.store.Forget(out.ID)
+	h.store.LoadMissing = func(idOrApp string) *postgres.Instance {
+		if idOrApp != name {
+			return nil
+		}
+		return postgres.InstanceFromEnv("app-id", name, map[string]string{
+			"FLYNN_POSTGRES": name,
+			"POSTGRES_URL":   "postgres://u:p@h/db",
+		})
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/databases?id="+name, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("hydrate delete %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPPlatformMarkerRejected(t *testing.T) {
 	h := newHandler(postgres.NewStore())
 	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"platform":true}`))
