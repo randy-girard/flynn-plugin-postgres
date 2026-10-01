@@ -41,12 +41,15 @@ var (
 	ErrNotPrimary        = errors.New("only a primary can be upgraded")
 	ErrUpgradeInProgress = errors.New("an upgrade is already running for this instance")
 	ErrUpgradeFollower   = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
+	ErrFollowLogical     = errors.New("followers use streaming replication on the same engine version; use pg:upgrade for a major-version swap")
+	ErrFollowVersion     = errors.New("a follower must run the same engine version as its primary; use pg:upgrade to swap to a new version")
 )
 
 // User is a role that exists only in one instance's state.
 type User struct {
-	Name     string
-	Password string
+	Name     string `json:"name"`
+	Password string `json:"-"`
+	Database string `json:"database,omitempty"`
 }
 
 // Database is a database name inside one instance.
@@ -100,29 +103,30 @@ type Instance struct {
 
 // Info is the pg:info view.
 type Info struct {
-	ID        string          `json:"id"`
-	Role      Role            `json:"role"`
-	LeaderID  string          `json:"leader_id,omitempty"`
-	Followers []string        `json:"followers,omitempty"`
-	LagBytes  int64           `json:"lag_bytes"`
-	ReadOnly  bool            `json:"read_only"`
-	Nodes     int             `json:"nodes"`
+	ID            string          `json:"id"`
+	Role          Role            `json:"role"`
+	LeaderID      string          `json:"leader_id,omitempty"`
+	Followers     []string        `json:"followers,omitempty"`
+	LagBytes      int64           `json:"lag_bytes"`
+	ReadOnly      bool            `json:"read_only"`
+	Nodes         int             `json:"nodes"`
 	Runtime       string          `json:"runtime"`
 	EngineVersion string          `json:"engine_version,omitempty"`
 	Mode          ReplicationMode `json:"replication,omitempty"`
 	App           string          `json:"app"`
-	Volume    string          `json:"volume"`
-	Host      string          `json:"host"`
+	Volume        string          `json:"volume"`
+	Host          string          `json:"host"`
 }
 
 // ProvisionRequest creates a primary, or a follower when Follow is set.
 type ProvisionRequest struct {
-	Tenant  string
-	App     string
-	As      string
-	Follow  string
-	Mode    ReplicationMode
-	Runtime string
+	Tenant     string
+	App        string
+	As         string
+	Follow     string
+	Mode       ReplicationMode
+	Runtime    string
+	ForUpgrade bool
 }
 
 // PromoteResult is a promoted follower plus the previous leader, which remains.
@@ -239,8 +243,18 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 
 	if leader != nil {
 		mode := req.Mode
-		if mode == "" {
+		if req.ForUpgrade {
+			if mode == "" {
+				mode = ModeLogical
+			}
+		} else {
+			if mode != "" && mode != ModeStreaming {
+				return nil, nil, ErrFollowLogical
+			}
 			mode = ModeStreaming
+			if !SameEngineVersion(leader.EngineVersion, inst.EngineVersion) {
+				return nil, nil, ErrFollowVersion
+			}
 		}
 		if mode != ModeStreaming && mode != ModeLogical {
 			return nil, nil, fmt.Errorf("replication mode %q must be streaming or logical", mode)
@@ -288,6 +302,10 @@ func (s *Store) lookupLocked(idOrApp string) *Instance {
 	if strings.TrimSpace(inst.ID) == "" {
 		inst.ID = firstNonEmpty(inst.App, idOrApp)
 	}
+	if existing := s.findLocked(firstNonEmpty(inst.App, inst.ID)); existing != nil {
+		mergeLiveInstance(existing, inst)
+		return existing
+	}
 	s.byID[inst.ID] = inst
 	return inst
 }
@@ -296,12 +314,46 @@ func (s *Store) findLocked(idOrApp string) *Instance {
 	if inst := s.byID[idOrApp]; inst != nil {
 		return inst
 	}
+	var found *Instance
 	for _, inst := range s.byID {
-		if inst != nil && inst.App == idOrApp {
-			return inst
+		if inst == nil || inst.App != idOrApp {
+			continue
+		}
+		if found == nil || len(inst.Users) > len(found.Users) || len(inst.Databases) > len(found.Databases) {
+			found = inst
 		}
 	}
-	return nil
+	return found
+}
+
+func mergeLiveInstance(dst, src *Instance) {
+	if dst == nil || src == nil || dst == src {
+		return
+	}
+	if dst.AppUser == "" {
+		dst.AppUser = src.AppUser
+	}
+	if dst.AppPassword == "" {
+		dst.AppPassword = src.AppPassword
+	}
+	if dst.ServiceHost == "" {
+		dst.ServiceHost = src.ServiceHost
+	}
+	if dst.App == "" {
+		dst.App = src.App
+	}
+	if dst.Tenant == "" {
+		dst.Tenant = src.Tenant
+	}
+	if len(dst.Databases) == 0 && len(src.Databases) > 0 {
+		dst.Databases = append([]Database(nil), src.Databases...)
+	}
+	if len(dst.Users) == 0 && len(src.Users) > 0 {
+		dst.Users = append([]User(nil), src.Users...)
+	}
+	if len(dst.Attachments) == 0 && len(src.Attachments) > 0 {
+		dst.Attachments = append([]Attachment(nil), src.Attachments...)
+	}
 }
 
 // Get returns a copy of the instance.
@@ -377,31 +429,31 @@ func (s *Store) Info(id string) (Info, error) {
 	}
 	followers := append([]string(nil), inst.Followers...)
 	return Info{
-		ID:        inst.ID,
-		Role:      inst.Role,
-		LeaderID:  inst.LeaderID,
-		Followers: followers,
-		LagBytes:  inst.LagBytes,
-		ReadOnly:  inst.ReadOnly,
-		Nodes:     inst.Nodes,
+		ID:            inst.ID,
+		Role:          inst.Role,
+		LeaderID:      inst.LeaderID,
+		Followers:     followers,
+		LagBytes:      inst.LagBytes,
+		ReadOnly:      inst.ReadOnly,
+		Nodes:         inst.Nodes,
 		Runtime:       inst.Runtime,
 		EngineVersion: inst.EngineVersion,
 		Mode:          inst.Mode,
 		App:           inst.App,
-		Volume:    inst.Volume,
-		Host:      inst.ServiceHost,
+		Volume:        inst.Volume,
+		Host:          inst.ServiceHost,
 	}, nil
 }
 
 // AddDatabase creates a database that exists only on this instance.
 func (s *Store) AddDatabase(id, name string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("database name is required")
+	if err := ValidDatabaseName(name); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return ErrNotFound
 	}
@@ -419,14 +471,23 @@ func (s *Store) AddDatabase(id, name string) error {
 }
 
 // AddUser creates a user that exists only on this instance.
-func (s *Store) AddUser(id, name, password string) error {
+func (s *Store) AddUser(id, name, password, database string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("user name is required")
+	if err := ValidUserName(name); err != nil {
+		return err
+	}
+	if strings.TrimSpace(password) == "" {
+		return errors.New("password is required")
+	}
+	database = strings.TrimSpace(database)
+	if database != "" {
+		if err := ValidDatabaseName(database); err != nil {
+			return err
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return ErrNotFound
 	}
@@ -438,7 +499,42 @@ func (s *Store) AddUser(id, name, password string) error {
 			return fmt.Errorf("user %s already exists", name)
 		}
 	}
-	inst.Users = append(inst.Users, User{Name: name, Password: password})
+	inst.Users = append(inst.Users, User{Name: name, Password: password, Database: database})
+	s.replicateMetaLocked(inst)
+	return nil
+}
+
+// DropUser removes a login created on this instance. The instance PGUSER stays.
+func (s *Store) DropUser(id, name string) error {
+	name = strings.TrimSpace(name)
+	if err := ValidUserName(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst := s.lookupLocked(id)
+	if inst == nil {
+		return ErrNotFound
+	}
+	if inst.ReadOnly {
+		return ErrReadOnly
+	}
+	if inst.AppUser != "" && strings.EqualFold(inst.AppUser, name) {
+		return fmt.Errorf("cannot drop the instance login %s", name)
+	}
+	kept := inst.Users[:0]
+	found := false
+	for _, u := range inst.Users {
+		if strings.EqualFold(u.Name, name) {
+			found = true
+			continue
+		}
+		kept = append(kept, u)
+	}
+	if !found {
+		return fmt.Errorf("user %s not found", name)
+	}
+	inst.Users = kept
 	s.replicateMetaLocked(inst)
 	return nil
 }
@@ -447,7 +543,7 @@ func (s *Store) AddUser(id, name, password string) error {
 func (s *Store) Users(id string) ([]User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return nil, ErrNotFound
 	}
@@ -458,7 +554,7 @@ func (s *Store) Users(id string) ([]User, error) {
 func (s *Store) Databases(id string) ([]Database, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	inst := s.byID[id]
+	inst := s.lookupLocked(id)
 	if inst == nil {
 		return nil, ErrNotFound
 	}
@@ -529,7 +625,7 @@ func (s *Store) SetLag(id string, bytes int64) error {
 func (s *Store) Wait(ctx context.Context, id string) error {
 	for {
 		s.mu.Lock()
-		inst := s.byID[id]
+		inst := s.lookupLocked(id)
 		if inst == nil {
 			s.mu.Unlock()
 			return ErrNotFound
@@ -553,7 +649,7 @@ func (s *Store) Wait(ctx context.Context, id string) error {
 func (s *Store) Promote(id string) (*PromoteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fol := s.byID[id]
+	fol := s.lookupLocked(id)
 	if fol == nil {
 		return nil, ErrNotFound
 	}
@@ -591,7 +687,7 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 func (s *Store) Unfollow(id string) (*Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fol := s.byID[id]
+	fol := s.lookupLocked(id)
 	if fol == nil {
 		return nil, ErrNotFound
 	}
@@ -789,41 +885,63 @@ func (i *Instance) visibleTo(app string) bool {
 // ConnectionURL is the app role URL for this instance.
 func (i *Instance) ConnectionURL() string { return i.appURL() }
 
+// MaintenanceURL is the TCP URL the plugin API uses for CREATE DATABASE,
+// CREATE ROLE, and DROP ROLE. Isolated instances revoke CONNECT on the
+// postgres catalog database, so this is the tenant database — not /postgres.
+func (i *Instance) MaintenanceURL() string {
+	return i.appURL()
+}
+
 // InstanceFromEnv rebuilds a live isolated instance from its Flynn app release.
 // Follow uses this when the API process no longer has the in-memory leader.
 func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	if env == nil {
 		return nil
 	}
-	if strings.TrimSpace(env["FLYNN_POSTGRES"]) == "" && strings.TrimSpace(env["POSTGRES_URL"]) == "" && strings.TrimSpace(env["POSTGRES_USER"]) == "" {
+	if strings.TrimSpace(env["FLYNN_POSTGRES"]) == "" && strings.TrimSpace(env["POSTGRES_URL"]) == "" && strings.TrimSpace(env["DATABASE_URL"]) == "" && strings.TrimSpace(env["POSTGRES_USER"]) == "" && strings.TrimSpace(env["PGUSER"]) == "" {
 		return nil
 	}
 	name := firstNonEmpty(env["FLYNN_POSTGRES"], app)
 	db := firstNonEmpty(env["POSTGRES_DB"], env["PGDATABASE"])
-	user := env["POSTGRES_USER"]
-	pass := env["POSTGRES_PASSWORD"]
-	host := ""
-	if raw := strings.TrimSpace(env["POSTGRES_URL"]); raw != "" {
-		if u, err := url.Parse(raw); err == nil {
-			if user == "" && u.User != nil {
-				user = u.User.Username()
+	user := firstNonEmpty(env["POSTGRES_USER"], env["PGUSER"])
+	pass := firstNonEmpty(env["POSTGRES_PASSWORD"], env["PGPASSWORD"])
+	host := strings.TrimSpace(env["PGHOST"])
+	for _, key := range []string{"POSTGRES_URL", "DATABASE_URL"} {
+		raw := strings.TrimSpace(env[key])
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		if key == "DATABASE_URL" && !strings.HasPrefix(strings.ToLower(u.Scheme), "postgres") {
+			continue
+		}
+		if user == "" && u.User != nil {
+			user = u.User.Username()
+			if pass == "" {
 				pass, _ = u.User.Password()
 			}
+		} else if pass == "" && u.User != nil {
+			pass, _ = u.User.Password()
+		}
+		if host == "" {
 			host = u.Hostname()
-			if db == "" {
-				db = strings.Trim(u.Path, "/")
-			}
+		}
+		if db == "" {
+			db = strings.Trim(u.Path, "/")
 		}
 	}
-	if host == "" {
+	if host == "" && name != "" {
 		host = "leader." + name + ".discoverd"
 	}
 	inst := &Instance{
-		ID:          firstNonEmpty(id, name),
-		App:         name,
-		AppUser:     user,
-		AppPassword: pass,
-		Nodes:       DefaultNodes,
+		ID:            firstNonEmpty(id, name),
+		App:           name,
+		AppUser:       user,
+		AppPassword:   pass,
+		Nodes:         DefaultNodes,
 		Role:          RolePrimary,
 		ServiceHost:   host,
 		EngineVersion: firstNonEmpty(env["ENGINE_VERSION"], env["POSTGRES_VERSION"]),

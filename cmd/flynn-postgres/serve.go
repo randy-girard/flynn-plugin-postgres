@@ -68,6 +68,11 @@ func ensureConnectIsolation(postgresBin string) error {
 	if err != nil {
 		return err
 	}
+	admin, err := postgres.AdminPrivilegesSQL(os.Getenv("POSTGRES_USER"))
+	if err != nil {
+		return err
+	}
+	sql = sql + admin
 	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
 	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
 		psql, "-h", "/tmp", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql)

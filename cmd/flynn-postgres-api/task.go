@@ -21,9 +21,14 @@ func pluginAPIBase() string {
 
 func runPluginTask(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: flynn-postgres-api task upgrade <resource>")
+		return fmt.Errorf("usage: flynn-postgres-api task upgrade <resource> | create-db <resource> <database> | info <resource>")
 	}
 	switch args[0] {
+	case "info":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: flynn-postgres-api task info <resource>")
+		}
+		return runInfoTask(strings.TrimSpace(args[1]))
 	case "upgrade":
 		target := ""
 		if len(args) > 1 {
@@ -33,9 +38,128 @@ func runPluginTask(args []string) error {
 			return fmt.Errorf("upgrade requires a postgres resource name")
 		}
 		return runUpgradeTask(target)
+	case "follow":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: flynn-postgres-api task follow <resource> <app>")
+		}
+		return runFollowTask(strings.TrimSpace(args[1]), strings.TrimSpace(args[2]))
+	case "create-db":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: flynn-postgres-api task create-db <resource> <database>")
+		}
+		return runCreateDBTask(strings.TrimSpace(args[1]), strings.TrimSpace(args[2]))
+	case "wait", "promote", "unfollow":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: flynn-postgres-api task %s <resource>", args[0])
+		}
+		return runInstanceActionTask(args[0], strings.TrimSpace(args[1]))
 	default:
 		return fmt.Errorf("unknown task %q", args[0])
 	}
+}
+
+func runFollowTask(leader, app string) error {
+	if leader == "" || app == "" {
+		return fmt.Errorf("follow requires a postgres resource and app name")
+	}
+	body, err := json.Marshal(map[string]string{"app": app})
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(pluginAPIBase()+"/databases/"+leader+"/follow", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("follow %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Env map[string]string `json:"env"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	name := ""
+	if out.Env != nil {
+		name = strings.TrimSpace(out.Env["FLYNN_POSTGRES"])
+	}
+	if name != "" {
+		fmt.Printf("started streaming follower %s of %s for %s\n", name, leader, app)
+		return nil
+	}
+	fmt.Printf("started streaming follower of %s for %s\n", leader, app)
+	return nil
+}
+
+func runCreateDBTask(resource, name string) error {
+	if resource == "" {
+		return fmt.Errorf("create-db requires a postgres resource name")
+	}
+	body, err := json.Marshal(map[string]string{"name": name})
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(pluginAPIBase()+"/databases/"+resource+"/databases", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("create-db %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("created database %s on %s\n", name, resource)
+	return nil
+}
+
+func runInfoTask(resource string) error {
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return fmt.Errorf("info requires a postgres resource name")
+	}
+	resp, err := http.Get(pluginAPIBase() + "/databases/" + resource)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("info %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var info postgres.Info
+	if err := json.Unmarshal(raw, &info); err != nil {
+		return fmt.Errorf("info decode: %w", err)
+	}
+	followers := "-"
+	if len(info.Followers) > 0 {
+		followers = strings.Join(info.Followers, ", ")
+	}
+	leader := strings.TrimSpace(info.LeaderID)
+	if leader == "" {
+		leader = "-"
+	}
+	fmt.Printf("app\t%s\nrole\t%s\nleader\t%s\nfollowers\t%s\nlag_bytes\t%d\nengine\t%s\nhost\t%s\n",
+		info.App, info.Role, leader, followers, info.LagBytes, info.EngineVersion, info.Host)
+	return nil
+}
+
+func runInstanceActionTask(action, resource string) error {
+	action = strings.TrimSpace(action)
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return fmt.Errorf("%s requires a postgres resource name", action)
+	}
+	resp, err := http.Post(pluginAPIBase()+"/databases/"+resource+"/"+action, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("%s %s: %s", action, resp.Status, strings.TrimSpace(string(raw)))
+	}
+	fmt.Printf("%s %s\n", action, resource)
+	return nil
 }
 
 func runUpgradeTask(target string) error {

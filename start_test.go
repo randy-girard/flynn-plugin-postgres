@@ -42,6 +42,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		CLI struct {
 			ResourceEnv string `json:"resource_env"`
 			Actions     []struct {
+				Name string   `json:"name"`
 				Args []string `json:"args"`
 			} `json:"actions"`
 		} `json:"cli"`
@@ -53,7 +54,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		t.Fatalf("resource_env=%q, want the instance app name", cli.CLI.ResourceEnv)
 	}
 	var psqlArgs []string
-	var hasUpgrade bool
+	var hasUpgrade, hasCreate, hasDump, hasFollow, hasInfo bool
 	for _, a := range cli.CLI.Actions {
 		joined := strings.Join(a.Args, " ")
 		if strings.Contains(joined, "POSTGRES_URL") {
@@ -62,6 +63,18 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		if strings.Contains(joined, "task upgrade") {
 			hasUpgrade = true
 		}
+		if a.Name == "create" && strings.Contains(joined, "task create-db") {
+			hasCreate = true
+		}
+		if strings.Contains(joined, "pg_dump") {
+			hasDump = true
+		}
+		if strings.Contains(joined, "task follow") {
+			hasFollow = true
+		}
+		if a.Name == "info" && strings.Contains(joined, "task info") {
+			hasInfo = true
+		}
 	}
 	if len(psqlArgs) == 0 {
 		t.Fatal("psql action missing POSTGRES_URL")
@@ -69,8 +82,46 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if !hasUpgrade {
 		t.Fatal("upgrade action must run flynn-postgres-api task upgrade")
 	}
+	if !hasCreate {
+		t.Fatal("create action must run flynn-postgres-api task create-db")
+	}
+	if !hasDump {
+		t.Fatal("dump action must run pg_dump")
+	}
+	if !hasFollow {
+		t.Fatal("follow action must run flynn-postgres-api task follow")
+	}
+	if !hasInfo {
+		t.Fatal("info action must run flynn-postgres-api task info")
+	}
 	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "upgrade"}, true, "", false); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "create", "shop_analytics"}, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "dump", "-f", "postgres.dump"}, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "follow"}, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	task, err := os.ReadFile("cmd/flynn-postgres-api/task.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(task), `/databases/`) || !strings.Contains(string(task), `/follow`) {
+		t.Fatal("pg follow must POST /databases/<leader>/follow so the API can attach via the controller")
+	}
+	main, err := os.ReadFile("cmd/flynn-postgres-api/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(main), "ProvisionResource") {
+		t.Fatal("follow must attach the replica through controller ProvisionResource")
+	}
+	if strings.Contains(manifest.CLI.Doc, "[--replication") {
+		t.Fatal("followers always stream; replication mode is not a follow flag")
 	}
 }
 

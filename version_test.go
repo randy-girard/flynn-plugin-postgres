@@ -36,8 +36,20 @@ func TestNeedsEngineUpgrade(t *testing.T) {
 	if !NeedsEngineUpgrade("16", "17") {
 		t.Fatal("major bump")
 	}
-	if !NeedsEngineUpgrade("", "16") {
-		t.Fatal("unknown installed version is an upgrade")
+	if NeedsEngineUpgrade("", "16") {
+		t.Fatal("unknown installed version is not an upgrade")
+	}
+	if NeedsEngineUpgrade("16", "") {
+		t.Fatal("plugin must provide the available engine version")
+	}
+}
+
+func TestSameEngineVersion(t *testing.T) {
+	if !SameEngineVersion("16", "16") || !SameEngineVersion("", "16") || !SameEngineVersion("16", "") {
+		t.Fatal("same or unknown must match")
+	}
+	if SameEngineVersion("16", "17") {
+		t.Fatal("major mismatch")
 	}
 }
 
@@ -57,5 +69,21 @@ func TestVersionReportMarksStaleInstance(t *testing.T) {
 	}
 	if len(rep.Instances) != 1 || !rep.Instances[0].UpgradeAvailable || rep.Instances[0].Version != "16" {
 		t.Fatalf("%+v", rep.Instances)
+	}
+}
+
+func TestVersionReportNoUpgradeWhenInstanceVersionUnknown(t *testing.T) {
+	t.Setenv("ENGINE_VERSION", "16")
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.byID[leader.ID].EngineVersion = ""
+	s.mu.Unlock()
+	rep := s.VersionReport()
+	if rep.UpgradeAvailable {
+		t.Fatalf("blank instance version must not advertise an upgrade: %+v", rep)
 	}
 }

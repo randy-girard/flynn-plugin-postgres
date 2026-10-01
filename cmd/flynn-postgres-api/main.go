@@ -88,6 +88,7 @@ func newHandler(store *postgres.Store) *handler {
 	h.router.POST("/databases/:id/databases", h.addDatabase)
 	h.router.POST("/databases/:id/write", h.write)
 	h.router.POST("/databases/:id/wait", h.wait)
+	h.router.POST("/databases/:id/follow", h.follow)
 	h.router.POST("/databases/:id/promote", h.promote)
 	h.router.POST("/databases/:id/unfollow", h.unfollow)
 	h.router.POST("/databases/:id/attach", h.attach)
@@ -171,6 +172,10 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 	}
 	inst, err := h.store.Get(id)
 	if err != nil {
+		if errors.Is(err, postgres.ErrNotFound) {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		writeAPIError(w, err)
 		return
 	}
@@ -239,12 +244,13 @@ func (h *handler) addUser(w http.ResponseWriter, r *http.Request, p httprouter.P
 	var body struct {
 		Name     string `json:"name"`
 		Password string `json:"password"`
+		Database string `json:"database"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	if err := h.store.AddUser(p.ByName("id"), body.Name, body.Password); err != nil {
+	if err := h.createUserOnInstance(p.ByName("id"), body.Name, body.Password, body.Database); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -268,7 +274,7 @@ func (h *handler) addDatabase(w http.ResponseWriter, r *http.Request, p httprout
 		writeAPIError(w, err)
 		return
 	}
-	if err := h.store.AddDatabase(p.ByName("id"), body.Name); err != nil {
+	if err := h.createLogicalDatabase(p.ByName("id"), body.Name); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -302,6 +308,82 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request, p httprouter.Para
 	w.WriteHeader(http.StatusOK)
 }
 
+func (h *handler) follow(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	var body struct {
+		App     string `json:"app"`
+		Runtime string `json:"runtime"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	env, err := h.provisionFollow(strings.TrimSpace(body.App), "", strings.TrimSpace(p.ByName("id")), strings.TrimSpace(body.Runtime))
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	httphelper.JSON(w, 200, map[string]any{"env": env})
+}
+
+// provisionFollow creates a streaming replica the same way the dashboard does:
+// controller ProvisionResource so flynn pg / flynn resource list the follower.
+func (h *handler) provisionFollow(appName, appRef, leader, runtime string) (map[string]string, error) {
+	appName = strings.TrimSpace(appName)
+	leader = strings.TrimSpace(leader)
+	if appName == "" || leader == "" {
+		return nil, fmt.Errorf("follow requires a postgres resource and app name")
+	}
+	if strings.TrimSpace(appRef) == "" {
+		appRef = appName
+	}
+	if h.client != nil {
+		p, err := h.client.GetProvider("postgres")
+		if err != nil {
+			return nil, err
+		}
+		cfg, err := json.Marshal(provisionBody{
+			App:         appName,
+			Follow:      leader,
+			Runtime:     runtime,
+			Replication: string(postgres.ModeStreaming),
+		})
+		if err != nil {
+			return nil, err
+		}
+		raw := json.RawMessage(cfg)
+		res, err := h.client.ProvisionResource(&ct.ResourceReq{
+			ProviderID: p.ID,
+			Apps:       []string{appRef},
+			Config:     &raw,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if res == nil {
+			return nil, fmt.Errorf("follow: empty resource")
+		}
+		return res.Env, nil
+	}
+	inst, env, err := h.store.Provision(postgres.ProvisionRequest{
+		App:     appName,
+		Follow:  leader,
+		Mode:    postgres.ModeStreaming,
+		Runtime: runtime,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	var leaderInst *postgres.Instance
+	if inst != nil && inst.LeaderID != "" {
+		leaderInst, _ = h.store.Get(inst.LeaderID)
+	}
+	applyPostgresResourceEnv(inst, env, leaderInst)
+	return env, nil
+}
+
 func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
 	res, err := h.store.Promote(p.ByName("id"))
 	if err != nil {
@@ -317,6 +399,7 @@ func (h *handler) unfollow(w http.ResponseWriter, _ *http.Request, p httprouter.
 		writeAPIError(w, err)
 		return
 	}
+	h.syncResourceEnv(nil, inst)
 	httphelper.JSON(w, 200, inst)
 }
 
@@ -391,6 +474,11 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 	}
 	if inst.AppUser != "" {
 		env["PGUSER"] = inst.AppUser
+		env["POSTGRES_USER"] = inst.AppUser
+	}
+	if inst.AppPassword != "" {
+		env["PGPASSWORD"] = inst.AppPassword
+		env["POSTGRES_PASSWORD"] = inst.AppPassword
 	}
 	if inst.ServiceHost != "" {
 		env["PGHOST"] = inst.ServiceHost

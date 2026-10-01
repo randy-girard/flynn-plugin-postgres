@@ -129,6 +129,44 @@ func TestHTTPProvisionFollowStampsRole(t *testing.T) {
 	}
 }
 
+func TestHTTPFollowRouteAttachesReplica(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("leader status %d %s", rec.Code, rec.Body.String())
+	}
+	var leader struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &leader); err != nil {
+		t.Fatal(err)
+	}
+	name := leader.Env["FLYNN_POSTGRES"]
+	if name == "" {
+		t.Fatalf("leader env %#v", leader.Env)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases/"+name+"/follow", strings.NewReader(`{"app":"shop"}`))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("follow status %d %s", rec.Code, rec.Body.String())
+	}
+	var fol struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err != nil {
+		t.Fatal(err)
+	}
+	if fol.Env["POSTGRES_ROLE"] != "follower" || fol.Env["POSTGRES_LEADER"] != name {
+		t.Fatalf("follower env %#v", fol.Env)
+	}
+	if fol.Env["FLYNN_POSTGRES"] == "" || fol.Env["FLYNN_POSTGRES"] == name {
+		t.Fatalf("follower instance %#v", fol.Env)
+	}
+}
+
 func TestHTTPEnvSetRejected(t *testing.T) {
 	h := newHandler(postgres.NewStore())
 	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
@@ -148,6 +186,16 @@ func TestHTTPEnvSetRejected(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "attached") {
 		t.Fatalf("body: %s", rec.Body.String())
+	}
+}
+
+func TestHTTPDeprovisionMissingIsOK(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodDelete, "/databases?id=pg-missing-xxxxxx", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("missing deprovision should be ok, got %d %s", rec.Code, rec.Body.String())
 	}
 }
 

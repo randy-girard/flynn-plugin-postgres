@@ -25,8 +25,8 @@ sudo flynn-host plugin:install https://github.com/randy-girard/flynn-plugin-post
 ```text
 flynn resource:add postgres
 flynn resource:add postgres --as ANALYTICS
-flynn resource:add postgres --follow <resource> --replication streaming
-flynn resource:add postgres --follow <resource> --replication logical --runtime perf-l
+flynn resource:add postgres --follow <resource>
+flynn resource:add postgres --follow <resource> --runtime perf-l
 ```
 
 `--as ANALYTICS` sets only `ANALYTICS_URL`. The default name `DATABASE` sets
@@ -38,34 +38,35 @@ Inside one instance the owner can add databases and users. Those roles exist
 only in that instance. Two resources do not share an app, volume, superuser,
 or any credential that can read the other instance.
 
-A follower is a new resource, not an extra node. It copies the leader and stays
-caught up. It is read-only. A follower cannot follow another follower. Its
-`--as` name does not replace the leader URL. `pg:promote` makes it writable,
-ends the follow, and rewrites the primary attachment `*_URL`. The old leader
-remains its own resource. `pg:unfollow` stops replication and leaves a
-standalone writable copy that no longer receives leader writes.
+A follower is a new resource, not an extra node. It copies the leader with
+streaming replication and must run the same engine version. It is read-only.
+A follower cannot follow another follower. Its `--as` name does not replace
+the leader URL. `pg:promote` makes it writable, ends the follow, and rewrites
+the primary attachment `*_URL`. The old leader remains its own resource.
+`pg:unfollow` stops replication and leaves a standalone writable copy that no
+longer receives leader writes.
 
-There is no in-place resize or upgrade. `flynn pg:upgrade` (and
-`flynn-host plugin:update postgres`) follows, waits until caught up, then
-promotes in the background. `streaming` is same-major replication. `logical`
-is the major-upgrade mode. Both are recorded on the follower. Runtime sizing
-is a name string.
+There is no in-place resize or upgrade. `flynn pg:upgrade` (and dashboard
+Upgrade) uses logical replication, promotes a new primary, then recreates
+each follower against that primary. Runtime sizing is a name string.
 
 | Command | Purpose |
 | --- | --- |
 | `flynn pg:info` | Leader, followers, and lag |
-| `flynn pg:follow` | New read-only follower resource |
+| `flynn pg create <name>` | `CREATE DATABASE` on this instance |
+| `flynn pg:follow` | New streaming follower (same engine version) |
 | `flynn pg:wait` | Block until lag is zero |
 | `flynn pg:promote` | Writable primary; rewrite the primary URL |
-| `flynn pg:upgrade` | Follow, wait, and promote in the background |
+| `flynn pg:upgrade` | Logical follow, wait, promote, recreate followers |
+| `flynn pg dump` / `pg restore` | Custom-format dump of this instance |
 | `flynn pg:psql` | `psql` against this instance's URL only |
 
 The dashboard pages (overview, databases, users, backup, follow) are served by
 this plugin. A signed-in app sees only its own instances.
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes
-(`pg_dumpall` is the platform appliance only). There is no user `flynn pg:dump`;
-use the dashboard Backup page or `pg_dump` against `DATABASE_URL`.
+(`pg_dumpall` is the platform appliance only). Use the dashboard Backup page
+or `flynn pg dump` / `flynn pg restore` against this instance.
 
 ## State machine
 
@@ -81,3 +82,14 @@ docker compose up
 
 Open `http://localhost:8091/dashboard/?app_id=demo`. Compose is not part of
 plugin install.
+
+## Cluster e2e
+
+Live-cluster coverage for CLI and the dashboard lives in `cluster/`. The web
+suite drives Chromium via Playwright. It is not run by `go test ./...`.
+
+```text
+cluster/run.sh --cluster local --web-only --headed
+```
+
+See `cluster/README.md`.

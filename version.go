@@ -27,15 +27,25 @@ func LogEngineVersion(w io.Writer) {
 	fmt.Fprintf(w, "flynn-plugin-postgres engine version %s\n", EngineVersion())
 }
 
-// NeedsEngineUpgrade is true when an instance is not on the image's engine version.
+// NeedsEngineUpgrade is true when the plugin image ships a different engine
+// than a known instance version. An empty installed version is not an upgrade:
+// the plugin has not reported what that instance is running yet.
+// SameEngineVersion is true when both sides are empty or they match.
+// Followers require this; a mismatch is an upgrade, not a streaming replica.
+func SameEngineVersion(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return true
+	}
+	return a == b
+}
+
 func NeedsEngineUpgrade(installed, available string) bool {
 	available = strings.TrimSpace(available)
-	if available == "" {
-		return false
-	}
 	installed = strings.TrimSpace(installed)
-	if installed == "" {
-		return true
+	if available == "" || installed == "" {
+		return false
 	}
 	return installed != available
 }
@@ -52,10 +62,10 @@ type InstanceVersion struct {
 
 // VersionReport is GET /version for the dashboard.
 type VersionReport struct {
-	Engine           string             `json:"engine"`
-	ImageVersion     string             `json:"image_version"`
-	UpgradeAvailable bool               `json:"upgrade_available"`
-	Instances        []InstanceVersion  `json:"instances"`
+	Engine           string            `json:"engine"`
+	ImageVersion     string            `json:"image_version"`
+	UpgradeAvailable bool              `json:"upgrade_available"`
+	Instances        []InstanceVersion `json:"instances"`
 }
 
 // VersionReport lists each stored instance against the current plugin image.

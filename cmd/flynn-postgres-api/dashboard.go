@@ -31,10 +31,20 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/", wrap(h.dashOverview))
 	h.router.GET("/dashboard/card", wrap(h.dashCard))
 	h.router.GET("/dashboard/databases", wrap(h.dashDatabases))
+	h.router.POST("/dashboard/databases", wrap(h.dashDatabases))
 	h.router.GET("/dashboard/users", wrap(h.dashUsers))
+	h.router.POST("/dashboard/users", wrap(h.dashUsers))
 	h.router.GET("/dashboard/backup", wrap(h.dashBackup))
 	h.router.GET("/dashboard/replication", wrap(h.dashReplication))
 	h.router.POST("/dashboard/replication", wrap(h.dashReplication))
+	h.router.GET("/dashboard/api/databases", wrap(h.dashListDatabases))
+	h.router.POST("/dashboard/api/databases", wrap(h.dashCreateDatabase))
+	h.router.GET("/dashboard/api/users", wrap(h.dashListUsers))
+	h.router.POST("/dashboard/api/users", wrap(h.dashCreateUser))
+	h.router.POST("/dashboard/api/users/drop", wrap(h.dashDropUser))
+	h.router.GET("/dashboard/api/dump", wrap(h.dashDump))
+	h.router.POST("/dashboard/api/dump", wrap(h.dashDump))
+	h.router.POST("/dashboard/api/restore", wrap(h.dashRestore))
 }
 
 func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
@@ -178,25 +188,22 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 		return nil
 	}
 	name := strings.TrimSpace(env["FLYNN_POSTGRES"])
-	db := databaseNameFromEnv(env)
-	role := postgres.RolePrimary
+	inst := postgres.InstanceFromEnv(r.ID, name, env)
+	if inst == nil {
+		return nil
+	}
+	inst.Tenant = app
+	inst.Attachments = []postgres.Attachment{{
+		App: app,
+		Env: env,
+	}}
 	leader := strings.TrimSpace(env["POSTGRES_LEADER"])
+	if leader != "" {
+		inst.LeaderID = leader
+	}
 	if strings.EqualFold(strings.TrimSpace(env["POSTGRES_ROLE"]), "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
-		role = postgres.RoleFollower
-	}
-	inst := &postgres.Instance{
-		ID:       r.ID,
-		App:      name,
-		Role:     role,
-		LeaderID: leader,
-		ReadOnly: role == postgres.RoleFollower,
-		Attachments: []postgres.Attachment{{
-			App: app,
-			Env: env,
-		}},
-	}
-	if db != "" {
-		inst.Databases = []postgres.Database{{Name: db}}
+		inst.Role = postgres.RoleFollower
+		inst.ReadOnly = true
 	}
 	for _, aid := range r.Apps {
 		if aid != "" && aid != app {
@@ -288,45 +295,377 @@ func mergeDetails(base map[string]string, extra map[string]string) map[string]st
 	return out
 }
 
-func (h *handler) dashDatabases(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+func (h *handler) dashDatabases(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	notice := ""
+	if r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		msg, err := h.createDatabaseFromRequest(r, sess)
+		if wantsJSON(r) {
+			if err != nil {
+				writeAPIError(w, err)
+				return
+			}
+			dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+			return
+		}
+		if err != nil {
+			notice = `<p class="banner">` + html.EscapeString(err.Error()) + `</p>`
+		} else {
+			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
+		}
+	}
+	insts := h.instancesFor(sess)
 	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Databases</h2><table><tr><th>Instance</th><th>Database</th><th>Role</th></tr>`)
-	for _, inst := range h.instancesFor(sess) {
+	b.WriteString(notice)
+	b.WriteString(`<div class="card"><h2>Databases</h2>`)
+	b.WriteString(`<p>These are logical databases on the Postgres server (<code>CREATE DATABASE</code>), not a new Flynn resource. Provision a new instance from the app Resources tab.</p>`)
+	b.WriteString(h.dashCreateDatabaseForm(insts))
+	b.WriteString(`<table><tr><th>Database</th><th>Instance</th><th>Role</th></tr>`)
+	rows := 0
+	for _, inst := range insts {
 		role := string(inst.Role)
 		if role == "" {
 			role = string(postgres.RolePrimary)
 		}
-		if len(inst.Databases) == 0 {
-			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td class="muted">—</td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(role))
+		dbs := inst.Databases
+		if len(dbs) == 0 {
+			fmt.Fprintf(&b, `<tr><td class="muted">—</td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(role))
+			rows++
 			continue
 		}
-		for _, db := range inst.Databases {
-			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(db.Name), html.EscapeString(role))
+		for _, db := range dbs {
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(db.Name), html.EscapeString(inst.App), html.EscapeString(role))
+			rows++
 		}
 	}
-	b.WriteString(`</table><p class="muted">Each attached resource is one instance. A --follow replica is listed even when it copies the leader database.</p></div>`)
+	if rows == 0 {
+		b.WriteString(`<tr><td colspan="3" class="muted">No Postgres instance is attached yet.</td></tr>`)
+	}
+	b.WriteString(`</table><p class="muted">Same as <code>flynn pg create &lt;name&gt;</code>. Followers copy every database on the primary; create new ones on the primary only.</p></div>`)
 	writeDash(w, sess, "Databases", b.String())
 }
 
-func (h *handler) dashUsers(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+func (h *handler) dashCreateDatabaseForm(insts []*postgres.Instance) string {
+	var primaries []*postgres.Instance
+	for _, inst := range insts {
+		if inst == nil || inst.Role == postgres.RoleFollower || inst.ReadOnly {
+			continue
+		}
+		primaries = append(primaries, inst)
+	}
+	if len(primaries) == 0 {
+		return `<p class="muted">Attach a primary Postgres resource before creating a database.</p>`
+	}
 	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Users</h2><table><tr><th>Instance</th><th>User</th></tr>`)
-	for _, inst := range h.instancesFor(sess) {
-		for _, u := range inst.Users {
-			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td></tr>`, html.EscapeString(inst.App), html.EscapeString(u.Name))
+	b.WriteString(`<form method="post" class="stack" style="margin:0 0 1rem">`)
+	if len(primaries) > 1 {
+		b.WriteString(`<label>Instance<select name="instance">`)
+		for _, inst := range primaries {
+			ref := instanceRef(inst)
+			label := inst.App
+			if label == "" {
+				label = ref
+			}
+			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
+		}
+		b.WriteString(`</select></label>`)
+	} else {
+		fmt.Fprintf(&b, `<input type="hidden" name="instance" value="%s">`, html.EscapeString(instanceRef(primaries[0])))
+	}
+	b.WriteString(`<label>Database name<input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,62}" placeholder="shop_analytics" autocomplete="off"></label>`)
+	b.WriteString(`<button class="primary" type="submit">Create database</button>`)
+	b.WriteString(`</form>`)
+	return b.String()
+}
+
+func (h *handler) dashUsers(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	notice := ""
+	if r.Method == http.MethodPost {
+		msg, err := h.createUserFromRequest(r, sess)
+		if wantsJSON(r) {
+			if err != nil {
+				writeAPIError(w, err)
+				return
+			}
+			dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+			return
+		}
+		if err != nil {
+			notice = `<p class="banner">` + html.EscapeString(err.Error()) + `</p>`
+		} else {
+			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
 		}
 	}
-	b.WriteString(`</table><p class="muted">Users exist only in that instance. The platform appliance superuser is not listed.</p></div>`)
+	users := h.collectUsers(sess)
+	var b strings.Builder
+	b.WriteString(notice)
+	b.WriteString(`<div class="card"><h2>Users</h2>`)
+	b.WriteString(`<p>Application logins on this Postgres instance. Create a role and grant it on a logical database. The instance PGUSER is listed; the platform superuser is not.</p>`)
+	b.WriteString(h.dashCreateUserForm(h.instancesFor(sess)))
+	b.WriteString(`<table><tr><th>User</th><th>Database</th><th>Instance</th></tr>`)
+	if len(users) == 0 {
+		b.WriteString(`<tr><td colspan="3" class="muted">No application users yet.</td></tr>`)
+	}
+	for _, u := range users {
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td><code>%s</code></td></tr>`,
+			html.EscapeString(u.Name), html.EscapeString(u.Database), html.EscapeString(u.Instance))
+	}
+	b.WriteString(`</table></div>`)
 	writeDash(w, sess, "Users", b.String())
 }
 
-func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
-	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Backup</h2><p>Dump this instance only. There is no in-place upgrade. To move or resize, follow, wait, then promote.</p><ul>`)
-	for _, inst := range h.instancesFor(sess) {
-		fmt.Fprintf(&b, `<li><code>%s</code> volume <code>%s</code> rows %d</li>`, html.EscapeString(inst.App), html.EscapeString(inst.Volume), len(inst.Rows))
+func (h *handler) dashCreateUserForm(insts []*postgres.Instance) string {
+	var primaries []*postgres.Instance
+	for _, inst := range insts {
+		if inst == nil || inst.Role == postgres.RoleFollower || inst.ReadOnly {
+			continue
+		}
+		primaries = append(primaries, inst)
 	}
-	b.WriteString(`</ul></div>`)
+	if len(primaries) == 0 {
+		return `<p class="muted">Attach a primary Postgres resource before adding a user.</p>`
+	}
+	var dbs []string
+	seen := map[string]bool{}
+	for _, inst := range primaries {
+		for _, db := range inst.Databases {
+			if db.Name == "" || seen[db.Name] {
+				continue
+			}
+			seen[db.Name] = true
+			dbs = append(dbs, db.Name)
+		}
+	}
+	var b strings.Builder
+	b.WriteString(`<form method="post" action="api/users" class="stack" style="margin:0 0 1rem">`)
+	if len(primaries) > 1 {
+		b.WriteString(`<label>Instance<select name="instance">`)
+		for _, inst := range primaries {
+			ref := instanceRef(inst)
+			label := inst.App
+			if label == "" {
+				label = ref
+			}
+			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
+		}
+		b.WriteString(`</select></label>`)
+	} else {
+		fmt.Fprintf(&b, `<input type="hidden" name="instance" value="%s">`, html.EscapeString(instanceRef(primaries[0])))
+	}
+	b.WriteString(`<label>Username<input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,62}" placeholder="app_reader" autocomplete="off"></label>`)
+	b.WriteString(`<label>Password<input name="password" type="password" required autocomplete="new-password"></label>`)
+	if len(dbs) > 0 {
+		b.WriteString(`<label>Database<select name="database">`)
+		for _, db := range dbs {
+			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(db), html.EscapeString(db))
+		}
+		b.WriteString(`</select></label>`)
+	} else {
+		b.WriteString(`<label>Database<input name="database" required pattern="[A-Za-z_][A-Za-z0-9_]{0,62}" placeholder="appdb"></label>`)
+	}
+	b.WriteString(`<button class="primary" type="submit">Create user</button>`)
+	b.WriteString(`</form>`)
+	return b.String()
+}
+
+type userView struct {
+	Name     string `json:"name"`
+	Database string `json:"database,omitempty"`
+	Instance string `json:"instance,omitempty"`
+}
+
+func (h *handler) collectUsers(sess *dashui.Session) []userView {
+	var out []userView
+	seen := map[string]bool{}
+	add := func(u userView) {
+		u.Name = strings.TrimSpace(u.Name)
+		if u.Name == "" {
+			return
+		}
+		key := strings.ToLower(u.Name) + "\x00" + u.Database + "\x00" + u.Instance
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, u)
+	}
+	for _, inst := range h.instancesFor(sess) {
+		if inst == nil {
+			continue
+		}
+		db := ""
+		if len(inst.Databases) > 0 {
+			db = inst.Databases[0].Name
+		}
+		ref := instanceRef(inst)
+		if inst.AppUser != "" {
+			add(userView{Name: inst.AppUser, Database: db, Instance: inst.App})
+		}
+		if h.live() {
+			for _, u := range listUsersOnInstance(inst) {
+				add(userView{Name: u.Name, Database: firstNonEmpty(u.Database, db), Instance: inst.App})
+			}
+		}
+		if h.store != nil {
+			seenKeys := map[string]bool{}
+			for _, key := range []string{ref, inst.App, inst.ID} {
+				key = strings.TrimSpace(key)
+				if key == "" || seenKeys[key] {
+					continue
+				}
+				seenKeys[key] = true
+				stored, err := h.store.Users(key)
+				if err != nil {
+					continue
+				}
+				for _, u := range stored {
+					add(userView{Name: u.Name, Database: firstNonEmpty(u.Database, db), Instance: inst.App})
+				}
+			}
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (h *handler) dashListUsers(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	out := h.collectUsers(sess)
+	if out == nil {
+		out = []userView{}
+	}
+	dashui.WriteJSON(w, 200, out)
+}
+
+func (h *handler) dashCreateUser(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	msg, err := h.createUserFromRequest(r, sess)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if wantsJSON(r) {
+		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+		return
+	}
+	http.Redirect(w, r, "users", http.StatusSeeOther)
+}
+
+func (h *handler) dashDropUser(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	name, _, database, id, err := h.readUserBody(r)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if id == "" {
+		id = h.primaryRef(sess)
+	}
+	if id == "" {
+		writeAPIError(w, fmt.Errorf("choose a primary instance"))
+		return
+	}
+	if err := h.dropUserOnInstance(id, name, database); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if wantsJSON(r) {
+		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": "Dropped user " + name})
+		return
+	}
+	http.Redirect(w, r, "users", http.StatusSeeOther)
+}
+
+func (h *handler) createUserFromRequest(r *http.Request, sess *dashui.Session) (string, error) {
+	name, password, database, id, err := h.readUserBody(r)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		id = h.primaryRef(sess)
+	}
+	if id == "" {
+		return "", fmt.Errorf("choose a primary instance")
+	}
+	if err := h.createUserOnInstance(id, name, password, database); err != nil {
+		return "", err
+	}
+	return "Created user " + name, nil
+}
+
+func (h *handler) readUserBody(r *http.Request) (name, password, database, instance string, err error) {
+	if r != nil && strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "json") {
+		var body struct {
+			Name     string `json:"name"`
+			Password string `json:"password"`
+			Database string `json:"database"`
+			Instance string `json:"instance"`
+		}
+		if err := decode(r, &body); err != nil {
+			return "", "", "", "", err
+		}
+		return strings.TrimSpace(body.Name), body.Password, strings.TrimSpace(body.Database), strings.TrimSpace(body.Instance), nil
+	}
+	if r != nil {
+		_ = r.ParseForm()
+		return strings.TrimSpace(r.FormValue("name")), r.FormValue("password"), strings.TrimSpace(r.FormValue("database")), strings.TrimSpace(r.FormValue("instance")), nil
+	}
+	return "", "", "", "", fmt.Errorf("missing request")
+}
+
+func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	insts := h.instancesFor(sess)
+	var b strings.Builder
+	b.WriteString(`<div class="card"><h2>Backup</h2>`)
+	b.WriteString(`<p>Download a custom-format dump of this instance, or restore one in place. Restore replaces data in the selected database and cannot be undone. This is not a Flynn cluster backup and does not include other apps.</p>`)
+	if len(insts) == 0 {
+		b.WriteString(`<p class="muted">Attach a Postgres resource before taking a backup.</p></div>`)
+		writeDash(w, sess, "Backup", b.String())
+		return
+	}
+	b.WriteString(`<div class="row" style="align-items:flex-start">`)
+	b.WriteString(`<div style="flex:1;min-width:16rem"><h3 style="font-size:.85rem;margin:0 0 .4rem">Download</h3>`)
+	b.WriteString(`<p class="muted">pg_dump custom format of the current database. Same as <code>flynn pg dump -f postgres.dump</code>.</p>`)
+	b.WriteString(`<div class="row"><button id="dump" class="primary" type="button">Download dump</button></div></div>`)
+	b.WriteString(`<div style="flex:1;min-width:16rem"><h3 style="font-size:.85rem;margin:0 0 .4rem">Restore</h3>`)
+	b.WriteString(`<p class="muted">Restore a dump taken from this instance. Same as <code>flynn pg restore -f postgres.dump</code>.</p>`)
+	b.WriteString(`<label>Dump file<input id="file" type="file" accept=".dump,.backup,.sql"></label>`)
+	b.WriteString(`<div class="row"><button id="restore" class="danger" type="button">Restore dump</button></div></div>`)
+	b.WriteString(`</div><pre id="out" class="muted" style="margin-top:1rem"></pre>`)
+	b.WriteString(`<ul class="muted">`)
+	for _, inst := range insts {
+		fmt.Fprintf(&b, `<li>Instance <code>%s</code>`, html.EscapeString(inst.App))
+		if inst.Volume != "" {
+			fmt.Fprintf(&b, ` · volume <code>%s</code>`, html.EscapeString(inst.Volume))
+		}
+		b.WriteString(`</li>`)
+	}
+	b.WriteString(`</ul></div>
+<script>
+document.getElementById('dump').onclick=async()=>{
+  const out=document.getElementById('out'); out.textContent='Preparing dump…';
+  const r=await fetch('api/dump');
+  if(!r.ok){ out.textContent=await r.text(); return; }
+  const blob=await r.blob();
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='postgres.dump'; a.click();
+  URL.revokeObjectURL(a.href); out.textContent='Dump downloaded.';
+};
+document.getElementById('restore').onclick=async()=>{
+  const f=document.getElementById('file').files[0];
+  const out=document.getElementById('out');
+  if(!f){ out.textContent='Choose a dump file to restore.'; return; }
+  if(!confirm('Restore '+f.name+'? This replaces existing data on this instance.')) return;
+  out.textContent='Restoring…';
+  const body=new FormData(); body.append('file', f); body.append('dump', f);
+  const r=await fetch('api/restore',{method:'POST',body});
+  out.textContent=r.ok ? 'Restore complete.' : await r.text();
+};
+</script>`)
 	writeDash(w, sess, "Backup", b.String())
 }
 
@@ -334,52 +673,464 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	notice := ""
 	if r.Method == http.MethodPost {
 		_ = r.ParseForm()
-		id := strings.TrimSpace(r.FormValue("instance"))
-		if id == "" {
-			notice = `<p class="banner">Choose a primary to upgrade.</p>`
-		} else if _, err := h.store.StartUpgrade(id, h.upgradeOptions("", "")); err != nil {
+		msg, err := h.dashReplicationResult(r, sess)
+		if wantsJSON(r) {
+			if err != nil {
+				writeAPIError(w, err)
+				return
+			}
+			dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+			return
+		}
+		if err != nil {
 			notice = `<p class="banner">` + html.EscapeString(err.Error()) + `</p>`
 		} else {
-			notice = `<p class="ok">Upgrade started. It promotes a new primary on the current plugin image, then recreates each follower against that primary. The old leader stays as its own resource.</p>`
+			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
 		}
 	}
+	insts := h.instancesFor(sess)
 	var b strings.Builder
 	b.WriteString(notice)
-	b.WriteString(`<div class="card"><h2>Follow</h2><p>A follower is a separate resource with one node. It is read-only until promote or unfollow. Streaming copies the same major version. Logical replication is the major-upgrade path. <code>pg:upgrade</code> and dashboard Upgrade walk the whole topology: new primary first, then each follower is recreated against that primary.</p>`)
-	b.WriteString(`<table><tr><th>App</th><th>Role</th><th>Leader</th><th>Followers</th><th>Lag</th><th>Runtime</th><th>Mode</th><th></th></tr>`)
+	b.WriteString(`<div class="card"><h2>Followers</h2><p>A follower is a separate read-only resource. Adding one always uses <strong>streaming</strong> replication and requires the same engine version as the primary. Wait until lag is zero, then promote it to take over or unfollow to keep a standalone writable copy.</p>`)
+	b.WriteString(`<p class="muted">Major-version upgrades are a separate action: they use logical replication, promote a new primary, then recreate each follower against that primary.</p>`)
+	b.WriteString(h.dashAddFollowerForm(insts))
+	rows := 0
+	b.WriteString(`<table><tr><th>Instance</th><th>Database</th><th>Lag</th><th></th></tr>`)
+	for _, inst := range insts {
+		view := h.replicationView(inst)
+		if !strings.EqualFold(view.Role, string(postgres.RoleFollower)) {
+			continue
+		}
+		db := ""
+		if inst != nil && len(inst.Databases) > 0 {
+			db = inst.Databases[0].Name
+		}
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td>%s</td></tr>`,
+			html.EscapeString(view.App), html.EscapeString(db), view.Lag, view.Actions)
+		rows++
+	}
+	if rows == 0 {
+		b.WriteString(`<tr><td colspan="4" class="muted">No followers yet.</td></tr>`)
+	}
+	b.WriteString(`</table><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>.</p></div>`)
+	writeDash(w, sess, "Followers", b.String())
+}
+
+func wantsJSON(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(r.Header.Get("Accept")), "application/json") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
+}
+
+func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (string, error) {
+	action := strings.TrimSpace(r.FormValue("action"))
+	if action == "" {
+		action = "upgrade"
+	}
+	id := strings.TrimSpace(r.FormValue("instance"))
+	if id == "" {
+		switch action {
+		case "follow":
+			return "", fmt.Errorf("choose a primary to follow")
+		case "promote", "unfollow", "wait":
+			return "", fmt.Errorf("choose a follower")
+		default:
+			return "", fmt.Errorf("choose a primary to upgrade")
+		}
+	}
+	switch action {
+	case "follow":
+		if err := h.dashFollow(sess, id, r.FormValue("runtime")); err != nil {
+			return "", err
+		}
+		return "Follower started with streaming replication. It is read-only until you promote or unfollow it.", nil
+	case "promote":
+		res, err := h.store.Promote(id)
+		if err != nil {
+			return "", err
+		}
+		if res != nil {
+			h.syncResourceEnv(sess, res.Promoted)
+		}
+		return "Follower promoted. It is now the primary. The previous leader remains as its own resource.", nil
+	case "unfollow":
+		inst, err := h.store.Unfollow(id)
+		if err != nil {
+			return "", err
+		}
+		h.syncResourceEnv(sess, inst)
+		return "Replication stopped. This instance is a standalone writable copy.", nil
+	case "wait":
+		ctx, cancel := timeoutCtx(r)
+		defer cancel()
+		if err := h.store.Wait(ctx, id); err != nil {
+			return "", err
+		}
+		return "Follower lag is zero.", nil
+	default:
+		if _, err := h.store.StartUpgrade(id, h.upgradeOptions("", "")); err != nil {
+			return "", err
+		}
+		return "Upgrade started. It promotes a new primary on the current plugin image, then recreates each follower against that primary. The old leader stays as its own resource.", nil
+	}
+}
+
+func (h *handler) dashFollow(sess *dashui.Session, leader, runtime string) error {
+	app := sessApp(sess)
+	appRef := app
+	if sess != nil && sess.AppID != "" {
+		appRef = sess.AppID
+	}
+	_, err := h.provisionFollow(app, appRef, leader, runtime)
+	return err
+}
+
+func (h *handler) syncResourceEnv(sess *dashui.Session, inst *postgres.Instance) {
+	if h == nil || inst == nil || strings.TrimSpace(inst.App) == "" || h.client == nil {
+		return
+	}
+	app := sessApp(sess)
+	if sess != nil && strings.TrimSpace(sess.AppID) != "" {
+		app = sess.AppID
+	}
+	if app == "" {
+		app = strings.TrimSpace(inst.Tenant)
+	}
+	if app == "" && len(inst.Attachments) > 0 {
+		app = strings.TrimSpace(inst.Attachments[0].App)
+	}
+	if app == "" {
+		return
+	}
+	resources, err := h.appResources(app)
+	if err != nil {
+		return
+	}
+	for _, r := range resources {
+		if r == nil || r.Env == nil {
+			continue
+		}
+		if strings.TrimSpace(r.Env["FLYNN_POSTGRES"]) != inst.App {
+			continue
+		}
+		applyPostgresResourceEnv(inst, r.Env, nil)
+		if inst.Role != postgres.RoleFollower {
+			delete(r.Env, "POSTGRES_LEADER")
+			delete(r.Env, "POSTGRES_PRIMARY_URL")
+		}
+		_ = h.client.PutResource(r)
+		return
+	}
+}
+
+func sessApp(sess *dashui.Session) string {
+	if sess == nil {
+		return ""
+	}
+	if strings.TrimSpace(sess.AppName) != "" {
+		return sess.AppName
+	}
+	return sess.AppID
+}
+
+type replicationView struct {
+	App       string
+	Role      string
+	Leader    string
+	Followers []string
+	Lag       int64
+	Runtime   string
+	Mode      string
+	Actions   string
+}
+
+func (h *handler) replicationView(inst *postgres.Instance) replicationView {
+	v := replicationView{
+		App:       inst.App,
+		Role:      string(inst.Role),
+		Leader:    inst.LeaderID,
+		Followers: inst.Followers,
+		Lag:       inst.LagBytes,
+		Runtime:   inst.Runtime,
+		Mode:      string(inst.Mode),
+	}
+	if v.Role == "" {
+		v.Role = string(postgres.RolePrimary)
+	}
+	ref := instanceRef(inst)
+	if h.store != nil {
+		if info, err := h.store.Info(ref); err == nil {
+			v.Role = string(info.Role)
+			v.Leader = info.LeaderID
+			v.Followers = info.Followers
+			v.Lag = info.LagBytes
+			v.Runtime = info.Runtime
+			v.Mode = string(info.Mode)
+			if info.App != "" {
+				v.App = info.App
+			}
+		}
+	}
+	follower := strings.EqualFold(v.Role, string(postgres.RoleFollower))
+	if follower {
+		v.Actions = followerActionForms(ref)
+		return v
+	}
+	v.Actions = primaryActionForms(ref, h.store)
+	return v
+}
+
+func instanceRef(inst *postgres.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	if inst.App != "" {
+		return inst.App
+	}
+	return inst.ID
+}
+
+func primaryActionForms(ref string, store *postgres.Store) string {
+	if store != nil {
+		if task := store.LatestUpgrade(ref); task != nil && task.Status != postgres.TaskDone && task.Status != postgres.TaskFailed {
+			return `<span class="pill">` + html.EscapeString(task.Status) + `</span>`
+		}
+	}
+	esc := html.EscapeString(ref)
+	return `<form method="post" style="margin:0"><input type="hidden" name="action" value="upgrade"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit">Upgrade</button></form>`
+}
+
+func followerActionForms(ref string) string {
+	esc := html.EscapeString(ref)
+	return `<div class="row" style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">` +
+		`<form method="post" style="margin:0"><input type="hidden" name="action" value="promote"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit" onclick="return confirm('Promote this follower to primary? The previous leader stays as its own resource.')">Promote</button></form>` +
+		`<form method="post" style="margin:0"><input type="hidden" name="action" value="unfollow"><input type="hidden" name="instance" value="` + esc + `"><button class="danger" type="submit" onclick="return confirm('Stop replication and leave a standalone writable copy?')">Unfollow</button></form>` +
+		`</div>`
+}
+
+func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
+	var primaries []*postgres.Instance
+	for _, inst := range insts {
+		if inst == nil {
+			continue
+		}
+		role := inst.Role
+		if h.store != nil {
+			if info, err := h.store.Info(instanceRef(inst)); err == nil {
+				role = info.Role
+			}
+		}
+		if role == postgres.RoleFollower {
+			continue
+		}
+		primaries = append(primaries, inst)
+	}
+	if len(primaries) == 0 {
+		return `<p class="muted">Attach a primary Postgres resource before adding a follower.</p>`
+	}
+	var b strings.Builder
+	b.WriteString(`<form method="post" class="stack" style="margin:0 0 1rem">`)
+	b.WriteString(`<input type="hidden" name="action" value="follow">`)
+	b.WriteString(`<label>Primary<select name="instance">`)
+	for _, inst := range primaries {
+		ref := instanceRef(inst)
+		label := inst.App
+		if label == "" {
+			label = ref
+		}
+		fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
+	}
+	b.WriteString(`</select></label>`)
+	b.WriteString(`<p class="muted">Streaming replication on the same engine version. Use Upgrade on the primary for a major-version swap.</p>`)
+	b.WriteString(`<button class="primary" type="submit">Add follower</button>`)
+	b.WriteString(`</form>`)
+	return b.String()
+}
+
+type logicalDatabaseView struct {
+	Name     string `json:"name"`
+	Instance string `json:"instance,omitempty"`
+	Role     string `json:"role,omitempty"`
+}
+
+func (h *handler) dashListDatabases(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	var out []logicalDatabaseView
 	for _, inst := range h.instancesFor(sess) {
+		if inst == nil {
+			continue
+		}
 		role := string(inst.Role)
 		if role == "" {
 			role = string(postgres.RolePrimary)
 		}
-		leader := inst.LeaderID
-		followers := inst.Followers
-		lag := inst.LagBytes
-		runtime := inst.Runtime
-		mode := string(inst.Mode)
-		if h.store != nil {
-			if info, err := h.store.Info(inst.ID); err == nil {
-				role = string(info.Role)
-				leader = info.LeaderID
-				followers = info.Followers
-				lag = info.LagBytes
-				runtime = info.Runtime
-				mode = string(info.Mode)
-			}
+		for _, name := range h.databasesFor(inst) {
+			out = append(out, logicalDatabaseView{Name: name, Instance: inst.App, Role: role})
 		}
-		action := ""
-		if inst.Role != postgres.RoleFollower {
-			action = `<form method="post" style="margin:0"><input type="hidden" name="instance" value="` + html.EscapeString(inst.ID) + `"><button class="primary" type="submit">Upgrade</button></form>`
-			if task := h.store.LatestUpgrade(inst.ID); task != nil && task.Status != postgres.TaskDone && task.Status != postgres.TaskFailed {
-				action = `<span class="pill">` + html.EscapeString(task.Status) + `</span>`
-			}
-		}
-		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td></tr>`,
-			html.EscapeString(inst.App), html.EscapeString(role), html.EscapeString(leader),
-			html.EscapeString(strings.Join(followers, ", ")), lag, html.EscapeString(runtime), html.EscapeString(mode), action)
 	}
-	b.WriteString(`</table><p class="muted">Upgrade creates a follower on the current plugin image, waits until lag is zero, promotes, then recreates each old follower against the new primary. The old leader remains. pg:wait / pg:promote are still available for a follower you created yourself.</p></div>`)
-	writeDash(w, sess, "Followers", b.String())
+	if out == nil {
+		out = []logicalDatabaseView{}
+	}
+	dashui.WriteJSON(w, 200, out)
+}
+
+func (h *handler) databasesFor(inst *postgres.Instance) []string {
+	if inst == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if h.live() {
+		for _, name := range listDatabasesOnInstance(inst) {
+			add(name)
+		}
+	}
+	for _, db := range inst.Databases {
+		add(db.Name)
+	}
+	if h.store != nil {
+		if stored, err := h.store.Get(instanceRef(inst)); err == nil {
+			for _, db := range stored.Databases {
+				add(db.Name)
+			}
+		}
+	}
+	return out
+}
+
+func (h *handler) dashCreateDatabase(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	msg, err := h.createDatabaseFromRequest(r, sess)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if wantsJSON(r) {
+		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+		return
+	}
+	http.Redirect(w, r, "databases", http.StatusSeeOther)
+}
+
+func (h *handler) createDatabaseFromRequest(r *http.Request, sess *dashui.Session) (string, error) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	id := strings.TrimSpace(r.FormValue("instance"))
+	if name == "" && strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "json") {
+		var body struct {
+			Name     string `json:"name"`
+			Instance string `json:"instance"`
+		}
+		if err := decode(r, &body); err != nil {
+			return "", err
+		}
+		name = strings.TrimSpace(body.Name)
+		if id == "" {
+			id = strings.TrimSpace(body.Instance)
+		}
+	}
+	if id == "" {
+		id = h.primaryRef(sess)
+	}
+	if id == "" {
+		return "", fmt.Errorf("choose a primary instance")
+	}
+	if err := h.createLogicalDatabase(id, name); err != nil {
+		return "", err
+	}
+	return "Created database " + name, nil
+}
+
+func (h *handler) primaryRef(sess *dashui.Session) string {
+	for _, inst := range h.instancesFor(sess) {
+		if inst == nil || inst.Role == postgres.RoleFollower || inst.ReadOnly {
+			continue
+		}
+		return instanceRef(inst)
+	}
+	return ""
+}
+
+func (h *handler) dumpTarget(sess *dashui.Session) (*postgres.Instance, error) {
+	var primary *postgres.Instance
+	for _, inst := range h.instancesFor(sess) {
+		if inst == nil {
+			continue
+		}
+		if inst.Role != postgres.RoleFollower && !inst.ReadOnly {
+			primary = inst
+			break
+		}
+		if primary == nil {
+			primary = inst
+		}
+	}
+	if primary == nil {
+		return nil, fmt.Errorf("attach a Postgres resource before taking a backup")
+	}
+	if h.store != nil {
+		if got, err := h.store.Get(instanceRef(primary)); err == nil {
+			return got, nil
+		}
+	}
+	return primary, nil
+}
+
+func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	inst, err := h.dumpTarget(sess)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="postgres.dump"`)
+	if h.live() {
+		if err := runDump(inst.ConnectionURL(), w); err != nil {
+			writeAPIError(w, err)
+		}
+		return
+	}
+	fmt.Fprintf(w, "-- flynn postgres dump\n-- instance %s\n", inst.App)
+	for _, db := range inst.Databases {
+		fmt.Fprintf(w, "-- database %s\n", db.Name)
+	}
+}
+
+func (h *handler) dashRestore(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	inst, err := h.dumpTarget(sess)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	file, _, err := r.FormFile("dump")
+	if err != nil {
+		file, _, err = r.FormFile("file")
+	}
+	if err != nil {
+		writeAPIError(w, fmt.Errorf("choose a dump file to restore"))
+		return
+	}
+	defer file.Close()
+	if h.live() {
+		if err := runRestore(inst.ConnectionURL(), file); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+	}
+	if wantsJSON(r) {
+		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": "Restore complete"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func overviewHTML(insts []*postgres.Instance) string {

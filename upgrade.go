@@ -11,13 +11,13 @@ const TaskKindUpgrade = "upgrade"
 
 // Task status values for a background upgrade.
 const (
-	TaskPending             = "pending"
-	TaskFollowing           = "following"
-	TaskWaiting             = "waiting"
-	TaskPromoting           = "promoting"
-	TaskReplacingFollowers  = "replacing_followers"
-	TaskDone                = "done"
-	TaskFailed              = "failed"
+	TaskPending            = "pending"
+	TaskFollowing          = "following"
+	TaskWaiting            = "waiting"
+	TaskPromoting          = "promoting"
+	TaskReplacingFollowers = "replacing_followers"
+	TaskDone               = "done"
+	TaskFailed             = "failed"
 )
 
 // DefaultUpgradeTimeout bounds one automated upgrade step (basebackup + catch-up).
@@ -292,9 +292,10 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 
 	s.markUpgrade(leaderID, TaskFollowing, "", "")
 	fol, _, err := s.Provision(ProvisionRequest{
-		Follow:  leaderID,
-		Mode:    mode,
-		Runtime: runtime,
+		Follow:     leaderID,
+		Mode:       mode,
+		Runtime:    runtime,
+		ForUpgrade: true,
 	})
 	if err != nil {
 		return nil, err
@@ -336,7 +337,7 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		}
 		nf, _, err := s.Provision(ProvisionRequest{
 			Follow:  newPrimary.ID,
-			Mode:    mode,
+			Mode:    ModeStreaming,
 			Runtime: followRuntime,
 		})
 		if err != nil {

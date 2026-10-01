@@ -98,18 +98,77 @@
     "subcommands": [
       "list",
       "info",
+      "create",
       "follow",
       "wait",
       "promote",
       "unfollow",
       "upgrade",
+      "dump",
+      "restore",
       "psql",
       "help"
     ],
-	"doc": "usage: flynn pg\n       flynn pg info\n       flynn pg:list\n       flynn pg:help\n       flynn pg follow <resource> [--runtime <name>] [--replication <mode>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg upgrade\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nFollowers are separate resources. There is no in-place resize or upgrade:\npg:upgrade (or dashboard Upgrade) follows, waits until caught up, promotes a new primary, then recreates each follower against that primary.\n\nCommands:\n\tlist      Same as flynn pg with no subcommand\n\thelp      Same as flynn pg --help\n\tinfo      Show leader, followers, and lag\n\tfollow    Create a read-only follower resource\n\twait      Block until the follower lag is zero\n\tpromote   Make a follower writable and rewrite the primary *_URL\n\tunfollow  Stop replication and leave a standalone writable copy\n\tupgrade   Follow, wait, promote, then recreate followers (same-image skip on plugin:update)\n\tpsql      Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
+	"doc": "usage: flynn pg\n       flynn pg info\n       flynn pg:list\n       flynn pg:help\n       flynn pg create <database>\n       flynn pg follow [--runtime <name>]\n       flynn pg wait <resource>\n       flynn pg promote <follower>\n       flynn pg unfollow <follower>\n       flynn pg upgrade\n       flynn pg dump [-q] [-f <file>]\n       flynn pg restore [-q] [-f <file>]\n       flynn pg psql [--] [<argument>...]\n\nEach resource is its own Postgres instance (one app, one volume, one node).\nflynn pg create adds a logical database on that server (CREATE DATABASE),\nnot a new Flynn resource. Followers are separate resources and always use\nstreaming replication on the same engine version. There is no in-place resize\nor upgrade: pg:upgrade uses logical replication, promotes a new primary, then\nrecreates each follower against that primary.\n\nOptions:\n\t-f, --file=<file>  dump file (stdout/stdin if omitted)\n\t-q, --quiet        don't print progress\n\t--runtime=<name>   database runtime for a new follower (default: same as primary)\n\nCommands:\n\tlist       Same as flynn pg with no subcommand\n\thelp       Same as flynn pg --help\n\tinfo       Show leader, followers, and lag\n\tcreate     CREATE DATABASE on this instance\n\tfollow     Create a streaming read-only follower (same engine version). flynn pg follow pg-<word>-<6 letters> follows that primary.\n\twait       Block until the follower lag is zero\n\tpromote    Make a follower writable and rewrite the primary *_URL\n\tunfollow   Stop replication and leave a standalone writable copy\n\tupgrade    Logical follow, wait, promote, then recreate followers\n\tdump       pg_dump this instance (custom format)\n\trestore    Restore a dump taken with pg dump\n\tpsql       Open psql. With no name, uses the attached database. flynn pg psql <name> opens that resource (pg-<word>-<6 letters>).\n",
     "resource_env": "FLYNN_POSTGRES",
     "resource_missing": "No postgres database found. Provision one with `flynn resource:add postgres`",
     "actions": [
+      {
+        "name": "create",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "create-db",
+          "${resource}"
+        ],
+        "append": "<database>"
+      },
+      {
+        "name": "info",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "info",
+          "${resource}"
+        ]
+      },
+      {
+        "name": "follow",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "follow",
+          "${resource}",
+          "${app}"
+        ]
+      },
+      {
+        "name": "wait",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "wait",
+          "${resource}"
+        ]
+      },
+      {
+        "name": "promote",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "promote",
+          "${resource}"
+        ]
+      },
+      {
+        "name": "unfollow",
+        "args": [
+          "/bin/flynn-postgres-api",
+          "task",
+          "unfollow",
+          "${resource}"
+        ]
+      },
       {
         "name": "upgrade",
         "cluster": true,
@@ -119,6 +178,32 @@
           "upgrade",
           "${resource}"
         ]
+      },
+      {
+        "name": "dump",
+        "args": [
+          "pg_dump",
+          "--no-owner",
+          "--format=custom",
+          "${app.POSTGRES_URL}"
+        ],
+        "stdout_file": "--file",
+        "progress": true,
+        "quiet": "--quiet"
+      },
+      {
+        "name": "restore",
+        "args": [
+          "pg_restore",
+          "--no-owner",
+          "--clean",
+          "--if-exists",
+          "--dbname",
+          "${app.POSTGRES_URL}"
+        ],
+        "stdin_file": "--file",
+        "progress": true,
+        "quiet": "--quiet"
       },
       {
         "name": "psql",

@@ -20,7 +20,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 	if err := store.AddDatabase(a.ID, "tenant_a_only"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddUser(a.ID, "ada", "pw-a"); err != nil {
+	if err := store.AddUser(a.ID, "ada", "pw-a", ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-b", Tenant: "shop-b"})
@@ -30,7 +30,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 	if err := store.AddDatabase(b.ID, "tenant_b_secret"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddUser(b.ID, "bea", "pw-b"); err != nil {
+	if err := store.AddUser(b.ID, "bea", "pw-b", ""); err != nil {
 		t.Fatal(err)
 	}
 	h := newHandler(store)
@@ -48,6 +48,15 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		}
 		if path == "/dashboard/databases" && !strings.Contains(body, "tenant_a_only") {
 			t.Fatalf("missing tenant a database: %s", body)
+		}
+		if path == "/dashboard/databases" && !strings.Contains(body, "Create database") {
+			t.Fatalf("missing create database: %s", body)
+		}
+		if path == "/dashboard/backup" && !strings.Contains(body, "Download dump") {
+			t.Fatalf("missing dump: %s", body)
+		}
+		if path == "/dashboard/replication" && strings.Contains(body, `name="replication"`) {
+			t.Fatalf("follower form still has replication mode: %s", body)
 		}
 	}
 }
@@ -182,6 +191,12 @@ func TestDashReplicationUpgradeButton(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Upgrade") || !strings.Contains(rec.Body.String(), "pg:upgrade") {
 		t.Fatalf("missing upgrade: %s", rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), "Logical (major upgrade)") {
+		t.Fatalf("add follower must not offer logical: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Add follower") {
+		t.Fatalf("missing add follower: %s", rec.Body.String())
+	}
 	form := strings.NewReader("instance=" + inst.ID)
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -193,5 +208,278 @@ func TestDashReplicationUpgradeButton(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "Upgrade started") {
 		t.Fatalf("post body: %s", rec.Body.String())
+	}
+}
+
+func TestDashReplicationJSONFollow(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=follow&instance=" + inst.App + "&replication=streaming")
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) || !strings.Contains(rec.Body.String(), "Follower started") {
+		t.Fatalf("json: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "<html") {
+		t.Fatal("json POST must not return HTML")
+	}
+}
+
+func TestDashReplicationAddFollower(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=follow&instance=" + inst.App + "&replication=streaming")
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Follower started") {
+		t.Fatalf("post body: %s", body)
+	}
+	if !strings.Contains(body, "Promote") || !strings.Contains(body, "Unfollow") {
+		t.Fatalf("missing follower actions: %s", body)
+	}
+	if strings.Contains(body, ">Wait<") {
+		t.Fatalf("wait belongs on the CLI, not the followers table: %s", body)
+	}
+}
+
+func TestDashReplicationPromote(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=promote&instance=" + fol.App)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Follower promoted") {
+		t.Fatalf("post body: %s", rec.Body.String())
+	}
+	got, err := store.Get(fol.ID)
+	if err != nil || got.Role != postgres.RolePrimary {
+		t.Fatalf("role %+v %v", got, err)
+	}
+}
+
+func TestDashReplicationUnfollow(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=unfollow&instance=" + fol.App)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Replication stopped") {
+		t.Fatalf("post body: %s", rec.Body.String())
+	}
+	got, err := store.Get(fol.ID)
+	if err != nil || got.Role != postgres.RoleStandalone {
+		t.Fatalf("role %+v %v", got, err)
+	}
+}
+
+func TestDashCreateLogicalDatabase(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("name=shop_analytics&instance=" + inst.App)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/databases", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "shop_analytics") || !strings.Contains(rec.Body.String(), "Created database") {
+		t.Fatalf("post body: %s", rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/databases", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"shop_analytics"`) {
+		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/databases", strings.NewReader(`{"name":"shop_json"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("json post without Accept %d %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/databases", strings.NewReader(`{"name":"bad-name"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == 200 {
+		t.Fatalf("accepted invalid name: %s", rec.Body.String())
+	}
+}
+
+func TestDashBackupDumpEndpoint(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/backup", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("backup %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Download dump") || !strings.Contains(body, "Restore dump") || strings.Contains(body, "<textarea") {
+		t.Fatalf("backup page: %s", body)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "flynn postgres dump") {
+		t.Fatalf("dump %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashCreateUserAPI(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddDatabase(inst.ID, "appdb"); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/users", strings.NewReader(`{"name":"alice","password":"secret","database":"appdb","instance":"`+inst.App+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
+		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Create user") || !strings.Contains(rec.Body.String(), "alice") {
+		t.Fatalf("users page %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/users/drop", strings.NewReader(`{"name":"alice","instance":"`+inst.App+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("drop %d %s", rec.Code, rec.Body.String())
+	}
+	users, err := store.Users(inst.ID)
+	if err != nil || len(users) != 0 {
+		t.Fatalf("store users %+v %v", users, err)
+	}
+}
+
+func TestDashListUsersIncludesStoreUserWhenSessionIsAppUUID(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddUser(inst.ID, "alice", "secret", inst.Databases[0].Name); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	h.listResources = func(app string) ([]*ct.Resource, error) {
+		if app != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+			t.Fatalf("app %q", app)
+		}
+		return []*ct.Resource{{
+			ID:         "res-1",
+			ProviderID: "postgres",
+			Env: map[string]string{
+				"FLYNN_POSTGRES": inst.App,
+				"PGDATABASE":     inst.Databases[0].Name,
+				"PGUSER":         inst.AppUser,
+				"POSTGRES_URL":   inst.ConnectionURL(),
+			},
+		}}, nil
+	}
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
+		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
 	}
 }

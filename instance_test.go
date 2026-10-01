@@ -24,7 +24,7 @@ func TestTwoResourcesAreIsolated(t *testing.T) {
 	if a.AppUser == b.AppUser || a.AppPassword == b.AppPassword {
 		t.Fatal("resources share app credentials")
 	}
-	if err := s.AddUser(a.ID, "ada", "secret-a"); err != nil {
+	if err := s.AddUser(a.ID, "ada", "secret-a", ""); err != nil {
 		t.Fatal(err)
 	}
 	users, err := s.Users(b.ID)
@@ -120,7 +120,7 @@ func TestFollowerReadOnlyCannotFollowFollower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, Runtime: "perf-l", Mode: ModeLogical})
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, Runtime: "perf-l", Mode: ModeStreaming})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestFollowerReadOnlyCannotFollowFollower(t *testing.T) {
 	if fol.Runtime != "perf-l" || fol.Runtime == leader.Runtime {
 		t.Fatalf("runtime leader=%s follower=%s", leader.Runtime, fol.Runtime)
 	}
-	if fol.Mode != ModeLogical {
+	if fol.Mode != ModeStreaming {
 		t.Fatalf("mode: %s", fol.Mode)
 	}
 	if fol.App == leader.App || fol.Volume == leader.Volume || fol.Superuser == leader.Superuser {
@@ -170,6 +170,33 @@ func TestFollowLooksUpLeaderByAppName(t *testing.T) {
 	}
 	if fol.LeaderID != leader.ID || fol.AppUser != leader.AppUser {
 		t.Fatalf("follow by app: %+v leader %+v", fol, leader)
+	}
+}
+
+func TestFollowRejectsLogicalAndVersionMismatch(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, Mode: ModeLogical}); !errors.Is(err, ErrFollowLogical) {
+		t.Fatalf("logical follow: %v", err)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, Mode: ModeLogical, ForUpgrade: true}); err != nil {
+		t.Fatalf("upgrade follow: %v", err)
+	}
+
+	s2 := NewStore()
+	old, _, err := s2.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.mu.Lock()
+	s2.byID[old.ID].EngineVersion = "15"
+	s2.mu.Unlock()
+	t.Setenv("ENGINE_VERSION", "16")
+	if _, _, err := s2.Provision(ProvisionRequest{App: "shop", Follow: old.ID}); !errors.Is(err, ErrFollowVersion) {
+		t.Fatalf("version follow: %v", err)
 	}
 }
 
@@ -228,6 +255,64 @@ func TestInstanceFromEnv(t *testing.T) {
 	}
 	if InstanceFromEnv("id", "shop", map[string]string{"REDIS_URL": "redis://x"}) != nil {
 		t.Fatal("non-postgres env")
+	}
+	fromPG := InstanceFromEnv("res-1", "", map[string]string{
+		"FLYNN_POSTGRES": "pg-harbor-kxmnpq",
+		"PGUSER":         "app_from_pg",
+		"PGPASSWORD":     "secret",
+		"PGDATABASE":     "db_pg_harbor_kxmnpq",
+		"PGHOST":         "leader.pg-harbor-kxmnpq.discoverd",
+	})
+	if fromPG == nil || fromPG.AppUser != "app_from_pg" || fromPG.AppPassword != "secret" || fromPG.ServiceHost != "leader.pg-harbor-kxmnpq.discoverd" {
+		t.Fatalf("pg env %+v", fromPG)
+	}
+}
+
+func TestLookupLockedMergesLoadMissingDuplicateApp(t *testing.T) {
+	s := NewStore()
+	inst, _, err := s.Provision(ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddUser(inst.ID, "alice", "secret", inst.Databases[0].Name); err != nil {
+		t.Fatal(err)
+	}
+	s.LoadMissing = func(name string) *Instance {
+		return InstanceFromEnv("live-uuid", inst.App, map[string]string{
+			"FLYNN_POSTGRES":    inst.App,
+			"POSTGRES_USER":     "app_live",
+			"POSTGRES_PASSWORD": "secret",
+			"POSTGRES_DB":       inst.Databases[0].Name,
+		})
+	}
+	s.mu.Lock()
+	got := s.lookupLocked("live-uuid")
+	s.mu.Unlock()
+	if got == nil || got.ID != inst.ID {
+		t.Fatalf("expected provisioned instance, got %+v", got)
+	}
+	users, err := s.Users(inst.App)
+	if err != nil || len(users) != 1 || users[0].Name != "alice" {
+		t.Fatalf("users %+v %v", users, err)
+	}
+}
+
+func TestMaintenanceURLUsesTenantDatabase(t *testing.T) {
+	s := NewStore()
+	inst, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inst.Databases) == 0 {
+		t.Fatal("expected tenant database")
+	}
+	db := inst.Databases[0].Name
+	got := inst.MaintenanceURL()
+	if strings.Contains(got, "/postgres?") || strings.HasSuffix(got, "/postgres") {
+		t.Fatalf("admin URL must not use catalog database postgres: %s", got)
+	}
+	if !strings.Contains(got, "/"+db) {
+		t.Fatalf("admin URL %s missing tenant database %s", got, db)
 	}
 }
 
