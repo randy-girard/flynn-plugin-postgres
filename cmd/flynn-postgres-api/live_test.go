@@ -253,6 +253,9 @@ func TestStampIsolatedRoleClearsFollowerMarkers(t *testing.T) {
 	if rel.Env["POSTGRES_LEADER"] != "" || rel.Env["POSTGRES_PRIMARY_URL"] != "" {
 		t.Fatalf("leftover follower markers %#v", rel.Env)
 	}
+	if rel.Env["POSTGRES_USER"] != "app_u" || rel.Env["POSTGRES_PASSWORD"] != "apppw" || rel.Env["POSTGRES_DB"] != "db_shop" {
+		t.Fatalf("isolated instance must keep login env %#v", rel.Env)
+	}
 }
 
 type fakeAppRelease struct {

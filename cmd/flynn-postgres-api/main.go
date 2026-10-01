@@ -155,6 +155,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		leader, _ = h.store.Get(inst.LeaderID)
 	}
 	applyPostgresResourceEnv(inst, env, leader)
+	stripTenantPostgresCredentials(env)
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,
@@ -380,6 +381,7 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string) (map[
 		leaderInst, _ = h.store.Get(inst.LeaderID)
 	}
 	applyPostgresResourceEnv(inst, env, leaderInst)
+	stripTenantPostgresCredentials(env)
 	return env, nil
 }
 
@@ -466,9 +468,21 @@ func (h *handler) envSet(w http.ResponseWriter, r *http.Request, p httprouter.Pa
 	w.WriteHeader(http.StatusOK)
 }
 
+// libpqCredentialKeys are split PG* pieces that belong on neither the tenant
+// resource nor the isolated instance (the instance uses POSTGRES_USER/DB).
+var libpqCredentialKeys = []string{
+	"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE",
+}
+
+// tenantPostgresCredentialKeys are extra POSTGRES_* login pieces the attached
+// app does not need. The isolated instance release still has POSTGRES_USER/DB.
+var tenantPostgresCredentialKeys = []string{
+	"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_HOST", "POSTGRES_PORT",
+}
+
 // applyPostgresResourceEnv is the controller resource env the dashboard lists.
-// POSTGRES_URL is the connection string. DATABASE_URL is shared with other
-// engines on the same app, so a later resource:add must not be what psql uses.
+// Connection strings stay on DATABASE_URL and scoped *_DATABASE_URL. POSTGRES_URL
+// is an interpolation alias for pg:psql, not a stored env var.
 // POSTGRES_ROLE/POSTGRES_LEADER mark --follow replicas so the Followers tab
 // can find them after the API restarts.
 func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, leader *postgres.Instance) {
@@ -476,23 +490,10 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 		return
 	}
 	env["FLYNN_POSTGRES"] = inst.App
-	env["POSTGRES_URL"] = inst.ConnectionURL()
-	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
-		db := inst.Databases[0].Name
-		env["PGDATABASE"] = db
-		env["POSTGRES_DB"] = db
+	for _, k := range libpqCredentialKeys {
+		delete(env, k)
 	}
-	if inst.AppUser != "" {
-		env["PGUSER"] = inst.AppUser
-		env["POSTGRES_USER"] = inst.AppUser
-	}
-	if inst.AppPassword != "" {
-		env["PGPASSWORD"] = inst.AppPassword
-		env["POSTGRES_PASSWORD"] = inst.AppPassword
-	}
-	if inst.ServiceHost != "" {
-		env["PGHOST"] = inst.ServiceHost
-	}
+	delete(env, "POSTGRES_URL")
 	if inst.Role == postgres.RoleFollower {
 		env["POSTGRES_ROLE"] = "follower"
 		if leader != nil && strings.TrimSpace(leader.App) != "" {
@@ -503,6 +504,19 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 	env["POSTGRES_ROLE"] = "primary"
 	delete(env, "POSTGRES_LEADER")
 	delete(env, "POSTGRES_PRIMARY_URL")
+}
+
+func stripTenantPostgresCredentials(env map[string]string) {
+	if env == nil {
+		return
+	}
+	for _, k := range libpqCredentialKeys {
+		delete(env, k)
+	}
+	for _, k := range tenantPostgresCredentialKeys {
+		delete(env, k)
+	}
+	delete(env, "POSTGRES_URL")
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {

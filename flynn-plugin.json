@@ -189,7 +189,7 @@
           "pg_dump",
           "--no-owner",
           "--format=custom",
-          "${app.POSTGRES_URL}"
+          "${app.DATABASE_URL}"
         ],
         "stdout_file": "--file",
         "progress": true,
@@ -203,7 +203,7 @@
           "--clean",
           "--if-exists",
           "--dbname",
-          "${app.POSTGRES_URL}"
+          "${app.DATABASE_URL}"
         ],
         "stdin_file": "--file",
         "progress": true,
@@ -213,7 +213,7 @@
         "name": "psql",
         "args": [
           "psql",
-          "${app.POSTGRES_URL}"
+          "${app.DATABASE_URL}"
         ],
         "append": "<argument>",
         "env": {

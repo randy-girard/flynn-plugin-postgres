@@ -77,7 +77,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	var hasUpgrade, hasCreate, hasDump, hasFollow, hasInfo bool
 	for _, a := range cli.CLI.Actions {
 		joined := strings.Join(a.Args, " ")
-		if strings.Contains(joined, "POSTGRES_URL") {
+		if strings.Contains(joined, "DATABASE_URL") && a.Name == "psql" {
 			psqlArgs = a.Args
 		}
 		if strings.Contains(joined, "task upgrade") {
@@ -97,7 +97,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		}
 	}
 	if len(psqlArgs) == 0 {
-		t.Fatal("psql action missing POSTGRES_URL")
+		t.Fatal("psql action missing DATABASE_URL")
 	}
 	if !hasUpgrade {
 		t.Fatal("upgrade action must run flynn-postgres-api task upgrade")

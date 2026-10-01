@@ -34,8 +34,11 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] == "" {
+	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
 		t.Fatalf("env %#v", out.Env)
+	}
+	if out.Env["POSTGRES_URL"] != "" {
+		t.Fatalf("POSTGRES_URL must not be stored: %#v", out.Env)
 	}
 	if out.Env["POSTGRES_ROLE"] != "primary" {
 		t.Fatalf("role %#v", out.Env)
@@ -49,8 +52,13 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if !named {
 		t.Fatalf("missing resource name url: %#v", out.Env)
 	}
-	if out.Env["POSTGRES_URL"] != out.Env["ANALYTICS_URL"] {
+	if out.Env["ANALYTICS_URL"] != out.Env["DATABASE_URL"] {
 		t.Fatalf("psql URL %#v", out.Env)
+	}
+	for _, k := range []string{"PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_URL"} {
+		if out.Env[k] != "" {
+			t.Fatalf("resource env must not include %s: %#v", k, out.Env)
+		}
 	}
 	if out.Plan.Sirenia || out.Plan.Processes["postgres"] != 1 || len(out.Plan.Processes) != 1 {
 		t.Fatalf("plan %+v", out.Plan)
@@ -76,7 +84,7 @@ func TestHTTPProvisionWithoutAppReturnsDatabaseURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != out.Env["DATABASE_URL"] {
+	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("env %#v", out.Env)
 	}
 	if strings.Contains(out.Env["DATABASE_URL"], "postgres-api.discoverd") {
@@ -124,8 +132,23 @@ func TestHTTPProvisionFollowStampsRole(t *testing.T) {
 	if fol.Env["FLYNN_POSTGRES"] == "" || fol.Env["FLYNN_POSTGRES"] == name {
 		t.Fatalf("follower instance %#v", fol.Env)
 	}
-	if fol.Env["PGDATABASE"] == "" || fol.Env["PGDATABASE"] != leader.Env["PGDATABASE"] {
-		t.Fatalf("copied database leader=%q follower=%q", leader.Env["PGDATABASE"], fol.Env["PGDATABASE"])
+	if fol.Env["POSTGRES_URL"] != "" || leader.Env["POSTGRES_URL"] != "" {
+		t.Fatalf("POSTGRES_URL must not be stored leader=%q follower=%q", leader.Env["POSTGRES_URL"], fol.Env["POSTGRES_URL"])
+	}
+	if leader.Env["DATABASE_URL"] == "" {
+		t.Fatalf("leader missing DATABASE_URL %#v", leader.Env)
+	}
+	named := false
+	for k, v := range fol.Env {
+		if strings.HasSuffix(k, "_DATABASE_URL") && v != "" {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("follower missing named database URL %#v", fol.Env)
+	}
+	if fol.Env["PGDATABASE"] != "" || fol.Env["PGUSER"] != "" || fol.Env["PGPASSWORD"] != "" {
+		t.Fatalf("follower must not include split PG keys: %#v", fol.Env)
 	}
 }
 
