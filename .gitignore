@@ -10,3 +10,8 @@ script/docker/dev/.image-built
 go.work
 go.work.sum
 tmp/
+cluster/web/node_modules/
+cluster/web/test-results/
+cluster/web/playwright-report/
+cluster/web/blob-report/
+cluster/web/playwright/.cache/
