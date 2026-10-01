@@ -5,10 +5,15 @@ import { login as loginTimeout } from './timeouts'
 export async function login(page: Page): Promise<void> {
   await page.goto('/login')
   await page.waitForLoadState('domcontentloaded')
-  if (/\/apps(\/|$)/.test(page.url()) && await page.getByRole('heading', { name: 'Apps' }).isVisible({ timeout: 0 }).catch(() => false)) {
+  const email = page.getByLabel('Email')
+  const appsHeading = page.getByRole('heading', { name: 'Apps' })
+  // Session cookie: /login redirects to /apps. A second login() in the same
+  // test (openPostgresTab then openPostgresInstanceTab) hits that redirect.
+  // Wait for either surface; do not match the transient /login URL.
+  await expect(email.or(appsHeading)).toBeVisible({ timeout: loginTimeout })
+  if (await appsHeading.isVisible().catch(() => false)) {
     return
   }
-  await expect(page.getByLabel('Email')).toBeVisible()
   if (await page.locator('#handle').isVisible({ timeout: 0 }).catch(() => false)) {
     await page.getByRole('link', { name: /already have an account/i }).click()
     await expect(page.getByLabel('Email')).toBeVisible()

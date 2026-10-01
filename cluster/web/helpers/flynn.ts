@@ -51,8 +51,9 @@ export async function waitForPsql(app: string, resource = '', timeoutMs = provis
   const deadline = Date.now() + timeoutMs
   let last = ''
   while (Date.now() < deadline) {
-    const args = resource
-      ? ['-a', app, 'pg', 'psql', resource, '--', '-Atc', 'SELECT 1']
+    const target = resource || defaultPsqlResource(app)
+    const args = target
+      ? ['-a', app, 'pg', 'psql', target, '--', '-Atc', 'SELECT 1']
       : ['-a', app, 'pg', 'psql', '--', '-Atc', 'SELECT 1']
     try {
       const out = flynn(args, { timeoutMs: flynnCmd })
@@ -84,8 +85,17 @@ export function destroyAppBestEffort(app: string): void {
 }
 
 export function pgPsql(app: string, extra: string[], resource = '', opts?: { allowFail?: boolean }): string {
-  const args = resource
-    ? ['pg', 'psql', resource, '--', ...extra]
+  const target = resource || defaultPsqlResource(app)
+  const args = target
+    ? ['pg', 'psql', target, '--', ...extra]
     : ['pg', 'psql', '--', ...extra]
   return flynnApp(app, args, { allowFail: opts?.allowFail })
+}
+
+// When more than one postgres resource is attached, pg:psql requires the
+// instance name. Prefer the primary so inserts still hit the leader.
+function defaultPsqlResource(app: string): string {
+  const rows = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
+  if (rows.length < 2) return ''
+  return rows.find((r) => r.role !== 'follower')?.name || ''
 }

@@ -203,7 +203,26 @@ func (h *harness) followers() []string {
 
 func (h *harness) psql(timeout time.Duration, extra ...string) string {
 	h.t.Helper()
+	if name := h.psqlDefaultResource(); name != "" {
+		return h.psqlOn(timeout, name, extra...)
+	}
 	return h.psqlStdout(timeout, append([]string{"pg", "psql", "--"}, extra...)...)
+}
+
+// psqlDefaultResource is the instance to pass to pg:psql when more than one
+// resource is attached (the CLI requires the name). Empty means omit it.
+func (h *harness) psqlDefaultResource() string {
+	h.t.Helper()
+	rows := h.pgList()
+	if len(rows) < 2 {
+		return ""
+	}
+	for _, r := range rows {
+		if r.Role != "follower" {
+			return r.Name
+		}
+	}
+	return ""
 }
 
 func (h *harness) psqlOn(timeout time.Duration, resource string, extra ...string) string {
