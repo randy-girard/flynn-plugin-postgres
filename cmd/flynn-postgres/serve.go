@@ -53,7 +53,10 @@ func servePostgres() error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err
 	}
-	hb, err := disc.RegisterInstance(service, &discoverd.Instance{Addr: ":5432"})
+	hb, err := disc.RegisterInstance(service, &discoverd.Instance{
+		Addr: ":5432",
+		Meta: map[string]string{"flynn-datastore": "true"},
+	})
 	if err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return err

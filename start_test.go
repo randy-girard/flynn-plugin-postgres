@@ -205,6 +205,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	if listen < 0 || reg < 0 || reg < listen {
 		t.Fatal("discoverd registration must follow a listening postgres")
 	}
+	if !strings.Contains(src, `"flynn-datastore": "true"`) {
+		t.Fatal("isolated instances must advertise flynn-datastore so user jobs can resolve leader.<name>.discoverd")
+	}
 }
 
 func TestStartInstanceDoesNotWaitOnScaleStallProbes(t *testing.T) {
