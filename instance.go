@@ -144,7 +144,7 @@ type Store struct {
 	contacts    []string
 	// NameTaken reports app names that already exist outside this process.
 	NameTaken func(name string) bool
-	// LoadMissing loads a live instance (pg-orchid-xkhthp) after this
+	// LoadMissing loads a live instance (postgresql-concave-48291) after this
 	// process restarts. Follow looks up by app name; the in-memory map is empty.
 	LoadMissing func(idOrApp string) *Instance
 
@@ -224,7 +224,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	inst := &Instance{
 		ID:                id,
 		Tenant:            firstNonEmpty(req.Tenant, req.App),
-		App:               s.uniqueApp("pg"),
+		App:               s.uniqueApp(),
 		Volume:            "vol-" + id,
 		Superuser:         "su_" + id,
 		SuperuserPassword: "supw_" + newID(),
@@ -283,7 +283,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	return inst.snapshot(), env, nil
 }
 
-// lookupLocked finds a resource by id or by isolated app name (pg-harbor-xxxxxx).
+// lookupLocked finds a resource by id or by isolated app name (postgresql-concave-48291).
 func (s *Store) lookupLocked(idOrApp string) *Instance {
 	idOrApp = strings.TrimSpace(idOrApp)
 	if idOrApp == "" {
@@ -838,14 +838,15 @@ func (s *Store) attachLocked(inst *Instance, app, as string) map[string]string {
 	env := AttachmentKeys(as, "DATABASE_URL", inst.App, inst.appURL(), func(k string) bool {
 		return s.urlKeyTaken(app, k)
 	})
-	stem := attachmentName(as)
-	if strings.TrimSpace(as) == "" {
-		for k := range env {
-			if strings.HasSuffix(k, "_DATABASE_URL") {
-				stem = strings.TrimSuffix(k, "_URL")
-				break
-			}
+	stem := ""
+	for k := range env {
+		if strings.HasSuffix(k, "_URL") {
+			stem = strings.TrimSuffix(k, "_URL")
+			break
 		}
+	}
+	if stem == "" {
+		stem = attachmentName(as)
 	}
 	inst.Attachments = append(inst.Attachments, Attachment{App: app, As: stem, URL: inst.appURL(), Env: env})
 	return cloneEnv(env)

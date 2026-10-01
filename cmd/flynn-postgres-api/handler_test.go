@@ -34,25 +34,22 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
+	if out.Env["ANALYTICS_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
 		t.Fatalf("env %#v", out.Env)
+	}
+	if colorURL(out.Env) != "" {
+		t.Fatalf("--as ANALYTICS must not also set a color URL: %#v", out.Env)
 	}
 	if out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("POSTGRES_URL must not be stored: %#v", out.Env)
 	}
+	if out.Env["DATABASE_URL"] != "" {
+		t.Fatalf("DATABASE_URL must not be stored: %#v", out.Env)
+	}
 	if out.Env["POSTGRES_ROLE"] != "primary" {
 		t.Fatalf("role %#v", out.Env)
 	}
-	named := false
-	for k, v := range out.Env {
-		if strings.HasSuffix(k, "_DATABASE_URL") && k != "DATABASE_URL" && v != "" {
-			named = true
-		}
-	}
-	if !named {
-		t.Fatalf("missing resource name url: %#v", out.Env)
-	}
-	if out.Env["ANALYTICS_URL"] != out.Env["DATABASE_URL"] {
+	if out.Env["ANALYTICS_URL"] == "" {
 		t.Fatalf("psql URL %#v", out.Env)
 	}
 	for _, k := range []string{"PGHOST", "PGUSER", "PGPASSWORD", "PGDATABASE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_URL"} {
@@ -84,11 +81,11 @@ func TestHTTPProvisionWithoutAppReturnsDatabaseURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != "" {
+	if colorURL(out.Env) == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("env %#v", out.Env)
 	}
-	if strings.Contains(out.Env["DATABASE_URL"], "postgres-api.discoverd") {
-		t.Fatal(out.Env["DATABASE_URL"])
+	if strings.Contains(colorURL(out.Env), "postgres-api.discoverd") {
+		t.Fatal(colorURL(out.Env))
 	}
 }
 
@@ -135,17 +132,16 @@ func TestHTTPProvisionFollowStampsRole(t *testing.T) {
 	if fol.Env["POSTGRES_URL"] != "" || leader.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("POSTGRES_URL must not be stored leader=%q follower=%q", leader.Env["POSTGRES_URL"], fol.Env["POSTGRES_URL"])
 	}
-	if leader.Env["DATABASE_URL"] == "" {
-		t.Fatalf("leader missing DATABASE_URL %#v", leader.Env)
+	if colorURL(leader.Env) == "" {
+		t.Fatalf("leader missing color URL %#v", leader.Env)
 	}
-	named := false
-	for k, v := range fol.Env {
-		if strings.HasSuffix(k, "_DATABASE_URL") && v != "" {
-			named = true
+	if colorURL(fol.Env) == "" {
+		t.Fatalf("follower missing color URL %#v", fol.Env)
+	}
+	if leaderKey, _ := firstColorURL(leader.Env); leaderKey != "" {
+		if folKey, _ := firstColorURL(fol.Env); folKey == leaderKey {
+			t.Fatalf("follower must use another color: leader %#v follower %#v", leader.Env, fol.Env)
 		}
-	}
-	if !named {
-		t.Fatalf("follower missing named database URL %#v", fol.Env)
 	}
 	if fol.Env["PGDATABASE"] != "" || fol.Env["PGUSER"] != "" || fol.Env["PGPASSWORD"] != "" {
 		t.Fatalf("follower must not include split PG keys: %#v", fol.Env)
@@ -196,12 +192,21 @@ func TestHTTPEnvSetRejected(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	var created struct {
-		ID string `json:"id"`
+		ID  string            `json:"id"`
+		Env map[string]string `json:"env"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
 		t.Fatalf("create: %s %v", rec.Body.String(), err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/databases/"+created.ID+"/env-set", strings.NewReader(`{"app":"shop","vars":{"DATABASE_URL":"postgres://x"}}`))
+	color, _ := firstColorURL(created.Env)
+	if color == "" {
+		t.Fatalf("env %#v", created.Env)
+	}
+	body, err := json.Marshal(map[string]any{"app": "shop", "vars": map[string]string{color: "postgres://x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases/"+created.ID+"/env-set", bytes.NewReader(body))
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 {
@@ -440,4 +445,19 @@ func TestBeginClusterUpgradesEmptyWhenNotLive(t *testing.T) {
 	}
 	_ = skipped
 	h.autoStartClusterUpgrades()
+}
+
+func firstColorURL(env map[string]string) (key, val string) {
+	const p = "FLYNN_POSTGRESQL_"
+	for k, v := range env {
+		if strings.HasPrefix(k, p) && strings.HasSuffix(k, "_URL") && v != "" {
+			return k, v
+		}
+	}
+	return "", ""
+}
+
+func colorURL(env map[string]string) string {
+	_, v := firstColorURL(env)
+	return v
 }

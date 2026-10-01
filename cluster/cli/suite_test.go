@@ -69,20 +69,13 @@ func TestPostgresCLI(t *testing.T) {
 		t.Logf("primary %s", primary)
 		env := h.appMust(cmdQuick, "env")
 		assertPostgresAppEnv(t, env, primary)
-		named := scopedDatabaseURLKey(primary)
-		_, errOut, err := h.appCmd(cmdQuick, "env:set", "DATABASE_URL=postgres://elsewhere/db")
+		keys := postgresColorURLKeys(env)
+		_, errOut, err := h.appCmd(cmdQuick, "env:set", keys[0]+"=postgres://elsewhere/db")
 		if err == nil {
-			t.Fatal("DATABASE_URL must be locked while the resource is attached")
+			t.Fatal("FLYNN_POSTGRESQL_<COLOR>_URL must be locked while the resource is attached")
 		}
 		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "attached") {
 			t.Fatalf("expected attached lock, got %v\n%s", err, errOut)
-		}
-		_, errOut, err = h.appCmd(cmdQuick, "env:set", named+"=postgres://elsewhere/db")
-		if err == nil {
-			t.Fatalf("%s must be locked while the resource is attached", named)
-		}
-		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "attached") {
-			t.Fatalf("expected attached lock on %s, got %v\n%s", named, err, errOut)
 		}
 	})
 	if t.Failed() {
@@ -195,8 +188,9 @@ func TestPostgresCLI(t *testing.T) {
 		h.appMust(cmdWait, "pg", "wait", follower)
 		h.waitReady(follower, cmdWait)
 		env := h.appMust(cmdQuick, "env")
-		if !envHasKey(env, "DATABASE_URL") {
-			t.Fatalf("follower must not steal DATABASE_URL:\n%s", env)
+		primaryKeys := postgresColorURLKeys(env)
+		if len(primaryKeys) == 0 {
+			t.Fatalf("primary FLYNN_POSTGRESQL_<COLOR>_URL missing after follower:\n%s", env)
 		}
 		assertPostgresAppEnv(t, env, h.primary())
 		got := strings.TrimSpace(h.psqlOn(cmdQuick, follower, "-Atc", "SELECT n FROM e2e_probe"))
@@ -225,8 +219,8 @@ func TestPostgresCLI(t *testing.T) {
 		if envHasKey(env, scopedDatabaseURLKey(follower)) {
 			t.Fatalf("follower env must be removed:\n%s", env)
 		}
-		if !envHasKey(env, "DATABASE_URL") {
-			t.Fatalf("primary DATABASE_URL must remain after follower delete:\n%s", env)
+		if len(postgresColorURLKeys(env)) == 0 {
+			t.Fatalf("primary FLYNN_POSTGRESQL_<COLOR>_URL must remain after follower delete:\n%s", env)
 		}
 		assertPostgresAppEnv(t, env, primary)
 	})
@@ -263,12 +257,48 @@ func TestPostgresCLI(t *testing.T) {
 		return
 	}
 
+	t.Run("attach-to-other-app", func(t *testing.T) {
+		h.use(t)
+		name := "pg-e2e-cli-peer-" + randomSuffix()
+		out, errOut, err := h.cmd(cmdQuick, "apps:create", "-y", "-r", "", name)
+		if err != nil {
+			t.Fatalf("flynn apps:create: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+		}
+		h.peer = name
+		primary := h.primary()
+		out = h.must(cmdQuick, "-a", name, "resource:attach", "postgres", primary)
+		if !strings.Contains(strings.ToLower(out), "attached") {
+			t.Fatalf("expected attached resource, got:\n%s", out)
+		}
+		env := h.must(cmdQuick, "-a", name, "env")
+		assertPostgresAppEnv(t, env, primary)
+		_, errOut, err = h.cmd(cmdQuick, "-a", name, "resource:remove", primary)
+		if err == nil {
+			t.Fatalf("attached app must not delete %s", primary)
+		}
+		combined := strings.ToLower(errOut + " " + err.Error())
+		if !strings.Contains(combined, "does not own") && !strings.Contains(combined, "detach") {
+			t.Fatalf("expected ownership error removing %s from %s, got %v\n%s", primary, name, err, errOut)
+		}
+		h.must(cmdQuick, "-a", name, "resource:detach", "postgres", primary)
+		env = h.must(cmdQuick, "-a", name, "env")
+		if len(postgresColorURLKeys(env)) != 0 || envHasKey(env, "DATABASE_URL") || envHasKey(env, scopedDatabaseURLKey(primary)) {
+			t.Fatalf("detach must remove attachment env:\n%s", env)
+		}
+		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), primary)
+		h.must(cmdDestroy, "-a", name, "apps:destroy", "-y")
+		h.peer = ""
+	})
+	if t.Failed() {
+		return
+	}
+
 	t.Run("detach-and-destroy", func(t *testing.T) {
 		h.use(t)
 		primary := h.primary()
 		h.appMust(cmdDestroy, "resource:remove", primary)
 		env := h.appMust(cmdQuick, "env")
-		if envHasKey(env, "DATABASE_URL") || envHasKey(env, scopedDatabaseURLKey(primary)) {
+		if len(postgresColorURLKeys(env)) != 0 || envHasKey(env, "DATABASE_URL") || envHasKey(env, scopedDatabaseURLKey(primary)) {
 			t.Fatalf("delete must remove attachment env:\n%s", env)
 		}
 		h.appMust(cmdDestroy, "apps:destroy", "-y")

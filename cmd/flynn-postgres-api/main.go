@@ -481,8 +481,8 @@ var tenantPostgresCredentialKeys = []string{
 }
 
 // applyPostgresResourceEnv is the controller resource env the dashboard lists.
-// Connection strings stay on DATABASE_URL and scoped *_DATABASE_URL. POSTGRES_URL
-// is an interpolation alias for pg:psql, not a stored env var.
+// Connection strings stay on FLYNN_POSTGRESQL_<COLOR>_URL (or --as NAME_URL).
+// POSTGRES_URL is an interpolation alias for pg:psql, not a stored env var.
 // POSTGRES_ROLE/POSTGRES_LEADER mark --follow replicas so the Followers tab
 // can find them after the API restarts.
 func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, leader *postgres.Instance) {

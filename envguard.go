@@ -28,10 +28,14 @@ func RejectAttachedURLSet(attached map[string]string, updates map[string]*string
 }
 
 // AttachmentEnv is the single env var a resource attachment injects.
-// The default name DATABASE becomes DATABASE_URL. ANALYTICS becomes ANALYTICS_URL.
+// The default is FLYNN_POSTGRESQL_<COLOR>_URL. --as ANALYTICS becomes
+// ANALYTICS_URL. --as AMBER becomes FLYNN_POSTGRESQL_AMBER_URL.
 func AttachmentEnv(as, rawURL string) map[string]string {
-	name := attachmentName(as)
-	return map[string]string{name + "_URL": rawURL}
+	key := postgresAttachmentURLKey(as, nil)
+	if key == "" {
+		key = colorDatabaseURL(nil)
+	}
+	return map[string]string{key: rawURL}
 }
 
 func attachmentName(as string) string {

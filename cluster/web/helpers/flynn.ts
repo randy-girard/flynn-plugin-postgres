@@ -29,10 +29,11 @@ export function flynnApp(app: string, args: string[], opts?: { timeoutMs?: numbe
 export function parsePgRows(out: string): PgRow[] {
   const rows: PgRow[] = []
   const seen = new Set<string>()
+  const re = /\b(postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8})\b/gi
   for (const line of out.split('\n')) {
-    const m = line.match(/\b(pg-[a-z]+-[a-z]{6,8})\b/i)
+    const m = line.match(re)
     if (!m) continue
-    const name = m[1]
+    const name = m[0]
     if (seen.has(name)) continue
     seen.add(name)
     rows.push({
@@ -65,6 +66,49 @@ export async function waitForPsql(app: string, resource = '', timeoutMs = provis
     await sleep(poll)
   }
   throw new Error(`postgres not ready for ${app} ${resource}: ${last}`)
+}
+
+export function envHasKey(env: string, key: string): boolean {
+  const prefix = `${key}=`
+  return env.startsWith(prefix) || env.includes(`\n${prefix}`)
+}
+
+export function scopedDatabaseURLKey(name: string): string {
+  return `${name.trim().replace(/-/g, '_').toUpperCase()}_DATABASE_URL`
+}
+
+export function postgresColorURLKeys(env: string): string[] {
+  const keys: string[] = []
+  for (const line of env.split('\n')) {
+    const eq = line.indexOf('=')
+    if (eq <= 0) continue
+    const k = line.slice(0, eq)
+    if (k.startsWith('FLYNN_POSTGRESQL_') && k.endsWith('_URL')) keys.push(k)
+  }
+  return keys
+}
+
+export function assertPostgresAppEnv(env: string, resource: string): void {
+  const keys = postgresColorURLKeys(env)
+  if (keys.length === 0) {
+    throw new Error(`app must set FLYNN_POSTGRESQL_<COLOR>_URL:\n${env}`)
+  }
+  if (envHasKey(env, 'DATABASE_URL')) {
+    throw new Error(`postgres must not set DATABASE_URL:\n${env}`)
+  }
+  const named = scopedDatabaseURLKey(resource)
+  if (resource && envHasKey(env, named)) {
+    throw new Error(`postgres must not set instance-named URL ${named}:\n${env}`)
+  }
+  for (const k of [
+    'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGSSLMODE',
+    'POSTGRES_URL', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_HOST',
+    'FLYNN_POSTGRES', 'POSTGRES_ROLE',
+  ]) {
+    if (envHasKey(env, k)) {
+      throw new Error(`app must not set ${k}:\n${env}`)
+    }
+  }
 }
 
 export function destroyAppBestEffort(app: string): void {

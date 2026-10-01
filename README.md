@@ -29,10 +29,11 @@ flynn resource:add postgres --follow <resource>
 flynn resource:add postgres --follow <resource> --runtime perf-l
 ```
 
-`--as ANALYTICS` sets only `ANALYTICS_URL`. The default name `DATABASE` sets
-only `DATABASE_URL`. The same resource can attach to other apps under different
-names. Detach removes that one variable. `flynn env:set` of an attached `*_URL`
-is rejected until detach.
+`--as ANALYTICS` sets only `ANALYTICS_URL`. The default attachment is
+`FLYNN_POSTGRESQL_<COLOR>_URL` (a color not already taken on the app).
+`--as AMBER` sets `FLYNN_POSTGRESQL_AMBER_URL`. The same resource can attach
+to other apps under different names. Detach removes that one variable.
+`flynn env:set` of an attached `*_URL` is rejected until detach.
 
 Inside one instance the owner can add databases and users. Those roles exist
 only in that instance. Two resources do not share an app, volume, superuser,
@@ -50,23 +51,28 @@ There is no in-place resize or upgrade. `flynn pg:upgrade` (and dashboard
 Upgrade) uses logical replication, promotes a new primary, then recreates
 each follower against that primary. Runtime sizing is a name string.
 
+The colon form (`flynn pg:psql`) is canonical. The space form (`flynn pg psql`)
+is a fallback.
+
 | Command | Purpose |
 | --- | --- |
-| `flynn pg:info` | Leader, followers, and lag |
-| `flynn pg create <name>` | `CREATE DATABASE` on this instance |
-| `flynn pg:follow` | New streaming follower (same engine version) |
-| `flynn pg:wait` | Block until lag is zero |
-| `flynn pg:promote` | Writable primary; rewrite the primary URL |
-| `flynn pg:upgrade` | Logical follow, wait, promote, recreate followers |
-| `flynn pg dump` / `pg restore` | Custom-format dump of this instance |
-| `flynn pg:psql` | `psql` against this instance's URL only |
+| `flynn pg` / `pg:list` | List attached instances |
+| `flynn pg:info` | Show leader, followers, and lag |
+| `flynn pg:create <name>` | Create a logical database on this instance |
+| `flynn pg:follow` | Create a streaming read-only follower |
+| `flynn pg:wait` | Block until follower lag is zero |
+| `flynn pg:promote` | Make a follower writable and rewrite the primary URL |
+| `flynn pg:unfollow` | Stop replication and leave a standalone writable copy |
+| `flynn pg:upgrade` | Follow, wait, promote, then recreate followers |
+| `flynn pg:dump` / `pg:restore` | Custom-format dump of this instance |
+| `flynn pg:psql` | Open psql against this instance |
 
 The dashboard pages (overview, databases, users, backup, follow) are served by
 this plugin. A signed-in app sees only its own instances.
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes
 (`pg_dumpall` is the platform appliance only). Use the dashboard Backup page
-or `flynn pg dump` / `flynn pg restore` against this instance.
+or `flynn pg:dump` / `flynn pg:restore` against this instance.
 
 ## State machine
 

@@ -13,7 +13,10 @@ func TestUpgradeFollowsWaitsAndPromotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := env["DATABASE_URL"]
+	beforeKey, before := firstColorURL(env)
+	if before == "" {
+		t.Fatalf("leader env: %#v", env)
+	}
 	res, err := s.Upgrade(context.Background(), leader.ID, UpgradeOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +34,7 @@ func TestUpgradeFollowsWaitsAndPromotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rewritten["DATABASE_URL"] == before || rewritten["DATABASE_URL"] == "" {
+	if rewritten[beforeKey] == before || rewritten[beforeKey] == "" {
 		t.Fatalf("primary URL not rewritten: %#v", rewritten)
 	}
 }

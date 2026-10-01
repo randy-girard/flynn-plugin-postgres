@@ -22,10 +22,30 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(manifest.CLI.Doc, "pg:psql") {
-		t.Fatal("docopt argv is \"pg psql\" after flynn pg:psql is expanded; colon usage does not parse")
+	if !strings.Contains(strings.ToLower(manifest.CLI.Doc), "canonical") || !strings.Contains(strings.ToLower(manifest.CLI.Doc), "fallback") {
+		t.Fatal("cli.doc must say colon form is canonical and space form is a fallback")
 	}
-	args, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "psql", "--", "-c", "SELECT 1"}, true, "", false)
+	usage, _, ok := strings.Cut(manifest.CLI.Doc, "\n\n")
+	if !ok {
+		t.Fatal("cli.doc must have a usage block followed by a blank line")
+	}
+	if !strings.Contains(usage, "flynn pg:psql") {
+		t.Fatal("docopt usage must list colon form (canonical)")
+	}
+	if !strings.Contains(usage, "flynn pg psql") {
+		t.Fatal("docopt usage must list space form as a fallback")
+	}
+	if i, j := strings.Index(usage, "flynn pg:psql"), strings.Index(usage, "flynn pg psql"); i > j {
+		t.Fatal("colon form must be listed before the space fallback")
+	}
+	args, err := docopt.Parse(manifest.CLI.Doc, []string{"pg:psql", "--", "-c", "SELECT 1"}, true, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !args.Bool["pg:psql"] && !args.Bool["psql"] {
+		t.Fatalf("colon argv did not select psql: %#v", args.Bool)
+	}
+	args, err = docopt.Parse(manifest.CLI.Doc, []string{"pg", "psql", "--", "-c", "SELECT 1"}, true, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +55,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if strings.Contains(manifest.CLI.Doc, "psql [<name>]") {
 		t.Fatal("a bare <name> before psql arguments captures redis-cli PING and other console args")
 	}
-	if !strings.Contains(manifest.CLI.Doc, "pg-<word>-<6 letters>") {
+	if !strings.Contains(manifest.CLI.Doc, "postgresql-<word>-<5 digits>") {
 		t.Fatal("psql help should describe the resource app name")
 	}
 	var cli struct {
@@ -142,6 +162,50 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	}
 	if strings.Contains(manifest.CLI.Doc, "[--replication") {
 		t.Fatal("followers always stream; replication mode is not a follow flag")
+	}
+	commands := manifest.CLI.Doc
+	if i := strings.Index(commands, "Commands:"); i >= 0 {
+		commands = commands[i:]
+	} else {
+		t.Fatal("cli.doc must include a Commands: section")
+	}
+	if j := strings.Index(commands, "\nExamples:"); j >= 0 {
+		commands = commands[:j]
+	}
+	for _, verb := range []string{"list", "help", "info", "create", "follow", "wait", "promote", "unfollow", "upgrade", "dump", "restore", "psql"} {
+		if !strings.Contains(commands, "\t"+verb) {
+			t.Fatalf("Commands: missing %s", verb)
+		}
+	}
+	for _, phrase := range []string{
+		"Show leader, followers, and lag",
+		"Create a logical database on this instance",
+		"Create a streaming read-only follower",
+		"Block until follower lag is zero",
+		"Make a follower writable and rewrite the primary URL",
+		"Stop replication and leave a standalone writable copy",
+		"Follow, wait, promote, then recreate followers",
+		"Dump this instance in custom format",
+		"Restore a dump taken with pg dump",
+		"Open psql against this instance",
+	} {
+		if !strings.Contains(commands, phrase) {
+			t.Fatalf("Commands: missing description %q", phrase)
+		}
+	}
+	examples := manifest.CLI.Doc
+	if i := strings.Index(examples, "Examples:"); i >= 0 {
+		examples = examples[i:]
+	} else {
+		t.Fatal("cli.doc must include Examples")
+	}
+	for _, ex := range []string{"pg:create shop_analytics", "pg:info", "pg:restore -f", "pg:unfollow", "pg:upgrade"} {
+		if !strings.Contains(examples, ex) {
+			t.Fatalf("Examples missing %q", ex)
+		}
+	}
+	if !strings.Contains(manifest.CLI.Doc, "flynn-host pg:psql") || !strings.Contains(manifest.CLI.Doc, "flynn-host pg:dump") {
+		t.Fatal("cli.doc must distinguish tenant pg from flynn-host pg")
 	}
 }
 

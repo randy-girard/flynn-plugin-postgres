@@ -1,10 +1,13 @@
 import { expect, test, type Page } from '@playwright/test'
 import { dashboardPassword, uniqueSuffix } from '../helpers/env'
 import {
+  assertPostgresAppEnv,
   destroyAppBestEffort,
+  envHasKey,
   flynnApp,
   parsePgRows,
   pgPsql,
+  postgresColorURLKeys,
   sleep,
   waitForPsql,
 } from '../helpers/flynn'
@@ -23,6 +26,7 @@ import {
 test.describe('postgres dashboard (live cluster)', () => {
   test.describe.configure({ mode: 'serial' })
   let app = ''
+  let peer = ''
   let follower = ''
   const dbName = `e2e_web_${uniqueSuffix()}`
   const userName = `e2e_wu_${uniqueSuffix()}`
@@ -35,6 +39,7 @@ test.describe('postgres dashboard (live cluster)', () => {
   })
 
   test.afterAll(() => {
+    destroyAppBestEffort(peer)
     destroyAppBestEffort(app)
   })
 
@@ -89,7 +94,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     await panel.getByRole('button', { name: 'Provision' }).click()
     await page.waitForURL(/\/resources\/postgres\//, { timeout: provision })
     await waitForPsql(app)
-    await expect(page.locator('h1')).toContainText(/pg-[a-z]+-[a-z]{6,8}/i, { timeout: ui })
+    await expect(page.locator('h1')).toContainText(/postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8}/i, { timeout: ui })
   })
 
   test('creates and lists a logical database', async ({ page }) => {
@@ -141,6 +146,76 @@ test.describe('postgres dashboard (live cluster)', () => {
     pgPsql(app, ['-c', `INSERT INTO e2e_probe VALUES (${probeN})`])
     const got = pgPsql(app, ['-Atc', 'SELECT n FROM e2e_probe']).trim()
     expect(got).toBe(probeN)
+  })
+
+  test('attaches existing postgres to another app in the same account', async ({ page }) => {
+    test.setTimeout(provision + destroy + 45_000)
+    await login(page)
+    peer = `pg-e2e-web-peer-${uniqueSuffix()}`
+    await page.goto('/apps')
+    await page.getByRole('button', { name: 'Add app' }).click()
+    const add = page.getByRole('dialog', { name: 'Add app' })
+    await expect(add).toBeVisible()
+    await add.getByLabel('App name').fill(peer)
+    await expect(page.getByText(`${peer} is available.`)).toBeVisible()
+    await add.getByRole('button', { name: 'Create app' }).click()
+    await expect(add).toBeHidden()
+
+    const rows = parsePgRows(flynnApp(app, ['pg']))
+    const primary = rows.find((r) => r.role !== 'follower')?.name
+    if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+
+    await page.goto(`/apps/${app}/resources/postgres/${primary}`)
+    const shareBtn = page.getByRole('button', { name: 'Attach to another app' })
+    await expect(shareBtn).toBeVisible()
+    expect(await shareBtn.evaluate((el) => el.closest('.tab-toolbar') !== null)).toBe(true)
+    await shareBtn.click()
+    const share = page.getByRole('dialog', { name: 'Attach to another app' })
+    await expect(share).toBeVisible()
+    await share.getByRole('button', { name: 'App' }).click()
+    await page.getByRole('option', { name: new RegExp(peer) }).click()
+    await share.getByRole('button', { name: 'Attach' }).click()
+    await expect(share).toBeHidden({ timeout: ui })
+
+    const attachedEnv = flynnApp(peer, ['env'])
+    assertPostgresAppEnv(attachedEnv, primary)
+
+    let removed = false
+    try {
+      flynnApp(peer, ['resource:remove', primary])
+      removed = true
+    } catch (err) {
+      const msg = String(err).toLowerCase()
+      if (!msg.includes('does not own') && !msg.includes('detach')) throw err
+    }
+    if (removed) throw new Error('attached app must not delete the resource')
+
+    await openPostgresInstanceTab(page, peer, primary, 'Settings')
+    await expect(page.getByRole('button', { name: 'Detach' })).toBeEnabled()
+    await expect(page.getByRole('button', { name: 'Delete resource' })).toHaveCount(0)
+    page.once('dialog', (d) => d.accept())
+    await page.getByRole('button', { name: 'Detach' }).click()
+    await page.waitForURL(/\/resources\/?$/, { timeout: ui })
+    const detachedEnv = flynnApp(peer, ['env'], { allowFail: true })
+    if (postgresColorURLKeys(detachedEnv).length !== 0 || envHasKey(detachedEnv, 'DATABASE_URL')) {
+      throw new Error(`detach must remove attachment env:\n${detachedEnv}`)
+    }
+    assertPostgresAppEnv(flynnApp(app, ['env']), primary)
+
+    await openAppResources(page, peer)
+    await page.getByRole('button', { name: 'Attach existing' }).click()
+    const attach = page.getByRole('dialog', { name: 'Attach existing' })
+    await expect(attach).toBeVisible()
+    await attach.getByRole('button', { name: 'Postgres resource' }).click()
+    await page.getByRole('option', { name: new RegExp(primary) }).click()
+    await attach.getByRole('button', { name: 'Attach' }).click()
+    await page.waitForURL(new RegExp(`/resources/postgres/${primary}`), { timeout: ui })
+    assertPostgresAppEnv(flynnApp(peer, ['env']), primary)
+
+    await openPostgresInstanceTab(page, peer, primary, 'Settings')
+    page.once('dialog', (d) => d.accept())
+    await page.getByRole('button', { name: 'Detach' }).click()
+    await page.waitForURL(/\/resources\/?$/, { timeout: ui })
   })
 
   test('adds a follower and verifies replication', async ({ page }) => {

@@ -2,16 +2,14 @@ package postgres
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
 func TestDefaultDatabaseName(t *testing.T) {
-	got := DefaultDatabaseName("pg-harbor-kxmnpq")
-	if got != "db_pg_harbor_kxmnpq" {
+	got := DefaultDatabaseName("postgresql-concave-48291")
+	if got != "db_postgresql_concave_48291" {
 		t.Fatalf("got %q", got)
-	}
-	if len(got) <= len("db_a803c7ba") {
-		t.Fatalf("name should be longer than db_ plus 8 hex chars: %q", got)
 	}
 	if DefaultDatabaseName("") != "db_app" {
 		t.Fatal("empty app")
@@ -27,12 +25,12 @@ func TestDefaultDatabaseName(t *testing.T) {
 }
 
 func TestUniqueAppName(t *testing.T) {
-	re := regexp.MustCompile(`^pg-[a-z]+-[a-z]{6}$`)
+	re := regexp.MustCompile(`^postgresql-[a-z]+-[0-9]{5}$`)
 	s := NewStore()
-	s.NameTaken = func(name string) bool { return name == "pg-harbor-aaaaaa" }
+	s.NameTaken = func(name string) bool { return strings.HasSuffix(name, "-00000") }
 	seen := map[string]bool{}
 	for i := 0; i < 20; i++ {
-		name := s.uniqueApp("pg")
+		name := s.uniqueApp()
 		if !re.MatchString(name) {
 			t.Fatalf("name %q", name)
 		}
@@ -41,5 +39,36 @@ func TestUniqueAppName(t *testing.T) {
 		}
 		seen[name] = true
 		s.byID[name] = &Instance{App: name}
+	}
+}
+
+func TestAttachmentKeysUsesColorNotResourceName(t *testing.T) {
+	env := AttachmentKeys("", "DATABASE_URL", "postgresql-concave-48291", "postgres://db", nil)
+	if env["DATABASE_URL"] != "" {
+		t.Fatalf("must not set DATABASE_URL: %#v", env)
+	}
+	if env["POSTGRESQL_CONCAVE_48291_DATABASE_URL"] != "" || env["FLYNN_POSTGRESQL_CONCAVE_48291_URL"] != "" {
+		t.Fatalf("must not use instance name as env stem: %#v", env)
+	}
+	color := ""
+	for k, v := range env {
+		if postgresColorURLKey(k) && v == "postgres://db" {
+			color = k
+		}
+	}
+	if color == "" {
+		t.Fatalf("missing color URL: %#v", env)
+	}
+	taken := AttachmentKeys("", "", "postgresql-concave-48291", "postgres://other", func(k string) bool {
+		return k == color
+	})
+	other := ""
+	for k := range taken {
+		if postgresColorURLKey(k) {
+			other = k
+		}
+	}
+	if other == "" || other == color {
+		t.Fatalf("second attach must pick another color: %#v vs %s", taken, color)
 	}
 }

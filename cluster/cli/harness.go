@@ -20,6 +20,20 @@ func scopedDatabaseURLKey(name string) string {
 	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(name), "-", "_")) + "_DATABASE_URL"
 }
 
+func postgresColorURLKeys(env string) []string {
+	var keys []string
+	for _, line := range strings.Split(env, "\n") {
+		k, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(k, "FLYNN_POSTGRESQL_") && strings.HasSuffix(k, "_URL") {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
 func envHasKey(env, key string) bool {
 	prefix := key + "="
 	return strings.HasPrefix(env, prefix) || strings.Contains(env, "\n"+prefix)
@@ -27,12 +41,15 @@ func envHasKey(env, key string) bool {
 
 func assertPostgresAppEnv(t *testing.T, env, resource string) {
 	t.Helper()
-	if !envHasKey(env, "DATABASE_URL") {
-		t.Fatalf("app must set DATABASE_URL:\n%s", env)
+	keys := postgresColorURLKeys(env)
+	if len(keys) == 0 {
+		t.Fatalf("app must set FLYNN_POSTGRESQL_<COLOR>_URL:\n%s", env)
 	}
-	named := scopedDatabaseURLKey(resource)
-	if !envHasKey(env, named) {
-		t.Fatalf("app must set %s:\n%s", named, env)
+	if envHasKey(env, "DATABASE_URL") {
+		t.Fatalf("postgres must not set DATABASE_URL:\n%s", env)
+	}
+	if resource != "" && envHasKey(env, scopedDatabaseURLKey(resource)) {
+		t.Fatalf("postgres must not set instance-named URL %s:\n%s", scopedDatabaseURLKey(resource), env)
 	}
 	for _, k := range []string{
 		"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE",
@@ -45,7 +62,7 @@ func assertPostgresAppEnv(t *testing.T, env, resource string) {
 	}
 }
 
-var pgResourceName = regexp.MustCompile(`\b(pg-[a-z]+-[a-z]{6,8})\b`)
+var pgResourceName = regexp.MustCompile(`\b(postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8})\b`)
 
 const (
 	cmdQuick     = 20 * time.Second
@@ -81,6 +98,7 @@ type harness struct {
 	root *testing.T
 	t    *testing.T
 	app  string
+	peer string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -263,6 +281,13 @@ func (h *harness) waitReady(resource string, timeout time.Duration) {
 }
 
 func (h *harness) destroyBestEffort() {
+	if h.peer != "" {
+		peer := h.peer
+		h.peer = ""
+		if _, errOut, err := h.cmd(cmdDestroy, "-a", peer, "apps:destroy", "-y"); err != nil {
+			h.t.Logf("cleanup destroy peer %s: %v %s", peer, err, errOut)
+		}
+	}
 	if h.app == "" {
 		return
 	}
