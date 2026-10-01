@@ -315,6 +315,10 @@ func WriteHTML(w http.ResponseWriter, sess *Session, title, body string) {
 	if theme != "" {
 		attr = ` data-theme="` + html.EscapeString(theme) + `"`
 	}
+	bodyClass := "plugin-ui"
+	if strings.Contains(body, "side-panel-layer") {
+		bodyClass += " has-panel"
+	}
 	_, _ = fmt.Fprintf(w, `<!doctype html>
 <html%s>
 <head>
@@ -407,12 +411,34 @@ a { color: var(--color-primary); }
 .ok { color: var(--color-success); }
 .pill { display: inline-block; font-size: .72rem; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; padding: .12rem .45rem; border-radius: 999px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
 .mono { font-family: var(--font-mono); font-size: .85rem; }
+.hint { color: var(--color-text-muted); font-size: .85rem; margin: 0; }
+.form-stack { display: flex; flex-direction: column; gap: .85rem; }
+.form-stack label { margin: 0; }
+.tab-toolbar { display: flex; align-items: flex-start; justify-content: flex-end; gap: 1rem; margin: 0 0 1rem; flex-wrap: wrap; }
+.tab-toolbar.is-spread { justify-content: space-between; }
+.tab-toolbar-actions { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
+.tab-toolbar-actions label { margin: 0; display: flex; align-items: center; gap: .45rem; }
+.tab-toolbar-actions select { width: auto; max-width: 16rem; }
+.table-card { padding: 0; overflow: hidden; }
+.table-card table { margin: 0; }
+.table-card th, .table-card td { padding: .65rem 1.15rem; }
+.btn-sm { font-size: .8rem; padding: .32rem .7rem; }
+.btn-ghost { background: transparent; box-shadow: none; }
+.side-panel-layer { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: flex-end; align-items: stretch; }
+.side-panel-backdrop { position: absolute; inset: 0; border: 0; padding: 0; margin: 0; display: block; background: rgba(18,16,24,.45); cursor: pointer; text-indent: -9999px; overflow: hidden; box-shadow: none; }
+html[data-theme="light"] .side-panel-backdrop { background: rgba(28,25,23,.28); }
+.side-panel { position: relative; width: min(32rem, 100vw); height: 100%%; max-height: 100%%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface); border-left: 1px solid var(--color-border); box-shadow: -16px 0 40px rgba(0,0,0,.28); }
+.side-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 1rem 1.15rem .9rem; border-bottom: 1px solid var(--color-border); }
+.side-panel-title h2 { margin: 0; font-size: 1.05rem; font-weight: 650; }
+.side-panel-title .hint { margin: .35rem 0 0; }
+.side-panel-body { flex: 1; min-height: 0; overflow: auto; padding: 1.1rem 1.15rem; }
+.side-panel-foot { display: flex; justify-content: flex-end; align-items: center; gap: .5rem; padding: .85rem 1.15rem; border-top: 1px solid var(--color-border); background: var(--color-surface); }
 </style>
 </head>
-<body class="plugin-ui">
+<body class="%s">
 %s
 %s
-</body></html>`, attr, base, html.EscapeString(title), kicker, body)
+</body></html>`, attr, base, html.EscapeString(title), bodyClass, kicker, body)
 }
 
 // Require is middleware that attaches *Session or writes 401.

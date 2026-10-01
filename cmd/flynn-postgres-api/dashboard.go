@@ -324,37 +324,43 @@ func (h *handler) dashDatabases(w http.ResponseWriter, r *http.Request, sess *da
 		}
 	}
 	insts := h.instancesFor(sess)
+	primaries := dashWritablePrimaries(insts)
 	var b strings.Builder
 	b.WriteString(notice)
-	b.WriteString(`<div class="card"><h2>Databases</h2>`)
-	b.WriteString(`<p>These are logical databases on the Postgres server (<code>CREATE DATABASE</code>), not a new Flynn resource. Provision a new instance from the app Resources tab.</p>`)
-	b.WriteString(h.dashCreateDatabaseForm(insts))
-	b.WriteString(`<table><tr><th>Database</th><th>Instance</th><th>Role</th></tr>`)
+	b.WriteString(`<div class="tab-toolbar is-spread"><p class="hint">Logical databases on this Postgres server (<code>CREATE DATABASE</code>), not a new Flynn resource. Followers copy every database on the primary.</p>`)
+	if len(primaries) > 0 {
+		b.WriteString(`<div class="tab-toolbar-actions"><a class="btn btn-sm" href="databases?new=1">Create database</a></div>`)
+	}
+	b.WriteString(`</div><div class="card table-card"><table><tr><th>Database</th><th>Instance</th><th>Role</th><th>Host</th></tr>`)
 	rows := 0
 	for _, inst := range insts {
 		role := string(inst.Role)
 		if role == "" {
 			role = string(postgres.RolePrimary)
 		}
+		host := dashInstanceHost(inst)
 		dbs := inst.Databases
 		if len(dbs) == 0 {
-			fmt.Fprintf(&b, `<tr><td class="muted">—</td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(inst.App), html.EscapeString(role))
+			fmt.Fprintf(&b, `<tr><td class="muted">—</td><td><code>%s</code></td><td>%s</td><td><code>%s</code></td></tr>`, html.EscapeString(inst.App), html.EscapeString(role), html.EscapeString(host))
 			rows++
 			continue
 		}
 		for _, db := range dbs {
-			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td></tr>`, html.EscapeString(db.Name), html.EscapeString(inst.App), html.EscapeString(role))
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><code>%s</code></td></tr>`, html.EscapeString(db.Name), html.EscapeString(inst.App), html.EscapeString(role), html.EscapeString(host))
 			rows++
 		}
 	}
 	if rows == 0 {
-		b.WriteString(`<tr><td colspan="3" class="muted">No Postgres instance is attached yet.</td></tr>`)
+		b.WriteString(`<tr><td colspan="4" class="muted">No Postgres instance is attached yet.</td></tr>`)
 	}
-	b.WriteString(`</table><p class="muted">Same as <code>flynn pg create &lt;name&gt;</code>. Followers copy every database on the primary; create new ones on the primary only.</p></div>`)
+	b.WriteString(`</table></div><p class="muted">Same as <code>flynn pg create &lt;name&gt;</code>. Create new databases on the primary only.</p>`)
+	if r.URL.Query().Get("new") == "1" && len(primaries) > 0 {
+		b.WriteString(h.dashCreateDatabasePanel(primaries))
+	}
 	writeDash(w, sess, "Databases", b.String())
 }
 
-func (h *handler) dashCreateDatabaseForm(insts []*postgres.Instance) string {
+func dashWritablePrimaries(insts []*postgres.Instance) []*postgres.Instance {
 	var primaries []*postgres.Instance
 	for _, inst := range insts {
 		if inst == nil || inst.Role == postgres.RoleFollower || inst.ReadOnly {
@@ -362,11 +368,37 @@ func (h *handler) dashCreateDatabaseForm(insts []*postgres.Instance) string {
 		}
 		primaries = append(primaries, inst)
 	}
-	if len(primaries) == 0 {
-		return `<p class="muted">Attach a primary Postgres resource before creating a database.</p>`
+	return primaries
+}
+
+func dashInstanceHost(inst *postgres.Instance) string {
+	if inst == nil {
+		return "—"
 	}
+	if host := strings.TrimSpace(inst.ServiceHost); host != "" {
+		return host
+	}
+	return "—"
+}
+
+func (h *handler) dashCreateDatabasePanel(primaries []*postgres.Instance) string {
+	if len(primaries) == 0 {
+		return ""
+	}
+	return dashFormPanel(
+		"postgres-db-panel",
+		"Create database",
+		"A logical database on this Postgres server, not a new Flynn resource.",
+		"databases",
+		"postgres-db-form",
+		"databases",
+		"Create",
+		h.dashCreateDatabaseFields(primaries),
+	)
+}
+
+func (h *handler) dashCreateDatabaseFields(primaries []*postgres.Instance) string {
 	var b strings.Builder
-	b.WriteString(`<form method="post" class="stack" style="margin:0 0 1rem">`)
 	if len(primaries) > 1 {
 		b.WriteString(`<label>Instance<select name="instance">`)
 		for _, inst := range primaries {
@@ -378,13 +410,42 @@ func (h *handler) dashCreateDatabaseForm(insts []*postgres.Instance) string {
 			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
 		}
 		b.WriteString(`</select></label>`)
-	} else {
+	} else if len(primaries) == 1 {
 		fmt.Fprintf(&b, `<input type="hidden" name="instance" value="%s">`, html.EscapeString(instanceRef(primaries[0])))
 	}
-	b.WriteString(`<label>Database name<input name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,62}" placeholder="shop_analytics" autocomplete="off"></label>`)
-	b.WriteString(`<button class="primary" type="submit">Create database</button>`)
-	b.WriteString(`</form>`)
+	b.WriteString(`<label for="logical-db-name">Database name</label><input id="logical-db-name" name="name" required pattern="[A-Za-z_][A-Za-z0-9_]{0,62}" placeholder="shop_analytics" autocomplete="off">`)
 	return b.String()
+}
+
+func dashFormPanel(id, title, hint, closeHref, formID, action, submitLabel, fields string) string {
+	return fmt.Sprintf(`<div class="side-panel-layer" id="%s" data-close="%s">
+<a class="side-panel-backdrop" href="%s" aria-label="Close panel">Close</a>
+<div class="side-panel" role="dialog" aria-modal="true" aria-labelledby="%s-title">
+<div class="side-panel-head">
+<div class="side-panel-title">
+<h2 id="%s-title">%s</h2>
+<p class="hint">%s</p>
+</div>
+<a class="btn btn-ghost btn-sm" href="%s">Close</a>
+</div>
+<div class="side-panel-body">
+<form id="%s" class="form-stack" method="post" action="%s">
+%s
+</form>
+</div>
+<div class="side-panel-foot">
+<a class="btn btn-ghost btn-sm" href="%s">Cancel</a>
+<button type="submit" form="%s" class="btn btn-sm primary">%s</button>
+</div>
+</div>
+</div>`,
+		html.EscapeString(id), html.EscapeString(closeHref),
+		html.EscapeString(closeHref), html.EscapeString(id),
+		html.EscapeString(id), html.EscapeString(title), html.EscapeString(hint),
+		html.EscapeString(closeHref),
+		html.EscapeString(formID), html.EscapeString(action), fields,
+		html.EscapeString(closeHref), html.EscapeString(formID), html.EscapeString(submitLabel),
+	)
 }
 
 func (h *handler) dashUsers(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
@@ -719,11 +780,14 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	insts := h.instancesFor(sess)
 	var b strings.Builder
 	b.WriteString(notice)
-	b.WriteString(`<div class="card"><h2>Followers</h2><p>A follower is a separate read-only resource. Adding one always uses <strong>streaming</strong> replication and requires the same engine version as the primary. Wait until lag is zero, then promote it to take over or unfollow to keep a standalone writable copy.</p>`)
-	b.WriteString(`<p class="muted">Major-version upgrades are a separate action: they use logical replication, promote a new primary, then recreate each follower against that primary.</p>`)
+	b.WriteString(`<div class="tab-toolbar is-spread"><p class="hint">A follower is a separate read-only resource. Adding one always uses <strong>streaming</strong> replication on the same engine version. Wait until lag is zero, then promote it or unfollow to keep a standalone writable copy. Major-version upgrades use logical replication on the primary (<code>flynn pg:upgrade</code>).</p>`)
+	b.WriteString(`<div class="tab-toolbar-actions">`)
 	b.WriteString(h.dashAddFollowerForm(insts))
+	if primaries := dashWritablePrimaries(insts); len(primaries) > 0 {
+		b.WriteString(primaryActionForms(instanceRef(primaries[0]), h.store))
+	}
+	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Database</th><th>Role</th><th>Host</th><th></th></tr>`)
 	rows := 0
-	b.WriteString(`<table><tr><th>Instance</th><th>Database</th><th>Lag</th><th></th></tr>`)
 	for _, inst := range insts {
 		view := h.replicationView(inst)
 		if !strings.EqualFold(view.Role, string(postgres.RoleFollower)) {
@@ -733,14 +797,14 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 		if inst != nil && len(inst.Databases) > 0 {
 			db = inst.Databases[0].Name
 		}
-		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%d</td><td>%s</td></tr>`,
-			html.EscapeString(view.App), html.EscapeString(db), view.Lag, view.Actions)
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td></tr>`,
+			html.EscapeString(view.App), html.EscapeString(db), html.EscapeString(view.Role), html.EscapeString(dashInstanceHost(inst)), view.Actions)
 		rows++
 	}
 	if rows == 0 {
-		b.WriteString(`<tr><td colspan="4" class="muted">No followers yet.</td></tr>`)
+		b.WriteString(`<tr><td colspan="5" class="muted">This database has no followers yet.</td></tr>`)
 	}
-	b.WriteString(`</table><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>.</p></div>`)
+	b.WriteString(`</table></div><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>.</p>`)
 	writeDash(w, sess, "Followers", b.String())
 }
 
@@ -990,6 +1054,7 @@ func (h *handler) syncResourceEnv(sess *dashui.Session, inst *postgres.Instance)
 			continue
 		}
 		applyPostgresResourceEnv(inst, r.Env, nil)
+		stripTenantPostgresCredentials(r.Env)
 		_ = h.client.PutResource(r)
 		return
 	}
@@ -1098,23 +1163,26 @@ func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
 		primaries = append(primaries, inst)
 	}
 	if len(primaries) == 0 {
-		return `<p class="muted">Attach a primary Postgres resource before adding a follower.</p>`
+		return ""
 	}
 	var b strings.Builder
-	b.WriteString(`<form method="post" class="stack" style="margin:0 0 1rem">`)
+	b.WriteString(`<form method="post" style="margin:0">`)
 	b.WriteString(`<input type="hidden" name="action" value="follow">`)
-	b.WriteString(`<label>Primary<select name="instance">`)
-	for _, inst := range primaries {
-		ref := instanceRef(inst)
-		label := inst.App
-		if label == "" {
-			label = ref
+	if len(primaries) == 1 {
+		fmt.Fprintf(&b, `<input type="hidden" name="instance" value="%s">`, html.EscapeString(instanceRef(primaries[0])))
+	} else {
+		b.WriteString(`<label>Primary<select name="instance">`)
+		for _, inst := range primaries {
+			ref := instanceRef(inst)
+			label := inst.App
+			if label == "" {
+				label = ref
+			}
+			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
 		}
-		fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
+		b.WriteString(`</select></label>`)
 	}
-	b.WriteString(`</select></label>`)
-	b.WriteString(`<p class="muted">Streaming replication on the same engine version. Use Upgrade on the primary for a major-version swap.</p>`)
-	b.WriteString(`<button class="primary" type="submit">Add follower</button>`)
+	b.WriteString(`<button class="btn btn-sm" type="submit">Add follower</button>`)
 	b.WriteString(`</form>`)
 	return b.String()
 }

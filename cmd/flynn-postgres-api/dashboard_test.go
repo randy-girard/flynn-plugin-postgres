@@ -377,6 +377,86 @@ func TestDashCreateLogicalDatabase(t *testing.T) {
 	}
 }
 
+func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/databases", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, `href="databases?new=1"`) {
+		t.Fatalf("create database should live in the tab toolbar: %s", body)
+	}
+	if !strings.Contains(body, `class="card table-card"`) || !strings.Contains(body, "<th>Database</th>") {
+		t.Fatalf("databases should list in a table card: %s", body)
+	}
+	if strings.Contains(body, `id="postgres-db-panel"`) {
+		t.Fatalf("create panel should stay closed until ?new=1: %s", body)
+	}
+	idxToolbar := strings.Index(body, `class="tab-toolbar is-spread"`)
+	idxTable := strings.Index(body, `class="card table-card"`)
+	idxCreate := strings.Index(body, "Create database")
+	if idxToolbar < 0 || idxTable < 0 || idxCreate < 0 || idxCreate > idxTable {
+		t.Fatalf("Create database must appear in the toolbar, not the table card: %s", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases?new=1", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("panel status %d %s", rec.Code, rec.Body.String())
+	}
+	panel := rec.Body.String()
+	if !strings.Contains(panel, `id="postgres-db-panel"`) || !strings.Contains(panel, `role="dialog"`) || !strings.Contains(panel, `id="logical-db-name"`) {
+		t.Fatalf("create panel: %s", panel)
+	}
+}
+
+func TestDashFollowersListIsTable(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, "Add follower") {
+		t.Fatalf("add follower should live in the tab toolbar: %s", body)
+	}
+	if !strings.Contains(body, `class="card table-card"`) {
+		t.Fatalf("followers should list in a table card: %s", body)
+	}
+	for _, col := range []string{"<th>Instance</th>", "<th>Database</th>", "<th>Role</th>", "<th>Host</th>"} {
+		if !strings.Contains(body, col) {
+			t.Fatalf("missing %s in %s", col, body)
+		}
+	}
+	if !strings.Contains(body, "This database has no followers yet.") {
+		t.Fatalf("empty followers row: %s", body)
+	}
+	idxToolbar := strings.Index(body, "Add follower")
+	idxTable := strings.Index(body, `class="card table-card"`)
+	if idxToolbar < 0 || idxTable < 0 || idxToolbar > idxTable {
+		t.Fatalf("Add follower must appear in the toolbar, not the table card: %s", body)
+	}
+}
+
 func TestDashBackupDumpEndpoint(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	store := postgres.NewStore()

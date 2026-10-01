@@ -75,6 +75,12 @@ func TestWriteJSONAndHTML(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "Back to app") || strings.Contains(rec.Body.String(), "<h1>") {
 		t.Fatalf("dashboard iframe should not duplicate the SPA heading: %s", rec.Body.String())
 	}
+	rec = httptest.NewRecorder()
+	WriteHTML(rec, &Session{AppID: "demo", Base: "/dashboard/"}, "Databases", `<div class="side-panel-layer"><div class="side-panel">form</div></div>`)
+	page := rec.Body.String()
+	if !strings.Contains(page, "has-panel") || !strings.Contains(page, "tab-toolbar") || !strings.Contains(page, "table-card") {
+		t.Fatalf("plugin chrome missing toolbar/table/panel styles: %s", page)
+	}
 }
 
 func TestNavStandaloneVsHosted(t *testing.T) {
