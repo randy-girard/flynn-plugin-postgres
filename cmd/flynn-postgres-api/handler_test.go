@@ -447,6 +447,36 @@ func TestBeginClusterUpgradesEmptyWhenNotLive(t *testing.T) {
 	h.autoStartClusterUpgrades()
 }
 
+func TestSkipClusterUpgradeIgnoresPluginImageID(t *testing.T) {
+	cur := postgres.EngineVersion()
+	if !skipClusterUpgrade("") || !skipClusterUpgrade(cur) {
+		t.Fatalf("same or unknown engine must not cluster-upgrade (engine %q)", cur)
+	}
+	if cur != "15" && skipClusterUpgrade("15") {
+		t.Fatal("older engine must cluster-upgrade")
+	}
+}
+
+func TestAlreadyCurrentSkipsMatchingEngine(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	inst, _, err := h.store.Provision(postgres.ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !h.alreadyCurrent(inst) {
+		t.Fatalf("matching engine must skip: %#v", inst)
+	}
+	old := *inst
+	old.EngineVersion = "15"
+	if postgres.EngineVersion() != "15" && h.alreadyCurrent(&old) {
+		t.Fatal("older engine must not skip")
+	}
+	started, skipped := h.beginClusterUpgrades()
+	if len(started) != 0 {
+		t.Fatalf("boot must not logical-upgrade matching engines: started %#v skipped %#v", started, skipped)
+	}
+}
+
 func firstColorURL(env map[string]string) (key, val string) {
 	const p = "FLYNN_POSTGRESQL_"
 	for k, v := range env {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/julienschmidt/httprouter"
 	"github.com/randy-girard/flynn-plugin-postgres"
+	ct "github.com/randy-girard/flynn/controller/types"
 	"github.com/randy-girard/flynn/pkg/httphelper"
 )
 
@@ -82,6 +83,9 @@ func (h *handler) clusterUpgrades(w http.ResponseWriter, _ *http.Request, _ http
 	})
 }
 
+// autoStartClusterUpgrades upgrades primaries whose ENGINE_VERSION is behind
+// this plugin image. It does not logical-upgrade on a plugin:update --rebuild
+// that only changes the artifact id.
 func (h *handler) autoStartClusterUpgrades() {
 	if h == nil || !h.live() {
 		return
@@ -173,22 +177,39 @@ func (h *handler) upgradeCandidates() []*postgres.Instance {
 }
 
 func (h *handler) alreadyCurrent(inst *postgres.Instance) bool {
-	if h == nil || !h.live() || inst == nil || strings.TrimSpace(inst.App) == "" {
+	if inst == nil || strings.TrimSpace(inst.App) == "" {
 		return false
+	}
+	if !h.live() {
+		return skipClusterUpgrade(inst.EngineVersion)
 	}
 	rel, err := h.client.GetAppRelease(inst.App)
-	if err != nil || rel == nil || len(rel.ArtifactIDs) == 0 {
-		return false
+	return clusterUpgradeSkip(rel, err, inst.EngineVersion)
+}
+
+// clusterUpgradeSkip is the live-cluster boot decision. A missing or
+// unreadable release is not "engine behind." Matching or unknown
+// ENGINE_VERSION skips. The plugin image id on the release is irrelevant:
+// plugin:update --rebuild always uploads a new layer, which used to start
+// follow/promote on every instance.
+func clusterUpgradeSkip(rel *ct.Release, err error, storedEngine string) bool {
+	if err != nil || rel == nil {
+		return true
 	}
+	installed := strings.TrimSpace(storedEngine)
 	if rel.Env != nil {
-		if v := strings.TrimSpace(rel.Env["ENGINE_VERSION"]); postgres.NeedsEngineUpgrade(v, postgres.EngineVersion()) {
-			return false
+		if v := strings.TrimSpace(rel.Env["ENGINE_VERSION"]); v != "" {
+			installed = v
 		}
 	}
-	if inst.EngineVersion != "" && postgres.NeedsEngineUpgrade(inst.EngineVersion, postgres.EngineVersion()) {
-		return false
-	}
-	return rel.ArtifactIDs[0] == h.imageID
+	return skipClusterUpgrade(installed)
+}
+
+// skipClusterUpgrade is true when the instance already runs this plugin's
+// engine. A new plugin image (plugin:update --rebuild) is not an engine
+// upgrade; follow/promote must not run on every API boot.
+func skipClusterUpgrade(installedEngine string) bool {
+	return !postgres.NeedsEngineUpgrade(installedEngine, postgres.EngineVersion())
 }
 
 func (h *handler) version(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {

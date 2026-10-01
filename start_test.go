@@ -247,6 +247,13 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(string(mainSrc), "autoStartClusterUpgrades") {
 		t.Fatal("plugin API must start cluster upgrades on boot")
 	}
+	upgSrc, err := os.ReadFile("cmd/flynn-postgres-api/upgrade.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(upgSrc), "ArtifactIDs[0]") || strings.Contains(string(upgSrc), "rel.ArtifactIDs") {
+		t.Fatal("boot cluster upgrades must not compare release image ids; plugin:update --rebuild would logical-upgrade every instance")
+	}
 	pkgs, err := os.ReadFile("img/packages.sh")
 	if err != nil {
 		t.Fatal(err)
