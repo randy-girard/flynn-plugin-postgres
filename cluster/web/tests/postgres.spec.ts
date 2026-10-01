@@ -94,7 +94,7 @@ test.describe('postgres dashboard (live cluster)', () => {
 
   test('creates and lists a logical database', async ({ page }) => {
     await openPostgresTab(page, app, 'Databases')
-    await expect(page.getByRole('heading', { name: 'Databases' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create database' })).toBeVisible()
     await page.getByRole('button', { name: 'Create database' }).click()
     const panel = page.getByRole('dialog', { name: 'Create database' })
     await expect(panel).toBeVisible()
@@ -250,7 +250,7 @@ async function openAppResources(page: Page, app: string): Promise<void> {
   await page.goto('/apps')
   await page.getByRole('link', { name: app, exact: true }).click()
   await page.getByRole('navigation', { name: 'App sections' }).getByRole('link', { name: 'Resources' }).click()
-  await expect(page.getByRole('heading', { name: 'Resources' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Provision resource' })).toBeVisible()
 }
 
 async function openPostgresInstanceTab(page: Page, app: string, instance: string, tab: string): Promise<void> {
