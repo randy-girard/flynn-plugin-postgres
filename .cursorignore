@@ -1,0 +1,43 @@
+# Extra exclusions beyond .gitignore. Cursor already respects gitignore.
+# List generated images, coverage, and e2e caches so they stay out of
+# Agent/Tab/@ context if this repo is opened as the workspace root.
+
+# plugin-build squashfs layers
+dist/
+*.squashfs
+.plugin-build-cache/
+script/docker/dev/.image-built
+
+# unit coverage HTML
+coverage/
+
+# local Flynn overlay and scratch
+go.work
+go.work.sum
+tmp/
+bin/
+
+# Node / Playwright (dashboard UI and cluster e2e)
+node_modules/
+web/node_modules/
+web/dist/
+cluster/web/node_modules/
+cluster/web/test-results/
+cluster/web/playwright-report/
+cluster/web/blob-report/
+cluster/web/playwright/.cache/
+
+# vendored modules if present
+vendor/
+
+# split upstream tarballs (kafka) and installer ISOs
+*.tgz
+*.tgz.*
+*.iso
+
+# secrets
+.env
+.env.*
+*.key
+*-key.pem
+
