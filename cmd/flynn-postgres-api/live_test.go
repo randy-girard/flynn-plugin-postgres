@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,9 @@ func (f *fakeInstanceControl) CreateApp(app *ct.App) error {
 func (f *fakeInstanceControl) CreateRelease(appID string, release *ct.Release) error {
 	if release.ID == "" {
 		release.ID = "rel-" + appID
+		if n := len(f.releases); n > 0 {
+			release.ID += "-" + strconv.Itoa(n)
+		}
 	}
 	f.releases = append(f.releases, release)
 	return nil
@@ -37,6 +41,31 @@ func (f *fakeInstanceControl) CreateRelease(appID string, release *ct.Release) e
 func (f *fakeInstanceControl) ScaleAppRelease(_, _ string, opts ct.ScaleOptions) error {
 	f.scaled = append(f.scaled, opts)
 	return nil
+}
+
+func (f *fakeInstanceControl) GetApp(id string) (*ct.App, error) {
+	for _, a := range f.apps {
+		if a != nil && (a.ID == id || a.Name == id) {
+			return a, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+func (f *fakeInstanceControl) GetAppRelease(id string) (*ct.Release, error) {
+	if f.current != nil {
+		if rid := f.current[id]; rid != "" {
+			for _, r := range f.releases {
+				if r != nil && r.ID == rid {
+					return r, nil
+				}
+			}
+		}
+	}
+	if len(f.releases) > 0 {
+		return f.releases[len(f.releases)-1], nil
+	}
+	return nil, errors.New("not found")
 }
 
 func (f *fakeInstanceControl) SetAppRelease(appID, releaseID string) error {
@@ -186,6 +215,43 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	}
 	if ctrl.releases[0].Env["POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["POSTGRES_LEADER"] != "pg-leader" {
 		t.Fatalf("role env %#v", ctrl.releases[0].Env)
+	}
+}
+
+func TestStampIsolatedRoleClearsFollowerMarkers(t *testing.T) {
+	ctrl := &fakeInstanceControl{}
+	leader := &postgres.Instance{
+		App:         "pg-leader",
+		AppUser:     "app_u",
+		AppPassword: "apppw",
+		Databases:   []postgres.Database{{Name: "db_shop"}},
+		ServiceHost: "leader.pg-leader.discoverd",
+	}
+	fol := &postgres.Instance{
+		App:         "pg-follower",
+		AppUser:     "app_u",
+		AppPassword: "apppw",
+		Role:        postgres.RoleFollower,
+		Databases:   []postgres.Database{{Name: "db_shop"}},
+	}
+	if err := startIsolatedInstance(ctrl, "img-1", fol, leader, func(string, time.Duration) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	fol.Role = postgres.RoleStandalone
+	fol.LeaderID = ""
+	fol.ReadOnly = false
+	if err := stampIsolatedRole(ctrl, fol, nil); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := ctrl.GetAppRelease("pg-follower")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Env["POSTGRES_ROLE"] != "primary" {
+		t.Fatalf("role %#v", rel.Env)
+	}
+	if rel.Env["POSTGRES_LEADER"] != "" || rel.Env["POSTGRES_PRIMARY_URL"] != "" {
+		t.Fatalf("leftover follower markers %#v", rel.Env)
 	}
 }
 

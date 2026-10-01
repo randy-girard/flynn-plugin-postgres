@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/julienschmidt/httprouter"
@@ -201,12 +202,17 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 		Env: env,
 	}}
 	leader := strings.TrimSpace(env["POSTGRES_LEADER"])
-	if leader != "" {
-		inst.LeaderID = leader
-	}
-	if strings.EqualFold(strings.TrimSpace(env["POSTGRES_ROLE"]), "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
+	role := strings.TrimSpace(env["POSTGRES_ROLE"])
+	if strings.EqualFold(role, "primary") || strings.EqualFold(role, "standalone") {
+		inst.Role = postgres.RolePrimary
+		inst.ReadOnly = false
+		inst.LeaderID = ""
+	} else if strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
 		inst.Role = postgres.RoleFollower
 		inst.ReadOnly = true
+		if leader != "" {
+			inst.LeaderID = leader
+		}
 	}
 	for _, aid := range r.Apps {
 		if aid != "" && aid != app {
@@ -403,7 +409,7 @@ func (h *handler) dashUsers(w http.ResponseWriter, r *http.Request, sess *dashui
 	var b strings.Builder
 	b.WriteString(notice)
 	b.WriteString(`<div class="card"><h2>Users</h2>`)
-	b.WriteString(`<p>Application logins on this Postgres instance. Create a role and grant it on a logical database. The instance PGUSER is listed; the platform superuser is not.</p>`)
+	b.WriteString(`<p>Application logins on this Postgres cluster. Followers share the primary's roles, so each user is listed once. The primary PGUSER is listed; replica connection users and the platform superuser are not.</p>`)
 	b.WriteString(h.dashCreateUserForm(h.instancesFor(sess)))
 	b.WriteString(`<table><tr><th>User</th><th>Database</th><th>Instance</th></tr>`)
 	if len(users) == 0 {
@@ -477,7 +483,19 @@ type userView struct {
 	Instance string `json:"instance,omitempty"`
 }
 
+func isReplicaInstance(inst *postgres.Instance) bool {
+	return inst != nil && (inst.Role == postgres.RoleFollower || inst.ReadOnly)
+}
+
 func (h *handler) collectUsers(sess *dashui.Session) []userView {
+	insts := append([]*postgres.Instance(nil), h.instancesFor(sess)...)
+	sort.SliceStable(insts, func(i, j int) bool {
+		ri, rj := isReplicaInstance(insts[i]), isReplicaInstance(insts[j])
+		if ri == rj {
+			return false
+		}
+		return !ri && rj
+	})
 	var out []userView
 	seen := map[string]bool{}
 	add := func(u userView) {
@@ -485,14 +503,14 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 		if u.Name == "" {
 			return
 		}
-		key := strings.ToLower(u.Name) + "\x00" + u.Database + "\x00" + u.Instance
+		key := strings.ToLower(u.Name) + "\x00" + u.Database
 		if seen[key] {
 			return
 		}
 		seen[key] = true
 		out = append(out, u)
 	}
-	for _, inst := range h.instancesFor(sess) {
+	for _, inst := range insts {
 		if inst == nil {
 			continue
 		}
@@ -501,11 +519,15 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 			db = inst.Databases[0].Name
 		}
 		ref := instanceRef(inst)
-		if inst.AppUser != "" {
+		replica := isReplicaInstance(inst)
+		if inst.AppUser != "" && !replica {
 			add(userView{Name: inst.AppUser, Database: db, Instance: inst.App})
 		}
 		if h.live() {
 			for _, u := range listUsersOnInstance(inst) {
+				if replica && inst.AppUser != "" && strings.EqualFold(u.Name, inst.AppUser) {
+					continue
+				}
 				add(userView{Name: u.Name, Database: firstNonEmpty(u.Database, db), Instance: inst.App})
 			}
 		}
@@ -522,6 +544,9 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 					continue
 				}
 				for _, u := range stored {
+					if replica && inst.AppUser != "" && strings.EqualFold(u.Name, inst.AppUser) {
+						continue
+					}
 					add(userView{Name: u.Name, Database: firstNonEmpty(u.Database, db), Instance: inst.App})
 				}
 			}
@@ -895,12 +920,18 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 			return "", err
 		}
 		if res != nil {
+			if err := h.stampIsolatedRole(res.Promoted); err != nil {
+				return "", err
+			}
 			h.syncResourceEnv(sess, res.Promoted)
 		}
 		return "Follower promoted. It is now the primary. The previous leader remains as its own resource.", nil
 	case "unfollow":
 		inst, err := h.store.Unfollow(id)
 		if err != nil {
+			return "", err
+		}
+		if err := h.stampIsolatedRole(inst); err != nil {
 			return "", err
 		}
 		h.syncResourceEnv(sess, inst)
@@ -959,10 +990,6 @@ func (h *handler) syncResourceEnv(sess *dashui.Session, inst *postgres.Instance)
 			continue
 		}
 		applyPostgresResourceEnv(inst, r.Env, nil)
-		if inst.Role != postgres.RoleFollower {
-			delete(r.Env, "POSTGRES_LEADER")
-			delete(r.Env, "POSTGRES_PRIMARY_URL")
-		}
 		_ = h.client.PutResource(r)
 		return
 	}

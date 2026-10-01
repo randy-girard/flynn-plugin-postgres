@@ -193,3 +193,70 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	}
 	return nil
 }
+
+type isolatedReleaseClient interface {
+	GetApp(string) (*ct.App, error)
+	GetAppRelease(string) (*ct.Release, error)
+	CreateRelease(string, *ct.Release) error
+	SetAppRelease(string, string) error
+}
+
+func (h *handler) stampIsolatedRole(inst *postgres.Instance) error {
+	if h == nil || h.client == nil || inst == nil {
+		return nil
+	}
+	var leader *postgres.Instance
+	if inst.Role == postgres.RoleFollower && inst.LeaderID != "" && h.store != nil {
+		leader, _ = h.store.Get(inst.LeaderID)
+	}
+	return stampIsolatedRole(h.client, inst, leader)
+}
+
+// stampIsolatedRole rewrites the isolated postgres app release so the
+// dashboard does not keep treating an unfollowed copy as a replica of its
+// former leader (POSTGRES_LEADER / POSTGRES_PRIMARY_URL on that app).
+func stampIsolatedRole(c isolatedReleaseClient, inst *postgres.Instance, leader *postgres.Instance) error {
+	if c == nil || inst == nil || strings.TrimSpace(inst.App) == "" {
+		return nil
+	}
+	app, err := c.GetApp(inst.App)
+	if err != nil || app == nil {
+		return err
+	}
+	rel, err := c.GetAppRelease(app.ID)
+	if err != nil || rel == nil {
+		return err
+	}
+	env := map[string]string{}
+	for k, v := range rel.Env {
+		env[k] = v
+	}
+	applyPostgresResourceEnv(inst, env, leader)
+	if envEqual(rel.Env, env) {
+		return nil
+	}
+	next := *rel
+	next.ID = ""
+	next.Env = env
+	if err := c.CreateRelease(app.ID, &next); err != nil {
+		return err
+	}
+	return c.SetAppRelease(app.ID, next.ID)
+}
+
+func envEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	for k := range b {
+		if _, ok := a[k]; !ok {
+			return false
+		}
+	}
+	return true
+}

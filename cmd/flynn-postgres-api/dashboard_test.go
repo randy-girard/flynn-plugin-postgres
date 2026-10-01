@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -484,6 +485,91 @@ func TestDashListUsersIncludesStoreUserWhenSessionIsAppUUID(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
 		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashListUsersOnceAcrossFollowers(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := leader.Databases[0].Name
+	if err := store.AddUser(leader.ID, "alice", "secret", db); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+	var users []userView
+	if err := json.Unmarshal(rec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("json %v %s", err, rec.Body.String())
+	}
+	counts := map[string]int{}
+	for _, u := range users {
+		counts[u.Name]++
+	}
+	if counts["alice"] != 1 {
+		t.Fatalf("alice should appear once after follow, got %#v", users)
+	}
+	if counts[leader.AppUser] != 1 {
+		t.Fatalf("primary PGUSER should appear once, got %#v", users)
+	}
+
+	h.listResources = func(app string) ([]*ct.Resource, error) {
+		if app != "shop-b" {
+			t.Fatalf("app %q", app)
+		}
+		return []*ct.Resource{
+			{
+				ID:         "res-leader",
+				ProviderID: "postgres",
+				Env: map[string]string{
+					"FLYNN_POSTGRES": "pg-orchid-xkhthp",
+					"PGDATABASE":     "appdb",
+					"PGUSER":         "app_leader",
+					"POSTGRES_ROLE":  "primary",
+				},
+			},
+			{
+				ID:         "res-fol",
+				ProviderID: "postgres",
+				Env: map[string]string{
+					"FLYNN_POSTGRES":  "pg-willow-abcdef",
+					"PGDATABASE":      "appdb",
+					"PGUSER":          "app_follower_login",
+					"POSTGRES_ROLE":   "follower",
+					"POSTGRES_LEADER": "pg-orchid-xkhthp",
+				},
+			},
+		}, nil
+	}
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-b")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("controller list %d %s", rec.Code, rec.Body.String())
+	}
+	users = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("json %v %s", err, rec.Body.String())
+	}
+	counts = map[string]int{}
+	for _, u := range users {
+		counts[u.Name]++
+	}
+	if counts["app_leader"] != 1 || counts["app_follower_login"] != 0 {
+		t.Fatalf("follower connection user should not be listed, got %#v", users)
 	}
 }
 

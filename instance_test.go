@@ -253,6 +253,16 @@ func TestInstanceFromEnv(t *testing.T) {
 	if fol == nil || fol.Role != RoleFollower || fol.LeaderID != "pg-orchid-xkhthp" {
 		t.Fatalf("follower %+v", fol)
 	}
+	unfollowed := InstanceFromEnv("id", "pg-willow-abcdef", map[string]string{
+		"FLYNN_POSTGRES":       "pg-willow-abcdef",
+		"POSTGRES_ROLE":        "primary",
+		"POSTGRES_LEADER":      "pg-orchid-xkhthp",
+		"POSTGRES_PRIMARY_URL": "postgres://leader/db",
+		"POSTGRES_USER":        "app_live",
+	})
+	if unfollowed == nil || unfollowed.Role != RolePrimary || unfollowed.LeaderID != "" || unfollowed.ReadOnly {
+		t.Fatalf("unfollowed leftover markers %+v", unfollowed)
+	}
 	if InstanceFromEnv("id", "shop", map[string]string{"REDIS_URL": "redis://x"}) != nil {
 		t.Fatal("non-postgres env")
 	}
@@ -577,7 +587,7 @@ func TestSecondDatabaseOnAnAppUsesNamedURL(t *testing.T) {
 		t.Fatalf("second replaced DATABASE_URL: %#v", envB)
 	}
 	parts := strings.Split(b.App, "-")
-	want := strings.ToUpper(parts[0]+"_"+parts[1]) + "_DATABASE_URL"
+	want := strings.ToUpper(strings.Join(parts, "_")) + "_DATABASE_URL"
 	if envB[want] == "" {
 		t.Fatalf("env %#v want %s", envB, want)
 	}

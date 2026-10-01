@@ -389,12 +389,23 @@ func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.P
 		writeAPIError(w, err)
 		return
 	}
+	if res != nil {
+		if err := h.stampIsolatedRole(res.Promoted); err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		h.syncResourceEnv(nil, res.Promoted)
+	}
 	httphelper.JSON(w, 200, res)
 }
 
 func (h *handler) unfollow(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
 	inst, err := h.store.Unfollow(p.ByName("id"))
 	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if err := h.stampIsolatedRole(inst); err != nil {
 		writeAPIError(w, err)
 		return
 	}
@@ -487,9 +498,11 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 		if leader != nil && strings.TrimSpace(leader.App) != "" {
 			env["POSTGRES_LEADER"] = leader.App
 		}
-	} else {
-		env["POSTGRES_ROLE"] = "primary"
+		return
 	}
+	env["POSTGRES_ROLE"] = "primary"
+	delete(env, "POSTGRES_LEADER")
+	delete(env, "POSTGRES_PRIMARY_URL")
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {

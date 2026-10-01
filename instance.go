@@ -980,7 +980,12 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	if db != "" {
 		inst.Databases = []Database{{Name: db}}
 	}
-	if strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || strings.EqualFold(strings.TrimSpace(env["POSTGRES_ROLE"]), "follower") {
+	role := strings.TrimSpace(env["POSTGRES_ROLE"])
+	if strings.EqualFold(role, "primary") || strings.EqualFold(role, "standalone") {
+		inst.Role = RolePrimary
+		inst.ReadOnly = false
+		inst.LeaderID = ""
+	} else if strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_LEADER"]) != "" {
 		inst.Role = RoleFollower
 		inst.ReadOnly = true
 		inst.LeaderID = firstNonEmpty(env["POSTGRES_LEADER"], inst.LeaderID)
