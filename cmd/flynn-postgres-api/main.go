@@ -179,9 +179,8 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		writeAPIError(w, err)
 		return
 	}
-	followers := h.followerApps(inst)
-	if len(followers) > 0 {
-		writeAPIError(w, fmt.Errorf("%w: %s", postgres.ErrHasFollowers, strings.Join(followers, ", ")))
+	if err := postgres.CanDeleteResource(inst, h.followerApps(inst)); err != nil {
+		writeAPIError(w, err)
 		return
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {

@@ -19,6 +19,7 @@ var dashNav = [][2]string{
 	{"users", "Users"},
 	{"backup", "Backup"},
 	{"replication", "Followers"},
+	{"settings", "Settings"},
 }
 
 func (h *handler) mountDashboard() {
@@ -37,6 +38,8 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/backup", wrap(h.dashBackup))
 	h.router.GET("/dashboard/replication", wrap(h.dashReplication))
 	h.router.POST("/dashboard/replication", wrap(h.dashReplication))
+	h.router.GET("/dashboard/settings", wrap(h.dashSettings))
+	h.router.POST("/dashboard/settings", wrap(h.dashSettings))
 	h.router.GET("/dashboard/api/databases", wrap(h.dashListDatabases))
 	h.router.POST("/dashboard/api/databases", wrap(h.dashCreateDatabase))
 	h.router.GET("/dashboard/api/users", wrap(h.dashListUsers))
@@ -714,6 +717,144 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	}
 	b.WriteString(`</table><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>.</p></div>`)
 	writeDash(w, sess, "Followers", b.String())
+}
+
+func (h *handler) dashSettings(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	notice := ""
+	if r.Method == http.MethodPost {
+		_ = r.ParseForm()
+		msg, err := h.dashSettingsResult(sess, r)
+		if wantsJSON(r) {
+			if err != nil {
+				writeAPIError(w, err)
+				return
+			}
+			dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": msg})
+			return
+		}
+		if err != nil {
+			notice = `<p class="banner">` + html.EscapeString(err.Error()) + `</p>`
+		} else {
+			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
+		}
+	}
+	insts := h.instancesFor(sess)
+	var b strings.Builder
+	b.WriteString(notice)
+	b.WriteString(`<div class="card"><h2>Settings</h2>`)
+	b.WriteString(`<p>Delete this Postgres resource. A follower can always be deleted. A primary can be deleted only when it has no followers.</p>`)
+	if len(insts) == 0 {
+		b.WriteString(`<p class="muted">No Postgres resource is attached to this app.</p></div>`)
+		writeDash(w, sess, "Settings", b.String())
+		return
+	}
+	b.WriteString(`<table><tr><th>Instance</th><th>Role</th><th>Followers</th><th></th></tr>`)
+	for _, inst := range insts {
+		ref := instanceRef(inst)
+		role := string(inst.Role)
+		if role == "" {
+			role = string(postgres.RolePrimary)
+		}
+		followers := h.followerApps(inst)
+		blocked := postgres.DeleteBlockedBy(inst, followers)
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%s</td><td>`, html.EscapeString(ref), html.EscapeString(role))
+		if len(followers) == 0 {
+			b.WriteString(`—`)
+		} else {
+			b.WriteString(`<code>` + html.EscapeString(strings.Join(followers, ", ")) + `</code>`)
+		}
+		b.WriteString(`</td><td>`)
+		if len(blocked) == 0 {
+			esc := html.EscapeString(ref)
+			b.WriteString(`<form method="post" style="margin:0" onsubmit="return confirm('Delete Postgres resource ` + esc + `? This destroys the instance.')">`)
+			b.WriteString(`<input type="hidden" name="action" value="delete"><input type="hidden" name="instance" value="` + esc + `">`)
+			b.WriteString(`<button class="danger" type="submit">Delete resource</button></form>`)
+		} else {
+			b.WriteString(`<button class="danger" type="button" disabled>Delete resource</button>`)
+		}
+		b.WriteString(`</td></tr>`)
+		if len(blocked) > 0 {
+			fmt.Fprintf(&b, `<tr><td colspan="4" class="muted">Remove or unfollow %s before deleting this primary.</td></tr>`, html.EscapeString(strings.Join(blocked, ", ")))
+		}
+	}
+	b.WriteString(`</table><p class="muted">Same as <code>flynn resource:remove &lt;instance&gt;</code>.</p></div>`)
+	writeDash(w, sess, "Settings", b.String())
+}
+
+func (h *handler) dashSettingsResult(sess *dashui.Session, r *http.Request) (string, error) {
+	if strings.TrimSpace(r.FormValue("action")) != "delete" {
+		return "", fmt.Errorf("unknown settings action")
+	}
+	inst := h.instanceByRef(sess, r.FormValue("instance"))
+	if inst == nil {
+		return "", fmt.Errorf("choose a postgres resource to delete")
+	}
+	if err := h.deleteInstanceResource(sess, inst); err != nil {
+		return "", err
+	}
+	return "Deleted resource " + instanceRef(inst), nil
+}
+
+func (h *handler) instanceByRef(sess *dashui.Session, ref string) *postgres.Instance {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	for _, inst := range h.instancesFor(sess) {
+		if inst == nil {
+			continue
+		}
+		if strings.EqualFold(instanceRef(inst), ref) || strings.EqualFold(inst.ID, ref) || strings.EqualFold(inst.App, ref) {
+			return inst
+		}
+	}
+	if h.store != nil {
+		if inst, err := h.store.Get(ref); err == nil {
+			return inst
+		}
+	}
+	return nil
+}
+
+func (h *handler) deleteInstanceResource(sess *dashui.Session, inst *postgres.Instance) error {
+	if err := postgres.CanDeleteResource(inst, h.followerApps(inst)); err != nil {
+		return err
+	}
+	if h.client != nil {
+		app := sessApp(sess)
+		if sess != nil && strings.TrimSpace(sess.AppID) != "" {
+			app = sess.AppID
+		}
+		p, err := h.client.GetProvider("postgres")
+		if err != nil {
+			return err
+		}
+		resources, err := h.appResources(app)
+		if err != nil {
+			return err
+		}
+		for _, r := range resources {
+			if r == nil {
+				continue
+			}
+			name := ""
+			if r.Env != nil {
+				name = strings.TrimSpace(r.Env["FLYNN_POSTGRES"])
+			}
+			if name != inst.App && r.ExternalID != inst.ID && r.ID != inst.ID && name != instanceRef(inst) {
+				continue
+			}
+			_, err = h.client.DeleteResource(p.ID, r.ID)
+			return err
+		}
+	}
+	if h.store != nil {
+		h.store.Forget(inst.ID)
+		if inst.App != "" && inst.App != inst.ID {
+			h.store.Forget(inst.App)
+		}
+	}
+	return nil
 }
 
 func wantsJSON(r *http.Request) bool {

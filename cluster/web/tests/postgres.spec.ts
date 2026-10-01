@@ -23,6 +23,7 @@ import {
 test.describe('postgres dashboard (live cluster)', () => {
   test.describe.configure({ mode: 'serial' })
   let app = ''
+  let follower = ''
   const dbName = `e2e_web_${uniqueSuffix()}`
   const userName = `e2e_wu_${uniqueSuffix()}`
   const userPass = `P${uniqueSuffix()}${uniqueSuffix()}`
@@ -142,8 +143,8 @@ test.describe('postgres dashboard (live cluster)', () => {
     expect(got).toBe(probeN)
   })
 
-  test('adds a follower, verifies replication, then unfollows', async ({ page }) => {
-    test.setTimeout(followMs + replicaWait * 3 + destroy + 30_000)
+  test('adds a follower and verifies replication', async ({ page }) => {
+    test.setTimeout(followMs + replicaWait * 3 + 30_000)
     const before = new Set(
       parsePgRows(flynnApp(app, ['pg']))
         .filter((r) => r.role === 'follower')
@@ -153,21 +154,20 @@ test.describe('postgres dashboard (live cluster)', () => {
     const addFollower = page.getByRole('button', { name: 'Add follower' })
     await expect(addFollower).toBeEnabled()
     await addFollower.click()
-    const follower = await waitForNewFollower(app, before)
+    follower = await waitForNewFollower(app, before)
     await waitForPsql(app, follower, replicaWait)
     let got = await waitForReplicaRow(app, follower, 'SELECT n FROM e2e_probe', (n) => n === probeN)
     expect(got).toBe(probeN)
     pgPsql(app, ['-c', `INSERT INTO e2e_probe VALUES (${probeFollow})`])
     got = await waitForReplicaRow(app, follower, 'SELECT n FROM e2e_probe ORDER BY n', (n) => n.includes(probeFollow))
     expect(got).toContain(probeFollow)
-    await page.reload()
-    const unfollow = page.getByRole('button', { name: 'Unfollow' })
-    await expect(unfollow).toBeVisible()
-    page.once('dialog', (d) => d.accept())
-    await unfollow.click()
-    await page.reload()
-    await expect(page.getByRole('button', { name: 'Unfollow' })).toHaveCount(0)
-    flynnApp(app, ['resource:remove', follower], { timeoutMs: destroy, allowFail: true })
+  })
+
+  test('primary settings cannot delete while a follower exists', async ({ page }) => {
+    await openPostgresTab(page, app, 'Settings')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Delete resource' })).toBeDisabled()
+    await expect(page.getByText(/still has 1 follower/)).toBeVisible()
   })
 
   test('downloads a dump from the backup tab', async ({ page }) => {
@@ -179,6 +179,49 @@ test.describe('postgres dashboard (live cluster)', () => {
     ])
     expect(download.suggestedFilename()).toMatch(/\.dump$/i)
     expect(await download.path()).toBeTruthy()
+  })
+
+  test('deletes the follower from settings', async ({ page }) => {
+    test.setTimeout(destroy + 30_000)
+    if (!follower) throw new Error('expected a follower from the follow test')
+    await openPostgresInstanceTab(page, app, follower, 'Settings')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+    const del = page.getByRole('button', { name: 'Delete resource' })
+    await expect(del).toBeEnabled()
+    page.once('dialog', (d) => d.accept())
+    await del.click()
+    await page.waitForURL(/\/resources\/?$/, { timeout: destroy })
+    const deadline = Date.now() + destroy
+    while (Date.now() < deadline) {
+      const rows = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
+      if (!rows.some((r) => r.name === follower)) {
+        follower = ''
+        return
+      }
+      await sleep(poll)
+    }
+    throw new Error(`follower ${follower} still listed after settings delete`)
+  })
+
+  test('deletes the primary from settings', async ({ page }) => {
+    test.setTimeout(destroy + 30_000)
+    const rows = parsePgRows(flynnApp(app, ['pg']))
+    const primary = rows.find((r) => r.role !== 'follower')?.name
+    if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    await openPostgresInstanceTab(page, app, primary, 'Settings')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+    const del = page.getByRole('button', { name: 'Delete resource' })
+    await expect(del).toBeEnabled()
+    page.once('dialog', (d) => d.accept())
+    await del.click()
+    await page.waitForURL(/\/resources\/?$/, { timeout: destroy })
+    const deadline = Date.now() + destroy
+    while (Date.now() < deadline) {
+      const listed = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
+      if (listed.length === 0) return
+      await sleep(poll)
+    }
+    throw new Error('primary still listed after settings delete')
   })
 
   test('deletes the app', async ({ page }) => {
@@ -210,15 +253,20 @@ async function openAppResources(page: Page, app: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Resources' })).toBeVisible()
 }
 
+async function openPostgresInstanceTab(page: Page, app: string, instance: string, tab: string): Promise<void> {
+  await login(page)
+  await page.goto(`/apps/${app}/resources/postgres/${instance}`)
+  const tabs = page.getByRole('navigation', { name: /postgres sections/i })
+  await tabs.getByRole('link', { name: tab }).click()
+  await expect(tabs.getByRole('link', { name: tab })).toBeVisible()
+}
+
 async function openPostgresTab(page: Page, app: string, tab: string): Promise<void> {
   await login(page)
   const rows = parsePgRows(flynnApp(app, ['pg']))
   const primary = rows.find((r) => r.role !== 'follower')?.name
   if (!primary) throw new Error(`no primary postgres resource on ${app}`)
-  await page.goto(`/apps/${app}/resources/postgres/${primary}`)
-  const tabs = page.getByRole('navigation', { name: /postgres sections/i })
-  await tabs.getByRole('link', { name: tab }).click()
-  await expect(tabs.getByRole('link', { name: tab })).toBeVisible()
+  await openPostgresInstanceTab(page, app, primary, tab)
 }
 
 async function waitForNewFollower(appName: string, before: Set<string>): Promise<string> {

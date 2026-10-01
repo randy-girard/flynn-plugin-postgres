@@ -89,6 +89,10 @@
       {
         "path": "/replication",
         "title": "Followers"
+      },
+      {
+        "path": "/settings",
+        "title": "Settings"
       }
     ]
   },

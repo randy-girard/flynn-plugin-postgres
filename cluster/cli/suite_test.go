@@ -187,10 +187,17 @@ func TestPostgresCLI(t *testing.T) {
 		if !strings.Contains(got, probeFollow) {
 			t.Fatalf("follower missing streamed row %s: %s", probeFollow, got)
 		}
-		h.appMust(cmdDestroy, "pg", "unfollow", follower)
+		primary := h.primary()
+		_, errOut, err := h.appCmd(cmdDestroy, "resource:remove", primary)
+		if err == nil {
+			t.Fatalf("expected resource:remove %s to fail while %s is a follower", primary, follower)
+		}
+		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "follower") {
+			t.Fatalf("expected followers error removing %s, got %v\n%s", primary, err, errOut)
+		}
 		h.appMust(cmdDestroy, "resource:remove", follower)
 		if left := h.followers(); len(left) != 0 {
-			t.Fatalf("followers still present after unfollow+remove: %v", left)
+			t.Fatalf("followers still present after remove: %v", left)
 		}
 	})
 	if t.Failed() {

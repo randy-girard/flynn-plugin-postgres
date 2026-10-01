@@ -245,6 +245,55 @@ func TestHTTPDestroyByNameAndBlocksFollowers(t *testing.T) {
 	}
 }
 
+func TestHTTPDestroyFollowerThenLeader(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("leader %d %s", rec.Code, rec.Body.String())
+	}
+	var leader struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &leader); err != nil {
+		t.Fatal(err)
+	}
+	name := leader.Env["FLYNN_POSTGRES"]
+	body, err := json.Marshal(map[string]string{"app": "shop", "follow": name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/databases", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("follower %d %s", rec.Code, rec.Body.String())
+	}
+	var fol struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err != nil {
+		t.Fatal(err)
+	}
+	follower := fol.Env["FLYNN_POSTGRES"]
+	if follower == "" || follower == name {
+		t.Fatalf("follower env %#v", fol.Env)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/databases?id="+follower, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("follower delete %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/databases?id="+name, nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("leader delete after follower %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPDestroyHydratesMissingStoreByName(t *testing.T) {
 	h := newHandler(postgres.NewStore())
 	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{}`))

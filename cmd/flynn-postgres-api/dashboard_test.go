@@ -34,7 +34,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHandler(store)
-	for _, path := range []string{"/dashboard/", "/dashboard/databases", "/dashboard/users", "/dashboard/backup", "/dashboard/replication"} {
+	for _, path := range []string{"/dashboard/", "/dashboard/databases", "/dashboard/users", "/dashboard/backup", "/dashboard/replication", "/dashboard/settings"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
 		rec := httptest.NewRecorder()
@@ -57,6 +57,9 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		}
 		if path == "/dashboard/replication" && strings.Contains(body, `name="replication"`) {
 			t.Fatalf("follower form still has replication mode: %s", body)
+		}
+		if path == "/dashboard/settings" && !strings.Contains(body, "Delete resource") {
+			t.Fatalf("missing delete resource: %s", body)
 		}
 	}
 }
@@ -481,5 +484,66 @@ func TestDashListUsersIncludesStoreUserWhenSessionIsAppUUID(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
 		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/settings", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("get %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Delete resource") || !strings.Contains(body, leader.App) || !strings.Contains(body, fol.App) {
+		t.Fatalf("settings page: %s", body)
+	}
+	if !strings.Contains(body, "disabled") {
+		t.Fatal("primary with followers must disable delete")
+	}
+	form := strings.NewReader("action=delete&instance=" + leader.App)
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == 200 && strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
+		t.Fatalf("deleted primary while follower exists: %s", rec.Body.String())
+	}
+	if rec.Code == 200 && !strings.Contains(rec.Body.String(), "followers") {
+		t.Fatalf("expected followers error, got %d %s", rec.Code, rec.Body.String())
+	}
+	form = strings.NewReader("action=delete&instance=" + fol.App)
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+fol.App) {
+		t.Fatalf("follower delete %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.Get(fol.ID); err == nil {
+		t.Fatal("follower still in store")
+	}
+	form = strings.NewReader("action=delete&instance=" + leader.App)
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
+		t.Fatalf("leader delete %d %s", rec.Code, rec.Body.String())
 	}
 }

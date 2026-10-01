@@ -649,3 +649,37 @@ func TestDestroyRejectedWhileFollowersLinked(t *testing.T) {
 		t.Fatal("forgotten leader still present")
 	}
 }
+
+func TestCanDeleteResource(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CanDeleteResource(leader, nil); err != nil {
+		t.Fatalf("leader with no followers: %v", err)
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CanDeleteResource(fol, s.FollowerApps(fol.ID)); err != nil {
+		t.Fatalf("follower must be deletable: %v", err)
+	}
+	if err := CanDeleteResource(leader, s.FollowerApps(leader.App)); !errors.Is(err, ErrHasFollowers) {
+		t.Fatalf("leader with follower: %v", err)
+	}
+	if _, err := s.Unfollow(fol.ID); err != nil {
+		t.Fatal(err)
+	}
+	standalone, err := s.Get(fol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CanDeleteResource(standalone, s.FollowerApps(standalone.ID)); err != nil {
+		t.Fatalf("unfollowed copy: %v", err)
+	}
+	if err := CanDeleteResource(nil, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("nil instance: %v", err)
+	}
+}

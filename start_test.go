@@ -53,6 +53,26 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if cli.CLI.ResourceEnv != "FLYNN_POSTGRES" {
 		t.Fatalf("resource_env=%q, want the instance app name", cli.CLI.ResourceEnv)
 	}
+	var dash struct {
+		Dashboard struct {
+			Routes []struct {
+				Path  string `json:"path"`
+				Title string `json:"title"`
+			} `json:"routes"`
+		} `json:"dashboard"`
+	}
+	if err := json.Unmarshal(b, &dash); err != nil {
+		t.Fatal(err)
+	}
+	hasSettings := false
+	for _, r := range dash.Dashboard.Routes {
+		if r.Path == "/settings" && strings.EqualFold(r.Title, "Settings") {
+			hasSettings = true
+		}
+	}
+	if !hasSettings {
+		t.Fatal("dashboard must declare a Settings route for resource delete")
+	}
 	var psqlArgs []string
 	var hasUpgrade, hasCreate, hasDump, hasFollow, hasInfo bool
 	for _, a := range cli.CLI.Actions {

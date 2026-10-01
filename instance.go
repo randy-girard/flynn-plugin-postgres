@@ -403,6 +403,37 @@ func (s *Store) FollowerApps(id string) []string {
 	return names
 }
 
+// DeleteBlockedBy is the follower instance names that prevent deleting inst.
+// Followers can always be deleted. A primary or standalone copy cannot while
+// those names are still replicating from it.
+func DeleteBlockedBy(inst *Instance, followerApps []string) []string {
+	if inst == nil || inst.Role == RoleFollower {
+		return nil
+	}
+	out := make([]string, 0, len(followerApps))
+	for _, name := range followerApps {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// CanDeleteResource is nil when inst may be deprovisioned: a follower, or a
+// primary/standalone with no remaining followers.
+func CanDeleteResource(inst *Instance, followerApps []string) error {
+	if inst == nil {
+		return ErrNotFound
+	}
+	blocked := DeleteBlockedBy(inst, followerApps)
+	if len(blocked) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrHasFollowers, strings.Join(blocked, ", "))
+}
+
 // Forget drops an instance from the in-memory store after deprovision.
 func (s *Store) Forget(id string) {
 	s.mu.Lock()
