@@ -70,7 +70,7 @@ func nameLetters(n int) string {
 }
 
 // AttachmentKeys is every *_URL injected for one resource. The resource name
-// is always PREFIX_WORD_DATABASE_URL. --as NAME also sets NAME_URL. The
+// is always PREFIX_WORD_SUFFIX_DATABASE_URL. --as NAME also sets NAME_URL. The
 // engine's usual variable is set only when the app does not already have it.
 // Every returned key is locked against env:set.
 func AttachmentKeys(as, conventional, resourceApp, rawURL string, taken func(string) bool) map[string]string {
@@ -83,9 +83,9 @@ func AttachmentKeys(as, conventional, resourceApp, rawURL string, taken func(str
 	}
 	prefix, word, suffix, ok := splitResourceApp(resourceApp)
 	if ok {
-		key := strings.ToUpper(prefix+"_"+word) + "_DATABASE_URL"
+		key := strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_DATABASE_URL"
 		if busy(key) {
-			key = strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_DATABASE_URL"
+			key = strings.ToUpper(prefix+"_"+word+"_"+suffix) + "_X_DATABASE_URL"
 		}
 		out[key] = rawURL
 	}

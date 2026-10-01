@@ -7,19 +7,15 @@ import (
 	"strings"
 )
 
-// ErrAttachedEnv is returned when env:set would overwrite an attached *_URL.
-var ErrAttachedEnv = errors.New("cannot env:set an attached URL while the resource is attached")
+// ErrAttachedEnv is returned when env:set would overwrite an attached env var.
+var ErrAttachedEnv = errors.New("cannot env:set an attached env var while the resource is attached")
 
 // RejectAttachedURLSet is the pure check the plugin API and a CLI can share.
-// attached maps env names currently injected by an attachment to their URLs.
-// A nil update value is env:unset and is allowed. After detach, attached is
-// empty and the same key can be set again.
+// attached maps env names currently injected by an attachment.
+// Updates to those keys (including unset) are blocked until detach.
 func RejectAttachedURLSet(attached map[string]string, updates map[string]*string) error {
 	var blocked []string
-	for k, v := range updates {
-		if v == nil || !strings.HasSuffix(k, "_URL") {
-			continue
-		}
+	for k := range updates {
 		if _, ok := attached[k]; ok {
 			blocked = append(blocked, k)
 		}

@@ -16,6 +16,35 @@ import (
 	"time"
 )
 
+func scopedDatabaseURLKey(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(name), "-", "_")) + "_DATABASE_URL"
+}
+
+func envHasKey(env, key string) bool {
+	prefix := key + "="
+	return strings.HasPrefix(env, prefix) || strings.Contains(env, "\n"+prefix)
+}
+
+func assertPostgresAppEnv(t *testing.T, env, resource string) {
+	t.Helper()
+	if !envHasKey(env, "DATABASE_URL") {
+		t.Fatalf("app must set DATABASE_URL:\n%s", env)
+	}
+	named := scopedDatabaseURLKey(resource)
+	if !envHasKey(env, named) {
+		t.Fatalf("app must set %s:\n%s", named, env)
+	}
+	for _, k := range []string{
+		"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE",
+		"POSTGRES_URL", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST",
+		"FLYNN_POSTGRES", "POSTGRES_ROLE",
+	} {
+		if envHasKey(env, k) {
+			t.Fatalf("app must not set %s:\n%s", k, env)
+		}
+	}
+}
+
 var pgResourceName = regexp.MustCompile(`\b(pg-[a-z]+-[a-z]{6,8})\b`)
 
 const (
