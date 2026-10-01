@@ -226,3 +226,21 @@ func TestStartInstanceDoesNotWaitOnScaleStallProbes(t *testing.T) {
 		t.Fatal("provision must wait for discoverd, not job-up")
 	}
 }
+
+func TestCIPushCoverageBadgeRetriesRejectedPush(t *testing.T) {
+	b, err := os.ReadFile("script/ci-push-coverage-badge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	for _, need := range []string{
+		"COVERAGE_BADGE_REMOTE",
+		"git fetch",
+		"git reset --hard FETCH_HEAD",
+		"failed to push coverage badge after retries",
+	} {
+		if !strings.Contains(src, need) {
+			t.Fatalf("ci-push-coverage-badge must %q so a concurrent main push does not fail CI", need)
+		}
+	}
+}

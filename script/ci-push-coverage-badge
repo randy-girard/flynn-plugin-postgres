@@ -5,9 +5,12 @@
 #
 # Requires GITHUB_TOKEN, GITHUB_REPOSITORY, and GITHUB_REF (set in Actions).
 # Pushes with GITHUB_TOKEN do not start a new workflow run.
+#
+# A concurrent push (another badge job, or a force-push of main) must not fail
+# the workflow: recommit the badge on the current origin tip and retry.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${COVERAGE_BADGE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 DIR="${COVERAGE_DIR:-${ROOT}/coverage}"
 DEST_DIR="${ROOT}/.github/badges"
 REF="${GITHUB_REF:-}"
@@ -24,6 +27,8 @@ fi
 
 TOKEN="${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+BRANCH="${REF#refs/heads/}"
+REMOTE="${COVERAGE_BADGE_REMOTE:-https://x-access-token:${TOKEN}@github.com/${REPO}.git}"
 
 mkdir -p "${DEST_DIR}"
 cp "${DIR}/badge.svg" "${DEST_DIR}/coverage.svg"
@@ -32,17 +37,57 @@ if [[ -f "${DIR}/shields.json" ]]; then
 fi
 
 cd "${ROOT}"
-git add .github/badges/coverage.svg
-if [[ -f "${DEST_DIR}/coverage.json" ]]; then
-  git add .github/badges/coverage.json
-fi
-if git diff --cached --quiet; then
+
+commit_badge() {
+  git add .github/badges/coverage.svg
+  if [[ -f "${DEST_DIR}/coverage.json" ]]; then
+    git add .github/badges/coverage.json
+  fi
+  if git diff --cached --quiet; then
+    return 1
+  fi
+  git -c user.name="github-actions[bot]" \
+    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+    commit -qm "ci: update coverage badge [skip ci]"
+  return 0
+}
+
+if ! commit_badge; then
   echo "==> Coverage badge unchanged"
   exit 0
 fi
 
-git -c user.name="github-actions[bot]" \
-  -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-  commit -qm "ci: update coverage badge [skip ci]"
-git push "https://x-access-token:${TOKEN}@github.com/${REPO}.git" "HEAD:${REF}"
-echo "==> Pushed coverage badge to ${REPO}@${REF}"
+if git push "${REMOTE}" "HEAD:${REF}"; then
+  echo "==> Pushed coverage badge to ${REPO}@${REF}"
+  exit 0
+fi
+
+HOLD="$(mktemp -d)"
+trap 'rm -rf "${HOLD}"' EXIT
+cp "${DEST_DIR}/coverage.svg" "${HOLD}/coverage.svg"
+if [[ -f "${DEST_DIR}/coverage.json" ]]; then
+  cp "${DEST_DIR}/coverage.json" "${HOLD}/coverage.json"
+fi
+
+for attempt in 1 2 3 4 5; do
+  echo "==> Badge push rejected; retry ${attempt} from origin/${BRANCH}"
+  git fetch "${REMOTE}" "${BRANCH}"
+  git reset --hard FETCH_HEAD
+  mkdir -p "${DEST_DIR}"
+  cp "${HOLD}/coverage.svg" "${DEST_DIR}/coverage.svg"
+  if [[ -f "${HOLD}/coverage.json" ]]; then
+    cp "${HOLD}/coverage.json" "${DEST_DIR}/coverage.json"
+  fi
+  if ! commit_badge; then
+    echo "==> Coverage badge already current on origin/${BRANCH}"
+    exit 0
+  fi
+  if git push "${REMOTE}" "HEAD:${REF}"; then
+    echo "==> Pushed coverage badge to ${REPO}@${REF}"
+    exit 0
+  fi
+  sleep "${attempt}"
+done
+
+echo "failed to push coverage badge after retries" >&2
+exit 1
