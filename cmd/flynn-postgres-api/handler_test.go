@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
+	ct "github.com/randy-girard/flynn/controller/types"
 )
 
 func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
@@ -323,6 +324,33 @@ func TestHTTPDestroyFollowerThenLeader(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("leader delete after follower %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHTTPDestroyIgnoresGhostFollowerFromOtherWebJob(t *testing.T) {
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := store.Provision(postgres.ProvisionRequest{App: "shop", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	h.liveApps = fakeAppRelease{
+		apps: map[string]*ct.App{
+			leader.App: {ID: "leader-id", Name: leader.App},
+		},
+		releases: map[string]*ct.Release{
+			"leader-id": {Env: map[string]string{"FLYNN_POSTGRES": leader.App}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/databases?id="+leader.App, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("ghost follower %s must not block delete: %d %s", fol.App, rec.Code, rec.Body.String())
 	}
 }
 

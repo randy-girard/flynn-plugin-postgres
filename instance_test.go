@@ -703,6 +703,44 @@ func TestDestroyRejectedWhileFollowersLinked(t *testing.T) {
 	}
 }
 
+func TestFollowerAppsIgnoresGhostReplicas(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.byID[leader.ID].Followers = append(s.byID[leader.ID].Followers, "postgresql-orchid-80127")
+	names := s.FollowerApps(leader.ID)
+	if len(names) != 0 {
+		t.Fatalf("deleted replica must not block: %q", names)
+	}
+	if err := CanDeleteResource(leader, names); err != nil {
+		t.Fatalf("primary with a ghost follower: %v", err)
+	}
+	if got := s.byID[leader.ID].Followers; len(got) != 0 {
+		t.Fatalf("stale Followers kept: %q", got)
+	}
+}
+
+func TestReconcileFollowersDropsGoneReplicas(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ReconcileFollowers(leader.ID, nil)
+	if _, err := s.Get(fol.ID); err == nil {
+		t.Fatal("gone follower still in store")
+	}
+	if names := s.FollowerApps(leader.ID); len(names) != 0 {
+		t.Fatalf("reconcile left %q", names)
+	}
+}
+
 func TestCanDeleteResource(t *testing.T) {
 	s := NewStore()
 	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})

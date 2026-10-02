@@ -958,16 +958,22 @@ func (h *handler) deleteInstanceResource(sess *dashui.Session, inst *postgres.In
 				continue
 			}
 			_, err = h.client.DeleteResource(p.ID, r.ID)
+			h.forgetInstance(inst)
 			return err
 		}
 	}
-	if h.store != nil {
-		h.store.Forget(inst.ID)
-		if inst.App != "" && inst.App != inst.ID {
-			h.store.Forget(inst.App)
-		}
-	}
+	h.forgetInstance(inst)
 	return nil
+}
+
+func (h *handler) forgetInstance(inst *postgres.Instance) {
+	if h == nil || h.store == nil || inst == nil {
+		return
+	}
+	h.store.Forget(inst.ID)
+	if inst.App != "" && inst.App != inst.ID {
+		h.store.Forget(inst.App)
+	}
 }
 
 func wantsJSON(r *http.Request) bool {

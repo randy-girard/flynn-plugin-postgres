@@ -77,6 +77,7 @@ type handler struct {
 	listAllResources func() ([]*ct.Resource, error)
 	appDisplayName   func(string) string
 	appReleaseEnv    func(string) map[string]string
+	liveApps         followerAppLister
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -206,41 +207,78 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 	w.WriteHeader(http.StatusOK)
 }
 
+type followerAppLister interface {
+	AppList() ([]*ct.App, error)
+	GetAppRelease(string) (*ct.Release, error)
+}
+
+func (h *handler) followerLister() followerAppLister {
+	if h == nil {
+		return nil
+	}
+	if h.liveApps != nil {
+		return h.liveApps
+	}
+	if h.client != nil {
+		return h.client
+	}
+	return nil
+}
+
 func (h *handler) followerApps(inst *postgres.Instance) []string {
 	if inst == nil {
 		return nil
 	}
-	names := h.store.FollowerApps(inst.ID)
-	seen := map[string]bool{}
-	for _, n := range names {
-		seen[n] = true
+	if lister := h.followerLister(); lister != nil {
+		live, err := liveFollowerAppNames(lister, inst)
+		if err == nil {
+			if h.store != nil {
+				h.store.ReconcileFollowers(inst.ID, live)
+			}
+			return live
+		}
 	}
-	if h.client == nil {
-		return names
+	if h.store == nil {
+		return nil
 	}
-	apps, err := h.client.AppList()
+	return h.store.FollowerApps(inst.ID)
+}
+
+func liveFollowerAppNames(c followerAppLister, inst *postgres.Instance) ([]string, error) {
+	if c == nil || inst == nil {
+		return nil, nil
+	}
+	apps, err := c.AppList()
 	if err != nil {
-		return names
+		return nil, err
 	}
+	leader := strings.TrimSpace(inst.App)
+	leaderID := strings.TrimSpace(inst.ID)
+	var names []string
+	seen := map[string]bool{}
 	for _, app := range apps {
 		if app == nil {
 			continue
 		}
-		rel, err := h.client.GetAppRelease(app.ID)
+		rel, err := c.GetAppRelease(app.ID)
 		if err != nil || rel == nil || rel.Env == nil {
 			continue
 		}
-		if !strings.EqualFold(strings.TrimSpace(rel.Env["POSTGRES_LEADER"]), inst.App) {
+		pointsAt := strings.TrimSpace(rel.Env["POSTGRES_LEADER"])
+		if pointsAt == "" {
+			continue
+		}
+		if !strings.EqualFold(pointsAt, leader) && !strings.EqualFold(pointsAt, leaderID) {
 			continue
 		}
 		n := strings.TrimSpace(app.Name)
-		if n == "" || n == inst.App || seen[n] {
+		if n == "" || n == leader || seen[n] {
 			continue
 		}
 		seen[n] = true
 		names = append(names, n)
 	}
-	return names
+	return names, nil
 }
 
 func (h *handler) info(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {

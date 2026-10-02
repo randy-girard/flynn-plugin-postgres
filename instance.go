@@ -403,13 +403,16 @@ func (s *Store) FollowerApps(id string) []string {
 		seen[name] = true
 		names = append(names, name)
 	}
+	kept := inst.Followers[:0]
 	for _, fid := range inst.Followers {
-		if fol := s.findLocked(fid); fol != nil {
-			add(firstNonEmpty(fol.App, fol.ID))
+		fol := s.findLocked(fid)
+		if fol == nil {
 			continue
 		}
-		add(fid)
+		kept = append(kept, fid)
+		add(firstNonEmpty(fol.App, fol.ID))
 	}
+	inst.Followers = kept
 	for _, other := range s.byID {
 		if other == nil || other.ID == inst.ID {
 			continue
@@ -419,6 +422,62 @@ func (s *Store) FollowerApps(id string) []string {
 		}
 	}
 	return names
+}
+
+// ReconcileFollowers drops in-memory replica records that are no longer on
+// the cluster (the other web job may have deprovisioned them). liveApps is
+// isolated instance names still pointing at this primary.
+func (s *Store) ReconcileFollowers(id string, liveApps []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst := s.lookupLocked(id)
+	if inst == nil {
+		return
+	}
+	keep := map[string]bool{}
+	for _, name := range liveApps {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			keep[name] = true
+		}
+	}
+	liveFollower := func(fol *Instance, fid string) bool {
+		if keep[strings.TrimSpace(fid)] {
+			return true
+		}
+		if fol == nil {
+			return false
+		}
+		return keep[fol.App] || keep[fol.ID]
+	}
+	kept := inst.Followers[:0]
+	for _, fid := range inst.Followers {
+		fol := s.findLocked(fid)
+		if !liveFollower(fol, fid) {
+			if fol != nil {
+				delete(s.byID, fol.ID)
+			}
+			continue
+		}
+		kept = append(kept, fid)
+	}
+	inst.Followers = kept
+	var gone []string
+	for _, other := range s.byID {
+		if other == nil || other.ID == inst.ID {
+			continue
+		}
+		if other.LeaderID != inst.ID && other.LeaderID != inst.App {
+			continue
+		}
+		if liveFollower(other, other.App) {
+			continue
+		}
+		gone = append(gone, other.ID)
+	}
+	for _, gid := range gone {
+		delete(s.byID, gid)
+	}
 }
 
 // DeleteBlockedBy is the follower instance names that prevent deleting inst.
@@ -460,10 +519,11 @@ func (s *Store) Forget(id string) {
 	if inst == nil {
 		return
 	}
-	if inst.LeaderID != "" {
-		if leader := s.findLocked(inst.LeaderID); leader != nil {
-			leader.Followers = removeID(leader.Followers, inst.ID)
+	for _, other := range s.byID {
+		if other == nil || other == inst {
+			continue
 		}
+		other.Followers = removeFollowerRef(other.Followers, inst)
 	}
 	delete(s.byID, inst.ID)
 }
@@ -700,7 +760,7 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 		}
 		rewritten = append(rewritten, leader.Attachments[i])
 	}
-	leader.Followers = removeID(leader.Followers, fol.ID)
+	leader.Followers = removeFollowerRef(leader.Followers, fol)
 	fol.Role = RolePrimary
 	fol.ReadOnly = false
 	fol.LeaderID = ""
@@ -725,7 +785,7 @@ func (s *Store) Unfollow(id string) (*Instance, error) {
 		return nil, ErrNotFollower
 	}
 	if leader := s.byID[fol.LeaderID]; leader != nil {
-		leader.Followers = removeID(leader.Followers, fol.ID)
+		leader.Followers = removeFollowerRef(leader.Followers, fol)
 	}
 	fol.Role = RoleStandalone
 	fol.ReadOnly = false
@@ -1069,6 +1129,23 @@ func removeID(ids []string, id string) []string {
 		if cur != id {
 			out = append(out, cur)
 		}
+	}
+	return out
+}
+
+func removeFollowerRef(ids []string, fol *Instance) []string {
+	if fol == nil {
+		return ids
+	}
+	out := ids[:0]
+	for _, cur := range ids {
+		if cur == "" {
+			continue
+		}
+		if cur == fol.ID || cur == fol.App {
+			continue
+		}
+		out = append(out, cur)
 	}
 	return out
 }

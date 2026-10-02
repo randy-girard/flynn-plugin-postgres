@@ -321,6 +321,50 @@ func (f fakeAppRelease) GetAppRelease(id string) (*ct.Release, error) {
 	return nil, errors.New("not found")
 }
 
+func TestLiveFollowerAppNamesIgnoresGoneReplica(t *testing.T) {
+	leader := &postgres.Instance{App: "postgresql-fjord-21944", ID: "res-leader"}
+	c := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"postgresql-fjord-21944": {ID: "p", Name: "postgresql-fjord-21944"},
+		},
+		releases: map[string]*ct.Release{
+			"p": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-fjord-21944"}},
+		},
+	}
+	names, err := liveFollowerAppNames(c, leader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("deleted replica still listed: %q", names)
+	}
+}
+
+func TestLiveFollowerAppNamesFindsReplica(t *testing.T) {
+	leader := &postgres.Instance{App: "postgresql-fjord-21944"}
+	c := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"postgresql-fjord-21944":  {ID: "p", Name: "postgresql-fjord-21944"},
+			"postgresql-orchid-80127": {ID: "f", Name: "postgresql-orchid-80127"},
+		},
+		releases: map[string]*ct.Release{
+			"p": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-fjord-21944"}},
+			"f": {Env: map[string]string{
+				"FLYNN_POSTGRES":  "postgresql-orchid-80127",
+				"POSTGRES_LEADER": "postgresql-fjord-21944",
+				"POSTGRES_ROLE":   "follower",
+			}},
+		},
+	}
+	names, err := liveFollowerAppNames(c, leader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "postgresql-orchid-80127" {
+		t.Fatalf("got %q", names)
+	}
+}
+
 func (f fakeAppRelease) AppList() ([]*ct.App, error) {
 	seen := map[string]bool{}
 	var out []*ct.App
