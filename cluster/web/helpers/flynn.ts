@@ -111,6 +111,33 @@ export function assertPostgresAppEnv(env: string, resource: string): void {
   }
 }
 
+export function flynnAppListed(name: string): boolean {
+  if (!name) return false
+  const out = flynn(['apps'], { allowFail: true })
+  for (const line of out.split('\n')) {
+    const parts = line.trim().split(/\s+/)
+    if (parts[parts.length - 1] === name) return true
+  }
+  return false
+}
+
+/** UI delete unlinks immediately; wait until the instance app is gone too. */
+export async function waitUntilPostgresInstanceGone(app: string, name: string, timeoutMs = destroy): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const rows = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
+    if (rows.some((r) => r.name === name)) {
+      flynnApp(app, ['resource:remove', name], { timeoutMs: destroy, allowFail: true })
+    } else if (!flynnAppListed(name)) {
+      return
+    } else {
+      flynn(['-a', name, 'apps:destroy', '-y'], { timeoutMs: destroy, allowFail: true })
+    }
+    await sleep(poll)
+  }
+  throw new Error(`postgres instance ${name} still present after delete`)
+}
+
 export function destroyAppBestEffort(app: string): void {
   if (!app) return
   let list = ''

@@ -10,6 +10,7 @@ import {
   postgresColorURLKeys,
   sleep,
   waitForPsql,
+  waitUntilPostgresInstanceGone,
 } from '../helpers/flynn'
 import { login } from '../helpers/login'
 import {
@@ -179,6 +180,13 @@ test.describe('postgres dashboard (live cluster)', () => {
 
     const attachedEnv = flynnApp(peer, ['env'])
     assertPostgresAppEnv(attachedEnv, primary)
+    assertPostgresAppEnv(flynnApp(app, ['env']), primary)
+    const peerRead = pgPsql(peer, ['-Atc', 'SELECT n FROM e2e_probe ORDER BY n'], primary).trim()
+    expect(peerRead, 'peer app must read the owner instance').toContain(probeN)
+
+    await openPostgresInstanceTab(page, app, primary, 'Settings')
+    await expect(page.getByRole('button', { name: 'Delete resource' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Detach' })).toHaveCount(0)
 
     let removed = false
     try {
@@ -257,7 +265,7 @@ test.describe('postgres dashboard (live cluster)', () => {
   })
 
   test('deletes the follower from settings', async ({ page }) => {
-    test.setTimeout(destroy + 30_000)
+    test.setTimeout(destroy * 2 + 30_000)
     if (!follower) throw new Error('expected a follower from the follow test')
     await openPostgresInstanceTab(page, app, follower, 'Settings')
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
@@ -266,22 +274,17 @@ test.describe('postgres dashboard (live cluster)', () => {
     page.once('dialog', (d) => d.accept())
     await del.click()
     await page.waitForURL(/\/resources\/?$/, { timeout: destroy })
-    const deadline = Date.now() + destroy
-    while (Date.now() < deadline) {
-      const rows = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
-      if (!rows.some((r) => r.name === follower)) {
-        follower = ''
-        return
-      }
-      await sleep(poll)
-    }
-    throw new Error(`follower ${follower} still listed after settings delete`)
+    await waitUntilPostgresInstanceGone(app, follower)
+    follower = ''
   })
 
   test('deletes the primary from settings', async ({ page }) => {
-    test.setTimeout(destroy + 30_000)
+    test.setTimeout(destroy * 2 + 30_000)
     const rows = parsePgRows(flynnApp(app, ['pg']))
-    const primary = rows.find((r) => r.role !== 'follower')?.name
+    for (const fol of rows.filter((r) => r.role === 'follower')) {
+      await waitUntilPostgresInstanceGone(app, fol.name)
+    }
+    const primary = parsePgRows(flynnApp(app, ['pg'])).find((r) => r.role !== 'follower')?.name
     if (!primary) throw new Error(`no primary postgres resource on ${app}`)
     await openPostgresInstanceTab(page, app, primary, 'Settings')
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()

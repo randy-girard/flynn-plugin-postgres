@@ -272,6 +272,14 @@ func TestPostgresCLI(t *testing.T) {
 		}
 		env := h.must(cmdQuick, "-a", name, "env")
 		assertPostgresAppEnv(t, env, primary)
+		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), primary)
+		peerGot, errOut, err := h.cmd(cmdQuick, "-a", name, "pg", "psql", primary, "--", "-Atc", "SELECT n FROM e2e_probe ORDER BY n")
+		if err != nil {
+			t.Fatalf("peer psql: %v\nstdout:\n%s\nstderr:\n%s", err, peerGot, errOut)
+		}
+		if !strings.Contains(peerGot, probeN) {
+			t.Fatalf("peer %s must read the owner instance (want %s):\n%s", name, probeN, peerGot)
+		}
 		_, errOut, err = h.cmd(cmdQuick, "-a", name, "resource:remove", primary)
 		if err == nil {
 			t.Fatalf("attached app must not delete %s", primary)
