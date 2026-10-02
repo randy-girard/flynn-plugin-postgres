@@ -8,20 +8,72 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	ct "github.com/randy-girard/flynn/controller/types"
 	"github.com/randy-girard/flynn/pkg/squashfs"
 )
 
-func buildPluginLayers(repo, outDir string, plugin *pluginManifest, base *resolvedBase) (string, *ct.ImageLayer, string, error) {
+func buildPluginLayers(repo, outDir string, plugin *pluginManifest, base *resolvedBase) ([]*ct.ImageLayer, string, error) {
 	if len(base.Files) != 1 {
-		return "", nil, "", fmt.Errorf("plugin-build currently overlays a single ubuntu-noble layer (got %d)", len(base.Files))
+		return nil, "", fmt.Errorf("plugin-build currently overlays a single ubuntu-noble layer (got %d)", len(base.Files))
 	}
 
+	goarch, err := hostGoarch()
+	if err != nil {
+		return nil, "", err
+	}
+
+	var layers []*ct.ImageLayer
+	if needsPackagesLayer(plugin) {
+		pkg, arch, err := buildOrReusePackagesLayer(repo, outDir, plugin, base)
+		if err != nil {
+			return nil, "", err
+		}
+		if arch != "" {
+			goarch = arch
+		}
+		layers = append(layers, pkg)
+	}
+
+	bin, err := buildBinariesLayer(repo, outDir, plugin, goarch)
+	if err != nil {
+		return nil, "", err
+	}
+	layers = append(layers, bin)
+	return layers, goarch, nil
+}
+
+func buildOrReusePackagesLayer(repo, outDir string, plugin *pluginManifest, base *resolvedBase) (*ct.ImageLayer, string, error) {
+	id, err := packagesCacheID(repo, plugin, base)
+	if err != nil {
+		return nil, "", err
+	}
+	if !packagesCacheDisabled() {
+		layer, arch, err := loadPackagesCache(id, outDir)
+		if err != nil {
+			return nil, "", err
+		}
+		if layer != nil {
+			fmt.Fprintf(os.Stderr, "==> packages layer reuse (cached %s)\n", layer.ID)
+			return layer, arch, nil
+		}
+	}
+	layer, arch, err := buildPackagesLayer(repo, outDir, plugin, base)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := savePackagesCache(id, outDir, layer, arch); err != nil {
+		return nil, "", err
+	}
+	return layer, arch, nil
+}
+
+func buildPackagesLayer(repo, outDir string, plugin *pluginManifest, base *resolvedBase) (*ct.ImageLayer, string, error) {
 	root, err := os.MkdirTemp("", "flynn-plugin-overlay-")
 	if err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
 	defer func() {
 		_ = sudoCommand("umount", root).Run()
@@ -32,7 +84,7 @@ func buildPluginLayers(repo, outDir string, plugin *pluginManifest, base *resolv
 	// Keep lower/upper/work on tmpfs.
 	if err := sudoCommand("mount", "-t", "tmpfs", "-o", "size=6G", "tmpfs", root).Run(); err != nil {
 		if err := sudoCommand("mount", "-t", "tmpfs", "tmpfs", root).Run(); err != nil {
-			return "", nil, "", fmt.Errorf("tmpfs for overlay workspace: %w", err)
+			return nil, "", fmt.Errorf("tmpfs for overlay workspace: %w", err)
 		}
 	}
 
@@ -42,53 +94,91 @@ func buildPluginLayers(repo, outDir string, plugin *pluginManifest, base *resolv
 	merged := filepath.Join(root, "merged")
 	for _, d := range []string{lower, upper, work, merged} {
 		if err := os.MkdirAll(d, 0755); err != nil {
-			return "", nil, "", err
+			return nil, "", err
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "==> unsquashfs Flynn ubuntu-noble\n")
 	if err := sudoCommand("unsquashfs", "-f", "-d", lower, base.Files[0]).Run(); err != nil {
-		return "", nil, "", fmt.Errorf("unsquashfs ubuntu-noble: %w", err)
+		return nil, "", fmt.Errorf("unsquashfs ubuntu-noble: %w", err)
 	}
 	if err := requireChrootBash(lower); err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
 	goarch, err := detectRootfsGoarch(lower)
 	if err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
 	fmt.Fprintf(os.Stderr, "==> OS layer arch %s\n", goarch)
 
-	fmt.Fprintf(os.Stderr, "==> overlay packages + binaries\n")
+	fmt.Fprintf(os.Stderr, "==> overlay packages\n")
 	if err := overlayChroot(repo, lower, upper, work, merged, plugin); err != nil {
-		return "", nil, "", err
-	}
-	if err := installBinaries(repo, upper, plugin, goarch); err != nil {
-		return "", nil, "", err
+		return nil, "", err
 	}
 
-	tmpLayer := filepath.Join(outDir, "layer.squashfs.tmp")
+	tmpLayer := filepath.Join(outDir, "packages.squashfs.tmp")
 	_ = os.Remove(tmpLayer)
-	fmt.Fprintf(os.Stderr, "==> mksquashfs plugin delta (zstd/%s)\n", squashfs.CompressionLevel)
+	fmt.Fprintf(os.Stderr, "==> mksquashfs packages layer (zstd/%s)\n", squashfs.CompressionLevel)
 	if err := mksquashfs(upper, tmpLayer); err != nil {
-		return "", nil, "", err
+		return nil, "", err
+	}
+	layer, err := installLayerFile(tmpLayer, outDir)
+	if err != nil {
+		return nil, "", err
+	}
+	return layer, goarch, nil
+}
+
+func buildBinariesLayer(repo, outDir string, plugin *pluginManifest, goarch string) (*ct.ImageLayer, error) {
+	upper, err := os.MkdirTemp("", "flynn-plugin-binaries-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(upper)
+
+	fmt.Fprintf(os.Stderr, "==> overlay binaries\n")
+	if err := installBinaries(repo, upper, plugin, goarch); err != nil {
+		return nil, err
+	}
+
+	tmpLayer := filepath.Join(outDir, "binaries.squashfs.tmp")
+	_ = os.Remove(tmpLayer)
+	fmt.Fprintf(os.Stderr, "==> mksquashfs binaries layer (zstd/%s)\n", squashfs.CompressionLevel)
+	if err := mksquashfs(upper, tmpLayer); err != nil {
+		return nil, err
 	}
 	if err := requireSquashfsFiles(tmpLayer, imageDests(plugin)); err != nil {
-		return "", nil, "", err
+		return nil, err
 	}
+	return installLayerFile(tmpLayer, outDir)
+}
 
+func installLayerFile(tmpLayer, outDir string) (*ct.ImageLayer, error) {
 	layer, err := hashLayer(tmpLayer)
 	if err != nil {
-		return "", nil, "", err
+		return nil, err
 	}
 	layerPath := filepath.Join(outDir, "layers", layer.ID+".squashfs")
 	if err := os.Rename(tmpLayer, layerPath); err != nil {
 		if err := sudoCommand("mv", "-f", tmpLayer, layerPath).Run(); err != nil {
-			return "", nil, "", err
+			return nil, err
 		}
 		_ = sudoCommand("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), layerPath).Run()
 	}
-	return layerPath, layer, goarch, nil
+	return layer, nil
+}
+
+func hostGoarch() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("PLUGIN_GOARCH")); env != "" {
+		if !supportedGoarch(env) {
+			return "", fmt.Errorf("PLUGIN_GOARCH=%s is not supported (amd64 or arm64)", env)
+		}
+		return env, nil
+	}
+	if !supportedGoarch(runtime.GOARCH) {
+		return "", fmt.Errorf("image builds require linux/amd64 or linux/arm64; this host is %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	return runtime.GOARCH, nil
 }
 
 func requireChrootBash(root string) error {

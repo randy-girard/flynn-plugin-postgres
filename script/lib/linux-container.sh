@@ -119,6 +119,9 @@ plugin_run_in_linux() {
     -e PLUGIN_FLYNN_VERSION
     -e PLUGIN_GOARCH
     -e FLYNN_PLUGIN_BUILD_CACHE=/src/.plugin-build-cache
+    -e GOCACHE=/src/.plugin-build-cache/go-build
+    -e PLUGIN_BUILD_NO_PACKAGES_CACHE
+    -e FLYNN_PLUGIN_BUILD_FORCE_WEB
   )
 
   if [[ -t 1 ]]; then
@@ -128,6 +131,6 @@ plugin_run_in_linux() {
     docker_args+=(-i)
   fi
 
-  mkdir -p "${ROOT}/.plugin-build-cache"
+  mkdir -p "${ROOT}/.plugin-build-cache/go-build" "${ROOT}/.plugin-build-cache/packages"
   docker run "${docker_args[@]}" "${PLUGIN_LINUX_IMAGE}" "$@"
 }

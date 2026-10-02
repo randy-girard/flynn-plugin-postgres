@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Copy only the plugin overlay delta to dist/ for GitHub Release upload.
+# Copy plugin overlay layers to dist/ for GitHub Release upload.
 #
 # plugin-build keeps Flynn ubuntu-noble under dist/layers/ so local DistReady
 # and overlay still work. That OS layer is already a Flynn GitHub Release asset
 # (same id). Re-uploading it from every plugin (~200MiB × N parallel jobs)
 # 502s uploads.github.com. Flynn hosts fetch it from flynn.plugin.base.
+#
+# Plugin images are ubuntu-noble + packages + binaries. Publish every layer
+# after the OS rootfs.
 #
 # shellcheck shell=bash
 set -euo pipefail
@@ -33,17 +36,23 @@ layers = rootfs[0].get("layers") or []
 ids = [layer.get("id") for layer in layers if isinstance(layer, dict) and layer.get("id")]
 if len(ids) < 2:
     sys.exit("need Flynn ubuntu-noble plus a plugin delta; got %d layer(s)" % len(ids))
-delta = ids[-1]
-src = os.path.join(dist, "layers", delta + ".squashfs")
-if not os.path.isfile(src):
-    sys.exit("missing plugin delta " + src)
-dst = os.path.join(dist, delta + ".squashfs")
-shutil.copy2(src, dst)
-print("publishing plugin delta %s (Flynn ubuntu-noble stays on the Flynn GitHub Release)" % delta)
+plugin_ids = ids[1:]
+keep = set()
+for lid in plugin_ids:
+    src = os.path.join(dist, "layers", lid + ".squashfs")
+    if not os.path.isfile(src):
+        sys.exit("missing plugin layer " + src)
+    dst = os.path.join(dist, lid + ".squashfs")
+    shutil.copy2(src, dst)
+    keep.add(lid + ".squashfs")
+print(
+    "publishing plugin layers %s (Flynn ubuntu-noble stays on the Flynn GitHub Release)"
+    % ", ".join(plugin_ids)
+)
 for name in os.listdir(dist):
     if not name.endswith(".squashfs"):
         continue
-    if name != delta + ".squashfs":
+    if name not in keep:
         os.remove(os.path.join(dist, name))
         print("removed leftover %s from release dir" % name)
 PY

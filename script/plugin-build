@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build Flynn plugin squashfs layers + Artifact JSON (see cmd/plugin-build).
 #
-# On Linux, overlays Flynn's GitHub ubuntu-noble layer, then chroot + mksquashfs.
-# On macOS/Windows, uses Docker Desktop (linux/amd64 or linux/arm64 to match
-# the host / Flynn cluster) like Flynn script/run-unit-tests.
+# On Linux, overlays Flynn ubuntu-noble, squashfs a cached packages layer plus
+# a binaries layer. On macOS/Windows, uses Docker Desktop (linux/amd64 or
+# linux/arm64 to match the host / Flynn cluster) like Flynn script/run-unit-tests.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -19,4 +19,10 @@ fi
 export CGO_ENABLED="${CGO_ENABLED:-0}"
 # Resolve Flynn from go.mod (github.com/randy-girard/flynn).
 export GOFLAGS="-mod=mod -buildvcs=false"
+
+cache="${FLYNN_PLUGIN_BUILD_CACHE:-${ROOT}/.plugin-build-cache}"
+mkdir -p "${cache}/go-build" "${cache}/packages"
+export FLYNN_PLUGIN_BUILD_CACHE="${FLYNN_PLUGIN_BUILD_CACHE:-${cache}}"
+export GOCACHE="${GOCACHE:-${FLYNN_PLUGIN_BUILD_CACHE}/go-build}"
+
 exec go run ./cmd/plugin-build "$@"

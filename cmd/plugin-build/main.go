@@ -2,14 +2,15 @@
 // Artifact JSON that flynn-host plugin install will pull from GitHub Releases.
 //
 // The OS rootfs is Flynn's ubuntu-noble layer from a Flynn GitHub Release
-// (images.json.gz). This tool overlays img/packages.sh + gobuild/copy and
-// mksquashfs only the delta. No Docker; no Ubuntu cloudimg download.
+// (images.json.gz). This tool overlays img/packages.sh as its own squashfs
+// layer (cached when the scripts are unchanged), then gobuild/copy as a
+// second layer. No Docker; no Ubuntu cloudimg download.
 //
 // Output (under -out, default dist/):
 //
 //	image.json              Flynn Artifact (type=flynn) with HTTPS or file:// URLs
 //	<manifest-id>.json      ImageManifest bytes that Artifact.URI points at
-//	layers/<layer-id>.squashfs  Flynn ubuntu-noble plus the plugin delta
+//	layers/<layer-id>.squashfs  Flynn ubuntu-noble plus plugin packages and binaries
 //	flynn-plugin.json       copy of the plugin manifest with artifacts.image filled in
 //	script-uninstall.sh     declared hooks (script/uninstall.sh flattened for GitHub)
 package main
@@ -46,8 +47,8 @@ type pluginHooks struct {
 	Uninstall string `json:"uninstall,omitempty"`
 }
 
-// pluginBuild is the Flynn-builder fragment: overlay packages.sh + gobuild + copy
-// on Flynn's published ubuntu-noble layer.
+// pluginBuild is the Flynn-builder fragment: ubuntu-noble + cached packages.sh
+// layer + gobuild/copy layer.
 type pluginBuild struct {
 	Base       pluginBase        `json:"base"`
 	Entrypoint []string          `json:"entrypoint"`
@@ -151,12 +152,12 @@ func run() error {
 		}
 	}
 
-	layerFile, pluginLayer, goarch, err := buildPluginLayers(dirAbs, outDir, plugin, base)
+	pluginLayers, goarch, err := buildPluginLayers(dirAbs, outDir, plugin, base)
 	if err != nil {
 		return err
 	}
 
-	layers := append(append([]*ct.ImageLayer{}, base.Layers...), pluginLayer)
+	layers := append(append([]*ct.ImageLayer{}, base.Layers...), pluginLayers...)
 	filesMeta := strings.Join(imageDests(plugin), ",")
 	platform := &ct.ImagePlatform{OS: "linux", Architecture: goarch}
 
@@ -222,9 +223,10 @@ func run() error {
 	fmt.Printf("flynn_base: %s@%s (%s)\n", base.Repo, base.Version, base.Image)
 	fmt.Printf("image:      %s\n", imageJSONPath)
 	fmt.Printf("manifest:   %s\n", manifestID)
-	fmt.Printf("layers:     %d (1 plugin delta)\n", len(layers))
-	fmt.Printf("delta:      %s (%d bytes)\n", pluginLayer.ID, pluginLayer.Length)
-	fmt.Printf("delta_file: %s\n", layerFile)
+	fmt.Printf("layers:     %d (%d plugin)\n", len(layers), len(pluginLayers))
+	for _, l := range pluginLayers {
+		fmt.Printf("layer:      %s (%d bytes)\n", l.ID, l.Length)
+	}
 	fmt.Printf("layer_url:  %s\n", layerURLTemplate)
 	fmt.Printf("artifact:   %s\n", artifactURL)
 	return nil

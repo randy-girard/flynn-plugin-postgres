@@ -277,14 +277,16 @@ func TestFlattenPluginReleaseCopiesOnlyDelta(t *testing.T) {
 		t.Fatal(err)
 	}
 	osID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	deltaID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	pkgID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	binID := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	image := map[string]interface{}{
 		"manifest": map[string]interface{}{
 			"rootfs": []interface{}{
 				map[string]interface{}{
 					"layers": []interface{}{
 						map[string]interface{}{"id": osID},
-						map[string]interface{}{"id": deltaID},
+						map[string]interface{}{"id": pkgID},
+						map[string]interface{}{"id": binID},
 					},
 				},
 			},
@@ -300,7 +302,10 @@ func TestFlattenPluginReleaseCopiesOnlyDelta(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dist, "layers", osID+".squashfs"), []byte("os"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dist, "layers", deltaID+".squashfs"), []byte("delta"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dist, "layers", pkgID+".squashfs"), []byte("packages"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "layers", binID+".squashfs"), []byte("binaries"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, osID+".squashfs"), []byte("leftover-os"), 0644); err != nil {
@@ -314,12 +319,19 @@ func TestFlattenPluginReleaseCopiesOnlyDelta(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dist, osID+".squashfs")); !os.IsNotExist(err) {
 		t.Fatal("Flynn ubuntu-noble must not be copied to the release dir")
 	}
-	got, err := os.ReadFile(filepath.Join(dist, deltaID+".squashfs"))
+	got, err := os.ReadFile(filepath.Join(dist, pkgID+".squashfs"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "delta" {
-		t.Fatalf("delta %q", got)
+	if string(got) != "packages" {
+		t.Fatalf("packages %q", got)
+	}
+	got, err = os.ReadFile(filepath.Join(dist, binID+".squashfs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "binaries" {
+		t.Fatalf("binaries %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(dist, "layers", osID+".squashfs")); err != nil {
 		t.Fatal("local DistReady still needs ubuntu-noble under dist/layers")

@@ -28,12 +28,7 @@ func installBinaries(repo, rootfs string, plugin *pluginManifest, goarch string)
 		cmd.Dir = repo
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
-		cmd.Env = append(os.Environ(),
-			"CGO_ENABLED=0",
-			"GOOS=linux",
-			"GOARCH="+goarch,
-			"GOFLAGS=-mod=mod -buildvcs=false",
-		)
+		cmd.Env = goBuildEnv(goarch)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("go build %s: %w", pkg, err)
 		}
@@ -120,6 +115,34 @@ func imageDests(plugin *pluginManifest) []string {
 		add(d)
 	}
 	return dests
+}
+
+func goBuildEnv(goarch string) []string {
+	var env []string
+	for _, e := range os.Environ() {
+		if e == "GOCACHE=" {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env,
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH="+goarch,
+		"GOFLAGS=-mod=mod -buildvcs=false",
+	)
+	if strings.TrimSpace(os.Getenv("GOCACHE")) != "" {
+		return env
+	}
+	dir, err := cacheDir()
+	if err != nil {
+		return env
+	}
+	gocache := filepath.Join(dir, "go-build")
+	if err := os.MkdirAll(gocache, 0755); err != nil {
+		return env
+	}
+	return append(env, "GOCACHE="+gocache)
 }
 
 func installFile(src, dest string, mode os.FileMode) error {

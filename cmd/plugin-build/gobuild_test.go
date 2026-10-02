@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +94,26 @@ func TestElfGoarchFromHeader(t *testing.T) {
 func TestSupportedGoarch(t *testing.T) {
 	if !supportedGoarch("amd64") || !supportedGoarch("arm64") || supportedGoarch("riscv64") {
 		t.Fatal("supported GOARCH should be amd64 and arm64")
+	}
+}
+
+func TestGoBuildEnvPersistsCache(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("FLYNN_PLUGIN_BUILD_CACHE", cache)
+	t.Setenv("GOCACHE", "")
+	env := goBuildEnv("arm64")
+	want := filepath.Join(cache, "go-build")
+	found := false
+	for _, e := range env {
+		if e == "GOCACHE="+want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("GOCACHE missing: %v", env)
+	}
+	if st, err := os.Stat(want); err != nil || !st.IsDir() {
+		t.Fatalf("cache dir: %v", err)
 	}
 }
