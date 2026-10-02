@@ -230,6 +230,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
 	}
+	if !strings.Contains(src, "--checkpoint=fast") {
+		t.Fatal("pg_basebackup must force a fast checkpoint; spread waits up to checkpoint_timeout on idle primaries")
+	}
 	if !strings.Contains(src, "host replication") || !strings.Contains(src, "REPLICATION;") {
 		t.Fatal("primaries must allow streaming replication")
 	}
