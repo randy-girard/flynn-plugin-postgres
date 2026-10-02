@@ -125,7 +125,8 @@
           "create-db",
           "${resource}"
         ],
-        "append": "<database>"
+        "append": "<database>",
+        "scope": "app"
       },
       {
         "name": "info",
@@ -134,7 +135,8 @@
           "task",
           "info",
           "${resource}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "follow",
@@ -144,7 +146,8 @@
           "follow",
           "${resource}",
           "${app}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "wait",
@@ -153,7 +156,8 @@
           "task",
           "wait",
           "${resource}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "promote",
@@ -162,7 +166,8 @@
           "task",
           "promote",
           "${resource}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "unfollow",
@@ -171,17 +176,18 @@
           "task",
           "unfollow",
           "${resource}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "upgrade",
-        "cluster": true,
         "args": [
           "/bin/flynn-postgres-api",
           "task",
           "upgrade",
           "${resource}"
-        ]
+        ],
+        "scope": "app"
       },
       {
         "name": "dump",
@@ -193,7 +199,8 @@
         ],
         "stdout_file": "--file",
         "progress": true,
-        "quiet": "--quiet"
+        "quiet": "--quiet",
+        "scope": "app"
       },
       {
         "name": "restore",
@@ -207,7 +214,8 @@
         ],
         "stdin_file": "--file",
         "progress": true,
-        "quiet": "--quiet"
+        "quiet": "--quiet",
+        "scope": "app"
       },
       {
         "name": "psql",
@@ -219,7 +227,8 @@
         "env": {
           "PAGER": "less",
           "LESS": "--ignore-case --LONG-PROMPT --SILENT --tabs=4 --quit-if-one-screen --no-init --quit-at-eof"
-        }
+        },
+        "scope": "app"
       }
     ]
   },
