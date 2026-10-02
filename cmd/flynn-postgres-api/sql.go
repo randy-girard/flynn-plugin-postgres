@@ -205,8 +205,9 @@ func listUsersOnInstance(inst *postgres.Instance) []postgres.User {
 	}
 	// Non-superusers cannot use has_database_privilege() on other roles;
 	// that JOIN fails the whole query after CREATE ROLE, so the dashboard
-	// would only show the instance PGUSER. List login roles, then attach
-	// the tenant database name we already know.
+	// would only show the instance PGUSER. List login roles here; collectUsers
+	// fills Database from the store grant so one username is not repeated
+	// once per logical database.
 	out, err := runSQL(inst.MaintenanceURL(),
 		`SELECT rolname FROM pg_roles
 WHERE rolcanlogin AND NOT rolsuper AND rolname NOT LIKE 'pg\_%'
@@ -214,17 +215,13 @@ ORDER BY 1`)
 	if err != nil {
 		return nil
 	}
-	db := ""
-	if len(inst.Databases) > 0 {
-		db = inst.Databases[0].Name
-	}
 	var users []postgres.User
 	for _, line := range strings.Split(out, "\n") {
 		name := strings.TrimSpace(line)
 		if name == "" {
 			continue
 		}
-		users = append(users, postgres.User{Name: name, Database: db})
+		users = append(users, postgres.User{Name: name})
 	}
 	return users
 }

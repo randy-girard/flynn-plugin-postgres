@@ -238,8 +238,11 @@ func databaseNameFromEnv(env map[string]string) string {
 			return v
 		}
 	}
-	for _, k := range []string{"POSTGRES_URL", "DATABASE_URL"} {
-		raw := strings.TrimSpace(env[k])
+	for k, raw := range env {
+		if !strings.HasSuffix(k, "_URL") {
+			continue
+		}
+		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
 		}
@@ -254,7 +257,7 @@ func databaseNameFromEnv(env map[string]string) string {
 		if i := strings.IndexByte(db, '/'); i >= 0 {
 			db = db[:i]
 		}
-		if db != "" {
+		if db != "" && db != "postgres" {
 			return db
 		}
 	}
@@ -558,17 +561,23 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 		return !ri && rj
 	})
 	var out []userView
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	add := func(u userView) {
 		u.Name = strings.TrimSpace(u.Name)
 		if u.Name == "" {
 			return
 		}
-		key := strings.ToLower(u.Name) + "\x00" + u.Database
-		if seen[key] {
+		key := strings.ToLower(u.Name)
+		if i, ok := seen[key]; ok {
+			if strings.TrimSpace(out[i].Database) == "" && strings.TrimSpace(u.Database) != "" {
+				out[i].Database = u.Database
+			}
+			if strings.TrimSpace(out[i].Instance) == "" && strings.TrimSpace(u.Instance) != "" {
+				out[i].Instance = u.Instance
+			}
 			return
 		}
-		seen[key] = true
+		seen[key] = len(out)
 		out = append(out, u)
 	}
 	for _, inst := range insts {
@@ -589,7 +598,7 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 				if replica && inst.AppUser != "" && strings.EqualFold(u.Name, inst.AppUser) {
 					continue
 				}
-				add(userView{Name: u.Name, Database: firstNonEmpty(u.Database, db), Instance: inst.App})
+				add(userView{Name: u.Name, Database: u.Database, Instance: inst.App})
 			}
 		}
 		if h.store != nil {

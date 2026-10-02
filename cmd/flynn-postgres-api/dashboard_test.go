@@ -653,6 +653,42 @@ func TestDashListUsersOnceAcrossFollowers(t *testing.T) {
 	}
 }
 
+func TestCollectUsersListsCreatedUserOnceWithTwoDatabases(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddDatabase(leader.ID, "shop_analytics"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddUser(leader.ID, "alice", "secret", "shop_analytics"); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("list %d %s", rec.Code, rec.Body.String())
+	}
+	var users []userView
+	if err := json.Unmarshal(rec.Body.Bytes(), &users); err != nil {
+		t.Fatalf("json %v %s", err, rec.Body.String())
+	}
+	var alice []userView
+	for _, u := range users {
+		if u.Name == "alice" {
+			alice = append(alice, u)
+		}
+	}
+	if len(alice) != 1 || alice[0].Database != "shop_analytics" {
+		t.Fatalf("alice should appear once on the granted database, got %#v", users)
+	}
+}
+
 func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	store := postgres.NewStore()
