@@ -234,12 +234,16 @@ func TestFollowLoadsMissingLeaderFromLiveApp(t *testing.T) {
 func TestInstanceFromEnv(t *testing.T) {
 	inst := InstanceFromEnv("id", "pg-orchid-xkhthp", map[string]string{
 		"FLYNN_POSTGRES":    "pg-orchid-xkhthp",
+		ResourceIDEnv:       "res-abc",
 		"POSTGRES_USER":     "app_live",
 		"POSTGRES_PASSWORD": "secret",
 		"POSTGRES_DB":       "db_pg_orchid_xkhthp",
 	})
 	if inst == nil || inst.App != "pg-orchid-xkhthp" || inst.AppUser != "app_live" || inst.Role != RolePrimary {
 		t.Fatalf("%+v", inst)
+	}
+	if inst.ID != "res-abc" {
+		t.Fatalf("resource id %q", inst.ID)
 	}
 	if len(inst.Databases) != 1 || inst.Databases[0].Name != "db_pg_orchid_xkhthp" {
 		t.Fatalf("db %#v", inst.Databases)

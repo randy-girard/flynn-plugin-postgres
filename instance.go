@@ -12,6 +12,10 @@ import (
 	"time"
 )
 
+// ResourceIDEnv is stamped on the isolated instance release so deprovision can
+// find the Flynn app after the plugin API restarts (in-memory store is empty).
+const ResourceIDEnv = "FLYNN_RESOURCE_ID"
+
 // Role is the replication role of one resource. A follower is its own resource,
 // not an extra node inside the leader's app.
 type Role string
@@ -934,6 +938,7 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		return nil
 	}
 	name := firstNonEmpty(env["FLYNN_POSTGRES"], app)
+	resourceID := strings.TrimSpace(env[ResourceIDEnv])
 	db := firstNonEmpty(env["POSTGRES_DB"], env["PGDATABASE"])
 	user := firstNonEmpty(env["POSTGRES_USER"], env["PGUSER"])
 	pass := firstNonEmpty(env["POSTGRES_PASSWORD"], env["PGPASSWORD"])
@@ -969,7 +974,7 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		host = "leader." + name + ".discoverd"
 	}
 	inst := &Instance{
-		ID:            firstNonEmpty(id, name),
+		ID:            firstNonEmpty(resourceID, id, name),
 		App:           name,
 		AppUser:       user,
 		AppPassword:   pass,

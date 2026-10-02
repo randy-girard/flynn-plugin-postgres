@@ -8,7 +8,7 @@ import (
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	ct "github.com/randy-girard/flynn/controller/types"
-	"github.com/randy-girard/flynn/discoverd/client"
+	"github.com/randy-girard/flynn/pkg/httphelper"
 )
 
 // instanceReadyTimeout is how long provision waits for the new postgres
@@ -21,7 +21,10 @@ type appReleaseClient interface {
 }
 
 func loadLivePostgres(c appReleaseClient, name string) *postgres.Instance {
-	return loadLivePostgresDepth(c, name, 0)
+	if inst := loadLivePostgresDepth(c, name, 0); inst != nil {
+		return inst
+	}
+	return loadLivePostgresByScan(c, name)
 }
 
 func loadLivePostgresDepth(c appReleaseClient, name string, depth int) *postgres.Instance {
@@ -46,6 +49,36 @@ func loadLivePostgresDepth(c appReleaseClient, name string, depth int) *postgres
 	return postgres.InstanceFromEnv(app.ID, app.Name, rel.Env)
 }
 
+func loadLivePostgresByScan(c appReleaseClient, idOrApp string) *postgres.Instance {
+	idOrApp = strings.TrimSpace(idOrApp)
+	lister, ok := c.(interface {
+		AppList() ([]*ct.App, error)
+	})
+	if !ok || idOrApp == "" {
+		return nil
+	}
+	apps, err := lister.AppList()
+	if err != nil {
+		return nil
+	}
+	for _, app := range apps {
+		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
+			continue
+		}
+		if app.Name == idOrApp || app.ID == idOrApp {
+			return loadLivePostgresDepth(c, app.Name, 0)
+		}
+		rel, err := c.GetAppRelease(app.ID)
+		if err != nil || rel == nil || rel.Env == nil {
+			continue
+		}
+		if rel.Env[postgres.ResourceIDEnv] == idOrApp || rel.Env["FLYNN_POSTGRES"] == idOrApp {
+			return loadLivePostgresDepth(c, app.Name, 0)
+		}
+	}
+	return nil
+}
+
 func (h *handler) live() bool {
 	return h != nil && h.client != nil && h.imageID != ""
 }
@@ -65,9 +98,9 @@ var waitInstanceReady = func(service string, timeout time.Duration) error {
 	if os.Getenv("DISCOVERD_AUTH_KEY") == "" {
 		return fmt.Errorf("DISCOVERD_AUTH_KEY is not set on the postgres plugin job; reinstall the plugin so discoverd Auth-Key is injected")
 	}
-	c := discoverd.NewClient()
+	c := postgres.NewDiscoverdClient()
 	_, err := c.Instances(service, timeout)
-	return err
+	return postgres.WrapDiscoverdAuth(err)
 }
 
 // copyClusterDiscoverdEnv copies discoverd address/key from the plugin API
@@ -134,6 +167,9 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		"POSTGRES_DB":       db,
 		"ENGINE_VERSION":    postgres.EngineVersion(),
 		"POSTGRES_VERSION":  postgres.EngineVersion(),
+	}
+	if inst.ID != "" {
+		env[postgres.ResourceIDEnv] = inst.ID
 	}
 	copyClusterDiscoverdEnv(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {
@@ -258,4 +294,115 @@ func envEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func missingApp(err error) bool {
+	if err == nil {
+		return true
+	}
+	if httphelper.IsObjectNotFoundError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "404")
+}
+
+type orphanReaper interface {
+	AppList() ([]*ct.App, error)
+	GetAppRelease(string) (*ct.Release, error)
+	DeleteApp(string) (*ct.AppDeletion, error)
+	ResourceListAll() ([]*ct.Resource, error)
+}
+
+func resourceKeepsInstance(res *ct.Resource, keep map[string]bool) {
+	if res == nil || keep == nil {
+		return
+	}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			keep[s] = true
+		}
+	}
+	add(res.ExternalID)
+	if res.Env == nil {
+		return
+	}
+	add(res.Env["FLYNN_POSTGRES"])
+	add(res.Env[postgres.ResourceIDEnv])
+}
+
+func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
+	if c == nil {
+		return nil, nil
+	}
+	resources, err := c.ResourceListAll()
+	if err != nil {
+		return nil, err
+	}
+	keep := map[string]bool{}
+	for _, res := range resources {
+		resourceKeepsInstance(res, keep)
+	}
+	apps, err := c.AppList()
+	if err != nil {
+		return nil, err
+	}
+	releases := map[string]*ct.Release{}
+	for _, app := range apps {
+		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
+			continue
+		}
+		rel, relErr := c.GetAppRelease(app.ID)
+		if relErr != nil || rel == nil {
+			continue
+		}
+		releases[app.ID] = rel
+		if rel.Env == nil {
+			rel.Env = map[string]string{}
+		}
+		if keep[app.Name] || keep[app.ID] || keep[rel.Env[postgres.ResourceIDEnv]] || keep[rel.Env["FLYNN_POSTGRES"]] {
+			keep[app.Name] = true
+			if leader := strings.TrimSpace(rel.Env["POSTGRES_LEADER"]); leader != "" {
+				keep[leader] = true
+			}
+		}
+	}
+	var deleted []string
+	for _, app := range apps {
+		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
+			continue
+		}
+		if app.Meta["flynn-plugin"] == "true" {
+			continue
+		}
+		rel := releases[app.ID]
+		if keep[app.Name] || keep[app.ID] {
+			continue
+		}
+		if rel != nil && rel.Env != nil && (keep[rel.Env["FLYNN_POSTGRES"]] || keep[rel.Env[postgres.ResourceIDEnv]]) {
+			continue
+		}
+		if _, err := c.DeleteApp(app.ID); err != nil && !missingApp(err) {
+			return deleted, err
+		}
+		deleted = append(deleted, app.Name)
+	}
+	return deleted, nil
+}
+
+func (h *handler) reapOrphanInstances() {
+	if h == nil || h.client == nil {
+		return
+	}
+	deleted, err := reapOrphanPostgresApps(h.client)
+	if h.log != nil {
+		if err != nil {
+			h.log.Error("reap orphan postgres apps", "err", err, "deleted", len(deleted))
+			return
+		}
+		if len(deleted) > 0 {
+			h.log.Info("reaped orphan postgres instance apps", "count", len(deleted), "apps", strings.Join(deleted, ","))
+		}
+	}
 }

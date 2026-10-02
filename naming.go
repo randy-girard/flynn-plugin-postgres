@@ -3,6 +3,8 @@ package postgres
 import (
 	"crypto/rand"
 	"strings"
+
+	"github.com/randy-girard/flynn/pkg/resname"
 )
 
 const postgresAttachPrefix = "FLYNN_POSTGRESQL_"
@@ -28,6 +30,29 @@ var postgresWords = []string{
 	"amber", "basin", "cedar", "concave", "delta", "ember", "fjord", "grove", "harbor",
 	"inlet", "juniper", "kelp", "lagoon", "meadow", "north", "orchid", "prairie",
 	"quartz", "ridge", "spruce", "timber", "upland", "valley", "willow", "yarrow",
+}
+
+// IsolatedInstanceApp is a tenant Postgres Flynn app created for one resource
+// (postgresql-concave-48291, older pg-harbor-kxmnpq, or postgres-<word>-<digits>).
+// The plugin API, platform appliance, and postgres-plugin app are not instances.
+func IsolatedInstanceApp(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "", "postgres", "postgres-plugin", "postgres-api":
+		return false
+	}
+	if strings.HasPrefix(name, "postgresql-") || strings.HasPrefix(name, "pg-") {
+		return resname.IsolatedService(name)
+	}
+	const head = "postgres-"
+	if !strings.HasPrefix(name, head) {
+		return false
+	}
+	rest := name[len(head):]
+	if rest == "plugin" || rest == "api" || strings.HasPrefix(rest, "api-") {
+		return false
+	}
+	return resname.IsolatedService("postgresql-"+rest) || resname.IsolatedService("pg-"+rest)
 }
 
 // UniquePostgresApp returns postgresql-<word>-<5 digits>, for example

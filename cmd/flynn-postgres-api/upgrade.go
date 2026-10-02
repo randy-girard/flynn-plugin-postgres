@@ -91,6 +91,7 @@ func (h *handler) autoStartClusterUpgrades() {
 		return
 	}
 	go func() {
+		h.reapOrphanInstances()
 		started, skipped := h.beginClusterUpgrades()
 		if h.log != nil {
 			h.log.Info("cluster upgrades", "started", len(started), "skipped", len(skipped))

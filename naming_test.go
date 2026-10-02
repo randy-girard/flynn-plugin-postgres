@@ -99,3 +99,18 @@ func TestAttachmentKeysFirstUsesDatabaseURL(t *testing.T) {
 		t.Fatalf("second provision must pick a color: %#v", taken)
 	}
 }
+
+func TestIsolatedInstanceApp(t *testing.T) {
+	keep := []string{"postgresql-upland-88340", "postgresql-concave-48291", "pg-harbor-kxmnpq", "postgres-upland-88340"}
+	for _, name := range keep {
+		if !IsolatedInstanceApp(name) {
+			t.Fatalf("%s should be an isolated instance", name)
+		}
+	}
+	skip := []string{"", "postgres", "postgres-plugin", "postgres-api", "shop", "controller", "pg-missing"}
+	for _, name := range skip {
+		if IsolatedInstanceApp(name) {
+			t.Fatalf("%s must not be treated as an isolated instance", name)
+		}
+	}
+}

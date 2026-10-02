@@ -174,7 +174,11 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 	inst, err := h.store.Get(id)
 	if err != nil {
 		if errors.Is(err, postgres.ErrNotFound) {
-			w.WriteHeader(http.StatusOK)
+			if postgres.IsolatedInstanceApp(id) {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			writeAPIError(w, err)
 			return
 		}
 		writeAPIError(w, err)
@@ -185,7 +189,7 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		return
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
-		if _, err := h.client.DeleteApp(inst.App); err != nil {
+		if _, err := h.client.DeleteApp(inst.App); err != nil && !missingApp(err) {
 			writeAPIError(w, err)
 			return
 		}

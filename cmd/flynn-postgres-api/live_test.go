@@ -190,6 +190,23 @@ func TestStartIsolatedInstanceCopiesDiscoverdAuthKey(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedInstanceStampsResourceID(t *testing.T) {
+	ctrl := &fakeInstanceControl{}
+	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{
+		ID:          "res-abc",
+		App:         "postgresql-upland-88340",
+		AppUser:     "u",
+		AppPassword: "p",
+		Databases:   []postgres.Database{{Name: "db"}},
+	}, nil, func(string, time.Duration) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.releases[0].Env[postgres.ResourceIDEnv] != "res-abc" {
+		t.Fatalf("env %#v", ctrl.releases[0].Env)
+	}
+}
+
 func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	leader := &postgres.Instance{
@@ -277,6 +294,26 @@ func (f fakeAppRelease) GetAppRelease(id string) (*ct.Release, error) {
 	return nil, errors.New("not found")
 }
 
+func (f fakeAppRelease) AppList() ([]*ct.App, error) {
+	seen := map[string]bool{}
+	var out []*ct.App
+	for _, a := range f.apps {
+		if a == nil {
+			continue
+		}
+		key := a.ID
+		if key == "" {
+			key = a.Name
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, a)
+	}
+	return out, nil
+}
+
 func TestLoadLivePostgresFollowsIdentityEnv(t *testing.T) {
 	c := fakeAppRelease{
 		apps: map[string]*ct.App{
@@ -303,6 +340,97 @@ func TestLoadLivePostgresFollowsIdentityEnv(t *testing.T) {
 	}
 	if loadLivePostgres(c, "missing") != nil {
 		t.Fatal("missing")
+	}
+}
+
+func TestLoadLivePostgresFindsResourceID(t *testing.T) {
+	c := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"postgresql-upland-88340": {ID: "app-uuid", Name: "postgresql-upland-88340"},
+		},
+		releases: map[string]*ct.Release{
+			"app-uuid": {Env: map[string]string{
+				"FLYNN_POSTGRES":       "postgresql-upland-88340",
+				postgres.ResourceIDEnv: "aabbccddeeff0011",
+				"POSTGRES_USER":        "app_live",
+			}},
+		},
+	}
+	inst := loadLivePostgres(c, "aabbccddeeff0011")
+	if inst == nil || inst.App != "postgresql-upland-88340" || inst.ID != "aabbccddeeff0011" {
+		t.Fatalf("%+v", inst)
+	}
+}
+
+type fakeOrphanReaper struct {
+	apps      []*ct.App
+	releases  map[string]*ct.Release
+	resources []*ct.Resource
+	deleted   []string
+	listErr   error
+}
+
+func (f *fakeOrphanReaper) AppList() ([]*ct.App, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.apps, nil
+}
+
+func (f *fakeOrphanReaper) GetAppRelease(id string) (*ct.Release, error) {
+	if r := f.releases[id]; r != nil {
+		return r, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (f *fakeOrphanReaper) DeleteApp(id string) (*ct.AppDeletion, error) {
+	f.deleted = append(f.deleted, id)
+	return &ct.AppDeletion{}, nil
+}
+
+func (f *fakeOrphanReaper) ResourceListAll() ([]*ct.Resource, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.resources, nil
+}
+
+func TestReapOrphanPostgresApps(t *testing.T) {
+	orphan := &ct.App{ID: "orphan-id", Name: "postgresql-upland-88340"}
+	kept := &ct.App{ID: "kept-id", Name: "postgresql-quartz-76554"}
+	plugin := &ct.App{ID: "plugin-id", Name: "postgres-plugin", Meta: map[string]string{"flynn-plugin": "true"}}
+	platform := &ct.App{ID: "plat-id", Name: "postgres"}
+	c := &fakeOrphanReaper{
+		apps: []*ct.App{orphan, kept, plugin, platform},
+		releases: map[string]*ct.Release{
+			"orphan-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-upland-88340"}},
+			"kept-id":   {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-quartz-76554"}},
+		},
+		resources: []*ct.Resource{
+			{ExternalID: "res-kept", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-quartz-76554"}},
+		},
+	}
+	deleted, err := reapOrphanPostgresApps(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != "postgresql-upland-88340" {
+		t.Fatalf("deleted %v", deleted)
+	}
+	if len(c.deleted) != 1 || c.deleted[0] != "orphan-id" {
+		t.Fatalf("delete calls %v", c.deleted)
+	}
+}
+
+func TestReapOrphanPostgresAppsFailsClosed(t *testing.T) {
+	c := &fakeOrphanReaper{
+		apps:    []*ct.App{{ID: "orphan-id", Name: "postgresql-upland-88340"}},
+		listErr: errors.New("controller down"),
+	}
+	deleted, err := reapOrphanPostgresApps(c)
+	if err == nil || len(deleted) != 0 {
+		t.Fatalf("got %v %v", deleted, err)
 	}
 }
 

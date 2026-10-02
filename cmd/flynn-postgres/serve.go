@@ -48,10 +48,10 @@ func servePostgres() error {
 			return err
 		}
 	}
-	disc := discoverd.NewClient()
+	disc := postgres.NewDiscoverdClient()
 	if err := disc.AddService(service, nil); err != nil && !httphelper.IsObjectExistsError(err) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		return err
+		return postgres.WrapDiscoverdAuth(err)
 	}
 	hb, err := disc.RegisterInstance(service, &discoverd.Instance{
 		Addr: ":5432",
@@ -59,7 +59,7 @@ func servePostgres() error {
 	})
 	if err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		return err
+		return postgres.WrapDiscoverdAuth(err)
 	}
 	shutdown.BeforeExit(func() { hb.Close() })
 
