@@ -106,6 +106,17 @@ test.describe('postgres dashboard (live cluster)', () => {
     assertOneRandomPostgresDatabase(listed)
   })
 
+  test('lists the instance on workspace Datastores', async ({ page }) => {
+    await login(page)
+    const rows = parsePgRows(flynnApp(app, ['pg']))
+    const primary = rows.find((r) => r.role !== 'follower')?.name
+    if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'Datastores', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Datastores' })).toBeVisible()
+    await expect(page.getByRole('link', { name: primary })).toBeVisible()
+    await expect(page.getByRole('link', { name: app, exact: true })).toBeVisible()
+  })
+
   test('creates and lists a logical database', async ({ page }) => {
     await openPostgresTab(page, app, 'Databases')
     await expect(page.getByRole('button', { name: 'Create database' })).toBeVisible()
@@ -186,9 +197,16 @@ test.describe('postgres dashboard (live cluster)', () => {
     await share.getByRole('button', { name: 'Attach' }).click()
     await expect(share).toBeHidden({ timeout: ui })
 
+    await openPostgresInstanceTab(page, app, primary, 'Overview')
+    await expect(page.getByRole('heading', { name: 'Attached apps' })).toBeVisible()
+    await expect(page.getByRole('link', { name: peer })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Copy / })).toBeVisible()
+
     const attachedEnv = flynnApp(peer, ['env'])
     assertPostgresAttachEnv(attachedEnv, primary)
     assertPostgresAppEnv(flynnApp(app, ['env']), primary)
+    await openAppResources(page, peer)
+    await expect(page.getByText(new RegExp(`owned by\\s+${app}`))).toBeVisible()
     const peerRead = pgPsql(peer, ['-Atc', 'SELECT n FROM e2e_probe ORDER BY n'], primary).trim()
     expect(peerRead, 'peer app must read the owner instance').toContain(probeN)
 

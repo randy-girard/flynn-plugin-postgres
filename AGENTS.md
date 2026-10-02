@@ -8,6 +8,10 @@ No in-place resize: pg:upgrade follows, waits, then promotes.
 
 Unit tests are an in-memory state machine. Do not require a running Postgres.
 
+`plugin-build` caches the `img/packages.sh` squashfs layer and Go’s compile
+cache under `.plugin-build-cache/` so a Go-only image rebuild does not reinstall
+Postgres packages.
+
 ```text
 GOFLAGS='-mod=mod' go test ./...
 ```

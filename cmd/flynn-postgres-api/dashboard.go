@@ -111,6 +111,7 @@ func (h *handler) instancesFromController(sess *dashui.Session) []*postgres.Inst
 	var out []*postgres.Instance
 	for _, r := range resources {
 		if inst := instanceFromResource(r, app); inst != nil {
+			h.hydrateInstanceAttachments(inst, r)
 			h.enrichFromLive(inst)
 			out = append(out, inst)
 		}
@@ -199,7 +200,6 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 	inst.Tenant = app
 	inst.Attachments = []postgres.Attachment{{
 		App: app,
-		Env: env,
 	}}
 	leader := strings.TrimSpace(env["POSTGRES_LEADER"])
 	role := strings.TrimSpace(env["POSTGRES_ROLE"])
@@ -216,7 +216,7 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 	}
 	for _, aid := range r.Apps {
 		if aid != "" && aid != app {
-			inst.Attachments = append(inst.Attachments, postgres.Attachment{App: aid, Env: env})
+			inst.Attachments = append(inst.Attachments, postgres.Attachment{App: aid})
 		}
 	}
 	return inst
@@ -1394,18 +1394,41 @@ func overviewHTML(insts []*postgres.Instance) string {
 		fmt.Fprintf(&b, `<p>Nodes: <code>%d</code> · volume <code>%s</code> · app <code>%s</code></p>`, inst.Nodes, html.EscapeString(inst.Volume), html.EscapeString(inst.App))
 		b.WriteString(`<table><tr><th>Env</th><th>Value</th></tr>`)
 		for _, att := range inst.Attachments {
-			fmt.Fprintf(&b, `<tr><td><code>%s_URL</code></td><td><code>%s</code></td></tr>`, html.EscapeString(att.As), html.EscapeString(maskURL(att.URL)))
+			label := attachmentDisplay(att)
+			if label == "" {
+				continue
+			}
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td></tr>`, html.EscapeString(label), html.EscapeString(maskURL(att.URL)))
 		}
-		b.WriteString(`</table><p>Attached apps</p><ul>`)
+		b.WriteString(`</table><p>Attached apps</p><table><tr><th>App</th><th>Attachment</th></tr>`)
 		if len(inst.Attachments) == 0 {
-			b.WriteString(`<li class="muted">none</li>`)
+			b.WriteString(`<tr><td colspan="2" class="muted">none</td></tr>`)
 		}
 		for _, att := range inst.Attachments {
-			fmt.Fprintf(&b, `<li><code>%s</code> as <code>%s</code></li>`, html.EscapeString(att.App), html.EscapeString(att.As))
+			label := attachmentDisplay(att)
+			if label == "" {
+				label = "—"
+			}
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td></tr>`, html.EscapeString(att.App), html.EscapeString(label))
 		}
-		b.WriteString(`</ul></div>`)
+		b.WriteString(`</table><p class="muted">Same as <code>flynn pg:info</code>. Detach with <code>flynn resource:detach postgres</code> from that app, or from the dashboard overview.</p></div>`)
 	}
 	return b.String()
+}
+
+func attachmentDisplay(att postgres.Attachment) string {
+	keys := postgres.AttachmentURLKeys(att.Env, att.Env)
+	if len(keys) > 0 {
+		return strings.Join(keys, ", ")
+	}
+	as := strings.TrimSpace(att.As)
+	if as == "" {
+		return ""
+	}
+	if strings.HasSuffix(as, "_URL") {
+		return as
+	}
+	return as + "_URL"
 }
 
 func envCount(insts []*postgres.Instance, apps ...string) int {

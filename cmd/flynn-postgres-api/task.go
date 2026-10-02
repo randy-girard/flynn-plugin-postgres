@@ -140,6 +140,24 @@ func runInfoTask(resource string) error {
 	}
 	fmt.Printf("app\t%s\nrole\t%s\nleader\t%s\nfollowers\t%s\nlag_bytes\t%d\nengine\t%s\nhost\t%s\n",
 		info.App, info.Role, leader, followers, info.LagBytes, info.EngineVersion, info.Host)
+	if len(info.Attachments) == 0 {
+		fmt.Printf("attached\t-\n")
+		return nil
+	}
+	for _, att := range info.Attachments {
+		name := strings.Join(att.Keys, ",")
+		if name == "" {
+			name = strings.TrimSpace(att.As)
+		}
+		if name == "" {
+			name = "-"
+		}
+		owner := ""
+		if att.Owner {
+			owner = "owner"
+		}
+		fmt.Printf("attached\t%s\t%s\t%s\n", att.App, name, owner)
+	}
 	return nil
 }
 

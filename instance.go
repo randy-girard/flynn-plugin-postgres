@@ -77,6 +77,17 @@ type Attachment struct {
 	Env map[string]string
 }
 
+// AttachmentInfo is one tenant app using this database, for pg:info and the
+// dashboard overview. As is the primary env name (FLYNN_POSTGRESQL_AMBER_URL
+// or --as ANALYTICS_URL). Keys lists every matching *_URL on that app.
+type AttachmentInfo struct {
+	App   string   `json:"app"`
+	ID    string   `json:"id,omitempty"`
+	As    string   `json:"as,omitempty"`
+	Keys  []string `json:"keys,omitempty"`
+	Owner bool     `json:"owner,omitempty"`
+}
+
 // Instance is one Postgres resource: one Flynn app, one volume, one node.
 type Instance struct {
 	ID                string
@@ -107,19 +118,20 @@ type Instance struct {
 
 // Info is the pg:info view.
 type Info struct {
-	ID            string          `json:"id"`
-	Role          Role            `json:"role"`
-	LeaderID      string          `json:"leader_id,omitempty"`
-	Followers     []string        `json:"followers,omitempty"`
-	LagBytes      int64           `json:"lag_bytes"`
-	ReadOnly      bool            `json:"read_only"`
-	Nodes         int             `json:"nodes"`
-	Runtime       string          `json:"runtime"`
-	EngineVersion string          `json:"engine_version,omitempty"`
-	Mode          ReplicationMode `json:"replication,omitempty"`
-	App           string          `json:"app"`
-	Volume        string          `json:"volume"`
-	Host          string          `json:"host"`
+	ID            string           `json:"id"`
+	Role          Role             `json:"role"`
+	LeaderID      string           `json:"leader_id,omitempty"`
+	Followers     []string         `json:"followers,omitempty"`
+	LagBytes      int64            `json:"lag_bytes"`
+	ReadOnly      bool             `json:"read_only"`
+	Nodes         int              `json:"nodes"`
+	Runtime       string           `json:"runtime"`
+	EngineVersion string           `json:"engine_version,omitempty"`
+	Mode          ReplicationMode  `json:"replication,omitempty"`
+	App           string           `json:"app"`
+	Volume        string           `json:"volume"`
+	Host          string           `json:"host"`
+	Attachments   []AttachmentInfo `json:"attachments,omitempty"`
 }
 
 // ProvisionRequest creates a primary, or a follower when Follow is set.
@@ -477,6 +489,7 @@ func (s *Store) Info(id string) (Info, error) {
 		App:           inst.App,
 		Volume:        inst.Volume,
 		Host:          inst.ServiceHost,
+		Attachments:   attachmentInfos(inst),
 	}, nil
 }
 

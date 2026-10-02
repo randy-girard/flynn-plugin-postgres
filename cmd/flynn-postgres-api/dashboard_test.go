@@ -92,6 +92,36 @@ func TestDashCardCountsAttachedPostgres(t *testing.T) {
 	}
 }
 
+func TestOverviewListsAttachedAppsByName(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Attach(inst.ID, "shop-b", "analytics"); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "shop-b") {
+		t.Fatalf("missing attached app: %s", body)
+	}
+	if !strings.Contains(body, "ANALYTICS_URL") {
+		t.Fatalf("missing attachment name: %s", body)
+	}
+	if !strings.Contains(body, "flynn pg:info") {
+		t.Fatalf("missing cli hint: %s", body)
+	}
+}
+
 func TestDashReplicationListsControllerFollower(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	h := newHandler(postgres.NewStore())

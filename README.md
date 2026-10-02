@@ -60,7 +60,7 @@ is a fallback.
 | Command | Purpose |
 | --- | --- |
 | `flynn pg` / `pg:list` | List attached instances |
-| `flynn pg:info` | Show leader, followers, and lag |
+| `flynn pg:info` | Show leader, followers, lag, and attached apps |
 | `flynn pg:create <name>` | Create a logical database on this instance |
 | `flynn pg:follow` | Create a streaming read-only follower |
 | `flynn pg:wait` | Block until follower lag is zero |
@@ -102,3 +102,10 @@ cluster/run.sh --cluster local --web-only --headed
 ```
 
 See `cluster/README.md`.
+
+## Image build
+
+`./script/plugin-build` stacks Flynn ubuntu-noble, a cached `img/packages.sh`
+layer, and a binaries layer. Repeat builds skip apt while `img/` and the Flynn
+OS layer stay the same. `GOCACHE` lives in `.plugin-build-cache/`. Set
+`PLUGIN_BUILD_NO_PACKAGES_CACHE=1` to force a packages rebuild.

@@ -125,6 +125,7 @@ const (
 	cmdWait      = 45 * time.Second
 	cmdDump      = 20 * time.Second
 	cmdDestroy   = 45 * time.Second
+	cmdGone      = 2 * time.Minute
 	pollInterval = time.Second
 )
 
@@ -332,6 +333,43 @@ func (h *harness) waitReady(resource string, timeout time.Duration) {
 		time.Sleep(pollInterval)
 	}
 	h.t.Fatalf("postgres %s on %s not ready: %v", resource, h.app, last)
+}
+
+func (h *harness) appListed(name string) bool {
+	h.t.Helper()
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	out, _, _ := h.cmd(cmdQuick, "apps", "--all")
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[len(fields)-1] == name {
+			return true
+		}
+	}
+	return false
+}
+
+// waitInstanceGone waits until the isolated postgres app is gone so
+// deprovision no longer treats it as a live follower.
+func (h *harness) waitInstanceGone(name string) {
+	h.t.Helper()
+	deadline := time.Now().Add(cmdGone)
+	for time.Now().Before(deadline) {
+		if !h.appListed(name) {
+			return
+		}
+		_, errOut, err := h.cmd(cmdQuick, "-a", name, "apps:destroy", "-y")
+		if err != nil {
+			h.t.Logf("waiting for %s to go: %v %s", name, err, errOut)
+		}
+		time.Sleep(pollInterval)
+	}
+	h.t.Fatalf("postgres instance %s still present after delete", name)
 }
 
 func (h *harness) destroyBestEffort() {

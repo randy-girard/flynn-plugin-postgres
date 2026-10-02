@@ -178,7 +178,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		}
 	}
 	for _, phrase := range []string{
-		"Show leader, followers, and lag",
+		"Show leader, followers, lag, and attached apps",
 		"Create a logical database on this instance",
 		"Create a streaming read-only follower",
 		"Block until follower lag is zero",

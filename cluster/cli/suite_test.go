@@ -219,6 +219,7 @@ func TestPostgresCLI(t *testing.T) {
 			t.Fatalf("expected followers error removing %s, got %v\n%s", primary, err, errOut)
 		}
 		h.appMust(cmdDestroy, "resource:remove", follower)
+		h.waitInstanceGone(follower)
 		if left := h.followers(); len(left) != 0 {
 			t.Fatalf("followers still present after remove: %v", left)
 		}
@@ -280,6 +281,10 @@ func TestPostgresCLI(t *testing.T) {
 		env := h.must(cmdQuick, "-a", name, "env")
 		assertPostgresAttachEnv(t, env, primary)
 		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), primary)
+		info := h.appMust(cmdQuick, "pg:info")
+		if !strings.Contains(info, name) {
+			t.Fatalf("pg:info should list attached app %s:\n%s", name, info)
+		}
 		peerGot, errOut, err := h.cmd(cmdQuick, "-a", name, "pg", "psql", primary, "--", "-Atc", "SELECT n FROM e2e_probe ORDER BY n")
 		if err != nil {
 			t.Fatalf("peer psql: %v\nstdout:\n%s\nstderr:\n%s", err, peerGot, errOut)

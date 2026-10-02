@@ -2,8 +2,9 @@
 
 Tests the postgres plugin against an **already-installed** cluster. They are
 not part of `go test ./...` or GitHub Actions. The web suite drives a real
-Chromium window through Playwright (login, apps, provision, databases, users,
-attach/detach to another app, followers, backup). The CLI suite shells out to
+Chromium window through Playwright (login, apps, provision, workspace
+Datastores list, databases, users, attach/detach to another app, followers,
+backup). The CLI suite shells out to
 `flynn`, including `resource:attach` / `resource:detach` on a second app that
 must not be able to delete the instance.
 

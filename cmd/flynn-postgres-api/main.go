@@ -67,12 +67,15 @@ func main() {
 }
 
 type handler struct {
-	store         *postgres.Store
-	router        *httprouter.Router
-	client        controller.Client
-	imageID       string
-	log           log15.Logger
-	listResources func(app string) ([]*ct.Resource, error)
+	store            *postgres.Store
+	router           *httprouter.Router
+	client           controller.Client
+	imageID          string
+	log              log15.Logger
+	listResources    func(app string) ([]*ct.Resource, error)
+	listAllResources func() ([]*ct.Resource, error)
+	appDisplayName   func(string) string
+	appReleaseEnv    func(string) map[string]string
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -236,10 +239,14 @@ func (h *handler) followerApps(inst *postgres.Instance) []string {
 }
 
 func (h *handler) info(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
-	info, err := h.store.Info(p.ByName("id"))
+	id := p.ByName("id")
+	info, err := h.store.Info(id)
 	if err != nil {
 		writeAPIError(w, err)
 		return
+	}
+	if views := h.controllerAttachmentViews(id, info.App, info.ID); len(views) > 0 {
+		info.Attachments = views
 	}
 	httphelper.JSON(w, 200, info)
 }
