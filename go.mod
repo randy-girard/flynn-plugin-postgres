@@ -8,7 +8,7 @@ require (
 	github.com/flynn/go-docopt v0.0.0-20140912013429-f6dd2ebbb31e
 	github.com/inconshreveable/log15 v0.0.0-20171019012758-0decfc6c20d9
 	github.com/julienschmidt/httprouter v0.0.0-20140925104356-46807412fe50
-	github.com/randy-girard/flynn v0.0.0-20261002103837-237cc33d5c96
+	github.com/randy-girard/flynn v0.0.0-20261002141535-254760332bce
 )
 
 require (
