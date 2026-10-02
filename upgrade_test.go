@@ -13,7 +13,7 @@ func TestUpgradeFollowsWaitsAndPromotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeKey, before := firstColorURL(env)
+	beforeKey, before := firstAppURL(env)
 	if before == "" {
 		t.Fatalf("leader env: %#v", env)
 	}

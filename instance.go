@@ -239,7 +239,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	if hostOf(inst.ServiceHost) == PlatformApplianceHost {
 		return nil, nil, ErrPlatformAppliance
 	}
-	inst.Databases = []Database{{Name: DefaultDatabaseName(inst.App)}}
+	inst.Databases = []Database{{Name: DefaultDatabaseName()}}
 
 	if leader != nil {
 		mode := req.Mode
@@ -278,7 +278,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	s.byID[inst.ID] = inst
 	var env map[string]string
 	if req.App != "" {
-		env = s.attachLocked(inst, req.App, req.As)
+		env = s.attachLocked(inst, req.App, req.As, true)
 	}
 	return inst.snapshot(), env, nil
 }
@@ -748,7 +748,7 @@ func (s *Store) Attach(id, app, as string) (map[string]string, error) {
 	if inst == nil {
 		return nil, ErrNotFound
 	}
-	return cloneEnv(s.attachLocked(inst, app, as)), nil
+	return cloneEnv(s.attachLocked(inst, app, as, false)), nil
 }
 
 // Detach removes the app's attachment and its env var.
@@ -821,7 +821,7 @@ func (s *Store) CheckEnvSet(id, app string, updates map[string]*string) error {
 	return RejectAttachedURLSet(env, updates)
 }
 
-func (s *Store) attachLocked(inst *Instance, app, as string) map[string]string {
+func (s *Store) attachLocked(inst *Instance, app, as string, newProvision bool) map[string]string {
 	for i := range inst.Attachments {
 		if inst.Attachments[i].App == app {
 			url := inst.appURL()
@@ -837,10 +837,10 @@ func (s *Store) attachLocked(inst *Instance, app, as string) map[string]string {
 	}
 	env := AttachmentKeys(as, "DATABASE_URL", inst.App, inst.appURL(), func(k string) bool {
 		return s.urlKeyTaken(app, k)
-	})
+	}, newProvision)
 	stem := ""
 	for k := range env {
-		if strings.HasSuffix(k, "_URL") {
+		if postgresColorURLKey(k) || (strings.HasSuffix(k, "_URL") && k != "DATABASE_URL") {
 			stem = strings.TrimSuffix(k, "_URL")
 			break
 		}

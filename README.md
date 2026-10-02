@@ -29,9 +29,12 @@ flynn resource:add postgres --follow <resource>
 flynn resource:add postgres --follow <resource> --runtime perf-l
 ```
 
-`--as ANALYTICS` sets only `ANALYTICS_URL`. The default attachment is
-`FLYNN_POSTGRESQL_<COLOR>_URL` (a color not already taken on the app).
-`--as AMBER` sets `FLYNN_POSTGRESQL_AMBER_URL`. The same resource can attach
+`--as ANALYTICS` sets `ANALYTICS_URL`. A new provision also sets
+`DATABASE_URL` when the app does not already have it. Every provision and
+attach sets `FLYNN_POSTGRESQL_<COLOR>_URL` unless `--as` names the attachment.
+`--as AMBER` sets `FLYNN_POSTGRESQL_AMBER_URL`. Attaching an existing resource
+does not set `DATABASE_URL`. The first logical database on
+a new instance is a random alphanumeric name. The same resource can attach
 to other apps under different names. Detach removes that one variable.
 `flynn env:set` of an attached `*_URL` is rejected until detach.
 

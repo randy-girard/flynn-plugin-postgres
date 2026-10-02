@@ -69,14 +69,26 @@ func TestPostgresCLI(t *testing.T) {
 		t.Logf("primary %s", primary)
 		env := h.appMust(cmdQuick, "env")
 		assertPostgresAppEnv(t, env, primary)
-		keys := postgresColorURLKeys(env)
-		_, errOut, err := h.appCmd(cmdQuick, "env:set", keys[0]+"=postgres://elsewhere/db")
+		_, errOut, err := h.appCmd(cmdQuick, "env:set", "DATABASE_URL=postgres://elsewhere/db")
 		if err == nil {
-			t.Fatal("FLYNN_POSTGRESQL_<COLOR>_URL must be locked while the resource is attached")
+			t.Fatal("DATABASE_URL must be locked while the resource is attached")
 		}
 		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "attached") {
 			t.Fatalf("expected attached lock, got %v\n%s", err, errOut)
 		}
+		colorKeys := postgresColorURLKeys(env)
+		if len(colorKeys) != 1 {
+			t.Fatalf("expected one color URL to lock:\n%s", env)
+		}
+		_, errOut, err = h.appCmd(cmdQuick, "env:set", colorKeys[0]+"=postgres://elsewhere/db")
+		if err == nil {
+			t.Fatal("color URL must be locked while the resource is attached")
+		}
+		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "attached") {
+			t.Fatalf("expected color lock, got %v\n%s", err, errOut)
+		}
+		listed := h.psql(cmdQuick, "-Atc", "SELECT datname FROM pg_database WHERE datallowconn AND datname NOT IN ('template0','template1','postgres') ORDER BY 1")
+		assertOneRandomPostgresDatabase(t, listed)
 	})
 	if t.Failed() {
 		return
@@ -187,12 +199,7 @@ func TestPostgresCLI(t *testing.T) {
 		}
 		h.appMust(cmdWait, "pg", "wait", follower)
 		h.waitReady(follower, cmdWait)
-		env := h.appMust(cmdQuick, "env")
-		primaryKeys := postgresColorURLKeys(env)
-		if len(primaryKeys) == 0 {
-			t.Fatalf("primary FLYNN_POSTGRESQL_<COLOR>_URL missing after follower:\n%s", env)
-		}
-		assertPostgresAppEnv(t, env, h.primary())
+		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), h.primary())
 		got := strings.TrimSpace(h.psqlOn(cmdQuick, follower, "-Atc", "SELECT n FROM e2e_probe"))
 		if got != probeN {
 			t.Fatalf("follower %s want %s got %s", follower, probeN, got)
@@ -215,12 +222,12 @@ func TestPostgresCLI(t *testing.T) {
 		if left := h.followers(); len(left) != 0 {
 			t.Fatalf("followers still present after remove: %v", left)
 		}
-		env = h.appMust(cmdQuick, "env")
+		env := h.appMust(cmdQuick, "env")
 		if envHasKey(env, scopedDatabaseURLKey(follower)) {
 			t.Fatalf("follower env must be removed:\n%s", env)
 		}
-		if len(postgresColorURLKeys(env)) == 0 {
-			t.Fatalf("primary FLYNN_POSTGRESQL_<COLOR>_URL must remain after follower delete:\n%s", env)
+		if !envHasKey(env, "DATABASE_URL") {
+			t.Fatalf("primary DATABASE_URL must remain after follower delete:\n%s", env)
 		}
 		assertPostgresAppEnv(t, env, primary)
 	})
@@ -271,7 +278,7 @@ func TestPostgresCLI(t *testing.T) {
 			t.Fatalf("expected attached resource, got:\n%s", out)
 		}
 		env := h.must(cmdQuick, "-a", name, "env")
-		assertPostgresAppEnv(t, env, primary)
+		assertPostgresAttachEnv(t, env, primary)
 		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), primary)
 		peerGot, errOut, err := h.cmd(cmdQuick, "-a", name, "pg", "psql", primary, "--", "-Atc", "SELECT n FROM e2e_probe ORDER BY n")
 		if err != nil {

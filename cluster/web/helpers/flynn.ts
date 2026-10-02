@@ -88,14 +88,7 @@ export function postgresColorURLKeys(env: string): string[] {
   return keys
 }
 
-export function assertPostgresAppEnv(env: string, resource: string): void {
-  const keys = postgresColorURLKeys(env)
-  if (keys.length === 0) {
-    throw new Error(`app must set FLYNN_POSTGRESQL_<COLOR>_URL:\n${env}`)
-  }
-  if (envHasKey(env, 'DATABASE_URL')) {
-    throw new Error(`postgres must not set DATABASE_URL:\n${env}`)
-  }
+export function assertPostgresAppEnvCommon(env: string, resource: string): void {
   const named = scopedDatabaseURLKey(resource)
   if (resource && envHasKey(env, named)) {
     throw new Error(`postgres must not set instance-named URL ${named}:\n${env}`)
@@ -108,6 +101,51 @@ export function assertPostgresAppEnv(env: string, resource: string): void {
     if (envHasKey(env, k)) {
       throw new Error(`app must not set ${k}:\n${env}`)
     }
+  }
+}
+
+export function assertPostgresAppEnv(env: string, resource: string): void {
+  if (!envHasKey(env, 'DATABASE_URL')) {
+    throw new Error(`new provision must set DATABASE_URL:\n${env}`)
+  }
+  const keys = postgresColorURLKeys(env)
+  if (keys.length !== 1) {
+    throw new Error(`provision must set exactly one color URL:\n${env}`)
+  }
+  assertPostgresAppEnvCommon(env, resource)
+}
+
+export function assertPostgresAttachEnv(env: string, resource: string): void {
+  if (envHasKey(env, 'DATABASE_URL')) {
+    throw new Error(`attach of existing resource must not set DATABASE_URL:\n${env}`)
+  }
+  const keys = postgresColorURLKeys(env)
+  if (keys.length !== 1) {
+    throw new Error(`attach must set exactly one color URL:\n${env}`)
+  }
+  assertPostgresAppEnvCommon(env, resource)
+}
+
+export function assertPostgresFollowerAppEnv(env: string, resource: string): void {
+  if (!envHasKey(env, 'DATABASE_URL')) {
+    throw new Error(`primary DATABASE_URL missing after follower:\n${env}`)
+  }
+  const keys = postgresColorURLKeys(env)
+  if (keys.length !== 1) {
+    throw new Error(`follower must add exactly one color URL:\n${env}`)
+  }
+  assertPostgresAppEnvCommon(env, resource)
+}
+
+const randomPostgresDB = /^[a-z][a-z0-9]{11}$/
+
+export function assertOneRandomPostgresDatabase(listed: string): void {
+  const names = listed.split('\n').map((s) => s.trim()).filter(Boolean)
+  if (names.length !== 1) {
+    throw new Error(`expected one application database, got ${JSON.stringify(names)}`)
+  }
+  if (!randomPostgresDB.test(names[0])) {
+    throw new Error(`first database name must be random alphanumeric, got ${JSON.stringify(names[0])}`)
   }
 }
 

@@ -47,18 +47,22 @@ func UniquePostgresApp(taken func(string) bool) string {
 }
 
 // DefaultDatabaseName is the first application database on a new instance.
-// postgresql-concave-48291 becomes db_postgresql_concave_48291.
-func DefaultDatabaseName(app string) string {
-	app = strings.ToLower(strings.TrimSpace(app))
-	app = strings.ReplaceAll(app, "-", "_")
-	if app == "" {
-		return "db_app"
+// It is a random alphanumeric name (letter first) so it is not the instance
+// app name and is not `postgres`.
+func DefaultDatabaseName() string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	const rest = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const n = 12
+	buf := make([]byte, n)
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		panic(err)
 	}
-	name := "db_" + app
-	if len(name) > 63 {
-		return name[:63]
+	buf[0] = letters[int(raw[0])%len(letters)]
+	for i := 1; i < n; i++ {
+		buf[i] = rest[int(raw[i])%len(rest)]
 	}
-	return name
+	return string(buf)
 }
 
 func (s *Store) uniqueApp() string {
@@ -84,10 +88,11 @@ func nameDigits(n int) string {
 	return string(buf)
 }
 
-// AttachmentKeys is every *_URL injected for one postgres resource. Each
-// attachment is FLYNN_POSTGRESQL_<COLOR>_URL, or --as NAME which becomes
-// NAME_URL (a color short name becomes FLYNN_POSTGRESQL_<COLOR>_URL).
-func AttachmentKeys(as, _, resourceApp, rawURL string, taken func(string) bool) map[string]string {
+// AttachmentKeys is every *_URL injected for one postgres resource. Every
+// provision and attach sets FLYNN_POSTGRESQL_<COLOR>_URL unless --as names
+// the attachment. A new provision also sets DATABASE_URL when that key is
+// free. Attaching an existing resource never sets DATABASE_URL.
+func AttachmentKeys(as, _, resourceApp, rawURL string, taken func(string) bool, newProvision bool) map[string]string {
 	out := map[string]string{}
 	busy := func(k string) bool {
 		if _, ok := out[k]; ok {
@@ -95,14 +100,24 @@ func AttachmentKeys(as, _, resourceApp, rawURL string, taken func(string) bool) 
 		}
 		return taken != nil && taken(k)
 	}
-	if key := postgresAttachmentURLKey(as, busy); key != "" {
+	if key := postgresAppURLKey(as, busy); key != "" {
 		out[key] = rawURL
 	}
-	if len(out) == 0 && rawURL != "" {
-		out[colorDatabaseURL(nil)] = rawURL
+	if newProvision && rawURL != "" && !busy("DATABASE_URL") {
+		out["DATABASE_URL"] = rawURL
 	}
 	_ = resourceApp
 	return out
+}
+
+func postgresAppURLKey(as string, taken func(string) bool) string {
+	as = strings.ToUpper(strings.TrimSpace(as))
+	as = strings.TrimSuffix(as, "_URL")
+	as = strings.Trim(as, "_")
+	if as != "" {
+		return postgresAttachmentURLKey(as, taken)
+	}
+	return colorDatabaseURL(taken)
 }
 
 func postgresAttachmentURLKey(as string, taken func(string) bool) string {

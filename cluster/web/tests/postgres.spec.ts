@@ -1,7 +1,9 @@
 import { expect, test, type Page } from '@playwright/test'
 import { dashboardPassword, uniqueSuffix } from '../helpers/env'
 import {
+  assertOneRandomPostgresDatabase,
   assertPostgresAppEnv,
+  assertPostgresAttachEnv,
   destroyAppBestEffort,
   envHasKey,
   flynnApp,
@@ -96,6 +98,12 @@ test.describe('postgres dashboard (live cluster)', () => {
     await page.waitForURL(/\/resources\/postgres\//, { timeout: provision })
     await waitForPsql(app)
     await expect(page.locator('h1')).toContainText(/postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8}/i, { timeout: ui })
+    const rows = parsePgRows(flynnApp(app, ['pg']))
+    const primary = rows.find((r) => r.role !== 'follower')?.name
+    if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    assertPostgresAppEnv(flynnApp(app, ['env']), primary)
+    const listed = pgPsql(app, ['-Atc', "SELECT datname FROM pg_database WHERE datallowconn AND datname NOT IN ('template0','template1','postgres') ORDER BY 1"])
+    assertOneRandomPostgresDatabase(listed)
   })
 
   test('creates and lists a logical database', async ({ page }) => {
@@ -179,7 +187,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(share).toBeHidden({ timeout: ui })
 
     const attachedEnv = flynnApp(peer, ['env'])
-    assertPostgresAppEnv(attachedEnv, primary)
+    assertPostgresAttachEnv(attachedEnv, primary)
     assertPostgresAppEnv(flynnApp(app, ['env']), primary)
     const peerRead = pgPsql(peer, ['-Atc', 'SELECT n FROM e2e_probe ORDER BY n'], primary).trim()
     expect(peerRead, 'peer app must read the owner instance').toContain(probeN)
@@ -218,7 +226,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     await page.getByRole('option', { name: new RegExp(primary) }).click()
     await attach.getByRole('button', { name: 'Attach' }).click()
     await page.waitForURL(new RegExp(`/resources/postgres/${primary}`), { timeout: ui })
-    assertPostgresAppEnv(flynnApp(peer, ['env']), primary)
+    assertPostgresAttachEnv(flynnApp(peer, ['env']), primary)
 
     await openPostgresInstanceTab(page, peer, primary, 'Settings')
     page.once('dialog', (d) => d.accept())
@@ -239,6 +247,10 @@ test.describe('postgres dashboard (live cluster)', () => {
     await addFollower.click()
     follower = await waitForNewFollower(app, before)
     await waitForPsql(app, follower, replicaWait)
+    const rows = parsePgRows(flynnApp(app, ['pg']))
+    const primary = rows.find((r) => r.role !== 'follower')?.name
+    if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    assertPostgresAppEnv(flynnApp(app, ['env']), primary)
     let got = await waitForReplicaRow(app, follower, 'SELECT n FROM e2e_probe', (n) => n === probeN)
     expect(got).toBe(probeN)
     pgPsql(app, ['-c', `INSERT INTO e2e_probe VALUES (${probeFollow})`])

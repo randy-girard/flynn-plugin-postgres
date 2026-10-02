@@ -39,15 +39,18 @@ func envHasKey(env, key string) bool {
 	return strings.HasPrefix(env, prefix) || strings.Contains(env, "\n"+prefix)
 }
 
-func assertPostgresAppEnv(t *testing.T, env, resource string) {
+func envValue(env, key string) string {
+	prefix := key + "="
+	for _, line := range strings.Split(env, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
+func assertPostgresAppEnvCommon(t *testing.T, env, resource string) {
 	t.Helper()
-	keys := postgresColorURLKeys(env)
-	if len(keys) == 0 {
-		t.Fatalf("app must set FLYNN_POSTGRESQL_<COLOR>_URL:\n%s", env)
-	}
-	if envHasKey(env, "DATABASE_URL") {
-		t.Fatalf("postgres must not set DATABASE_URL:\n%s", env)
-	}
 	if resource != "" && envHasKey(env, scopedDatabaseURLKey(resource)) {
 		t.Fatalf("postgres must not set instance-named URL %s:\n%s", scopedDatabaseURLKey(resource), env)
 	}
@@ -59,6 +62,57 @@ func assertPostgresAppEnv(t *testing.T, env, resource string) {
 		if envHasKey(env, k) {
 			t.Fatalf("app must not set %s:\n%s", k, env)
 		}
+	}
+}
+
+func assertPostgresAppEnv(t *testing.T, env, resource string) {
+	t.Helper()
+	if !envHasKey(env, "DATABASE_URL") {
+		t.Fatalf("new provision must set DATABASE_URL:\n%s", env)
+	}
+	if keys := postgresColorURLKeys(env); len(keys) != 1 {
+		t.Fatalf("provision must set exactly one color URL:\n%s", env)
+	}
+	assertPostgresAppEnvCommon(t, env, resource)
+}
+
+func assertPostgresAttachEnv(t *testing.T, env, resource string) {
+	t.Helper()
+	if envHasKey(env, "DATABASE_URL") {
+		t.Fatalf("attach of existing resource must not set DATABASE_URL:\n%s", env)
+	}
+	if keys := postgresColorURLKeys(env); len(keys) != 1 {
+		t.Fatalf("attach must set exactly one color URL:\n%s", env)
+	}
+	assertPostgresAppEnvCommon(t, env, resource)
+}
+
+func assertPostgresFollowerAppEnv(t *testing.T, env, resource string) {
+	t.Helper()
+	if !envHasKey(env, "DATABASE_URL") {
+		t.Fatalf("primary DATABASE_URL missing after follower:\n%s", env)
+	}
+	if keys := postgresColorURLKeys(env); len(keys) != 1 {
+		t.Fatalf("follower must add exactly one color URL:\n%s", env)
+	}
+	assertPostgresAppEnvCommon(t, env, resource)
+}
+
+var randomPostgresDB = regexp.MustCompile(`^[a-z][a-z0-9]{11}$`)
+
+func assertOneRandomPostgresDatabase(t *testing.T, listed string) {
+	t.Helper()
+	var names []string
+	for _, line := range strings.Split(listed, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			names = append(names, s)
+		}
+	}
+	if len(names) != 1 {
+		t.Fatalf("expected one application database, got %v", names)
+	}
+	if !randomPostgresDB.MatchString(names[0]) {
+		t.Fatalf("first database name must be random alphanumeric, got %q", names[0])
 	}
 }
 

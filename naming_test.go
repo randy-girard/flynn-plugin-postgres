@@ -7,20 +7,28 @@ import (
 )
 
 func TestDefaultDatabaseName(t *testing.T) {
-	got := DefaultDatabaseName("postgresql-concave-48291")
-	if got != "db_postgresql_concave_48291" {
+	re := regexp.MustCompile(`^[a-z][a-z0-9]{11}$`)
+	got := DefaultDatabaseName()
+	if !re.MatchString(got) {
 		t.Fatalf("got %q", got)
 	}
-	if DefaultDatabaseName("") != "db_app" {
-		t.Fatal("empty app")
+	if err := ValidDatabaseName(got); err != nil {
+		t.Fatal(err)
+	}
+	other := DefaultDatabaseName()
+	if other == got {
+		t.Fatal("expected a new random name")
 	}
 	s := NewStore()
 	inst, _, err := s.Provision(ProvisionRequest{App: "shop"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inst.Databases) != 1 || inst.Databases[0].Name != DefaultDatabaseName(inst.App) {
-		t.Fatalf("provision db %#v app %q", inst.Databases, inst.App)
+	if len(inst.Databases) != 1 || !re.MatchString(inst.Databases[0].Name) {
+		t.Fatalf("provision db %#v", inst.Databases)
+	}
+	if strings.HasPrefix(inst.Databases[0].Name, "db_") || strings.Contains(inst.Databases[0].Name, "postgresql") {
+		t.Fatalf("must not derive the database name from the instance: %#v", inst.Databases)
 	}
 }
 
@@ -42,33 +50,52 @@ func TestUniqueAppName(t *testing.T) {
 	}
 }
 
-func TestAttachmentKeysUsesColorNotResourceName(t *testing.T) {
-	env := AttachmentKeys("", "DATABASE_URL", "postgresql-concave-48291", "postgres://db", nil)
-	if env["DATABASE_URL"] != "" {
-		t.Fatalf("must not set DATABASE_URL: %#v", env)
+func TestAttachmentKeysFirstUsesDatabaseURL(t *testing.T) {
+	env := AttachmentKeys("", "DATABASE_URL", "postgresql-concave-48291", "postgres://db", nil, true)
+	if env["DATABASE_URL"] != "postgres://db" {
+		t.Fatalf("new provision must set DATABASE_URL: %#v", env)
 	}
 	if env["POSTGRESQL_CONCAVE_48291_DATABASE_URL"] != "" || env["FLYNN_POSTGRESQL_CONCAVE_48291_URL"] != "" {
 		t.Fatalf("must not use instance name as env stem: %#v", env)
 	}
 	color := ""
-	for k, v := range env {
-		if postgresColorURLKey(k) && v == "postgres://db" {
+	for k := range env {
+		if postgresColorURLKey(k) {
 			color = k
 		}
 	}
 	if color == "" {
-		t.Fatalf("missing color URL: %#v", env)
+		t.Fatalf("provision must also set a color URL: %#v", env)
+	}
+	if len(env) != 2 {
+		t.Fatalf("DATABASE_URL plus one color: %#v", env)
+	}
+	attach := AttachmentKeys("", "", "postgresql-concave-48291", "postgres://db", nil, false)
+	if attach["DATABASE_URL"] != "" {
+		t.Fatalf("attach of existing must not set DATABASE_URL: %#v", attach)
+	}
+	attachColor := ""
+	for k := range attach {
+		if postgresColorURLKey(k) {
+			attachColor = k
+		}
+	}
+	if attachColor == "" {
+		t.Fatalf("attach must set a color URL: %#v", attach)
 	}
 	taken := AttachmentKeys("", "", "postgresql-concave-48291", "postgres://other", func(k string) bool {
-		return k == color
-	})
+		return k == "DATABASE_URL"
+	}, true)
+	if taken["DATABASE_URL"] != "" {
+		t.Fatalf("second provision must not steal DATABASE_URL: %#v", taken)
+	}
 	other := ""
 	for k := range taken {
 		if postgresColorURLKey(k) {
 			other = k
 		}
 	}
-	if other == "" || other == color {
-		t.Fatalf("second attach must pick another color: %#v vs %s", taken, color)
+	if other == "" {
+		t.Fatalf("second provision must pick a color: %#v", taken)
 	}
 }

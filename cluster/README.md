@@ -52,4 +52,7 @@ at 90s so a stuck cluster fails the suite instead of hanging for tens of
 minutes.
 
 The dashboard has no SQL console. Insert/query and follower catch-up checks
-use `flynn pg psql` against the instance the browser just provisioned.
+use `flynn pg psql` against the instance the browser just provisioned. A new
+provision sets `DATABASE_URL` when that key is free plus exactly one color
+URL, and creates exactly one random alphanumeric application database.
+Attaching an existing resource to another app sets only the color URL.

@@ -332,7 +332,7 @@ func TestPromoteRewritesURLAndKeepsOldLeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	beforeKey, before := firstColorURL(leaderEnv)
+	beforeKey, before := firstAppURL(leaderEnv)
 	if before == "" {
 		t.Fatalf("leader env: %#v", leaderEnv)
 	}
@@ -430,8 +430,11 @@ func TestAsSetsOneEnvVarAndDetachRemovesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env["ANALYTICS_URL"] == "" || env["DATABASE_URL"] != "" {
+	if env["ANALYTICS_URL"] == "" || env["DATABASE_URL"] == "" {
 		t.Fatalf("env: %#v", env)
+	}
+	if colorURL(env) != "" {
+		t.Fatalf("provision --as ANALYTICS must not also set a color URL: %#v", env)
 	}
 	locked := map[string]*string{"ANALYTICS_URL": strPtr("postgres://x")}
 	for k := range env {
@@ -450,7 +453,7 @@ func TestAsSetsOneEnvVarAndDetachRemovesIt(t *testing.T) {
 		t.Fatalf("second attach: %#v", other)
 	}
 	shop, err := s.EnvForApp(inst.ID, "shop")
-	if err != nil || shop["ANALYTICS_URL"] == "" || shop["DATABASE_URL"] != "" {
+	if err != nil || shop["ANALYTICS_URL"] == "" || shop["DATABASE_URL"] == "" {
 		t.Fatalf("shop env: %#v %v", shop, err)
 	}
 	if err := s.Detach(inst.ID, "shop"); err != nil {
@@ -474,14 +477,21 @@ func TestEnvSetAttachedURLRejectedUntilDetach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	color, _ := firstColorURL(env)
-	if color == "" {
+	if env["DATABASE_URL"] == "" || colorURL(env) == "" {
 		t.Fatalf("env: %#v", env)
 	}
 	next := "postgres://elsewhere/db"
-	err = s.CheckEnvSet(inst.ID, "shop", map[string]*string{color: &next})
+	err = s.CheckEnvSet(inst.ID, "shop", map[string]*string{"DATABASE_URL": &next})
 	if !errors.Is(err, ErrAttachedEnv) {
 		t.Fatalf("env set: %v", err)
+	}
+	cKey, _ := firstColorURL(env)
+	if cKey == "" {
+		t.Fatalf("missing color: %#v", env)
+	}
+	err = s.CheckEnvSet(inst.ID, "shop", map[string]*string{cKey: &next})
+	if !errors.Is(err, ErrAttachedEnv) {
+		t.Fatalf("color env set: %v", err)
 	}
 	foo := "ok"
 	if err := s.CheckEnvSet(inst.ID, "shop", map[string]*string{"FOO": &foo}); err != nil {
@@ -490,7 +500,7 @@ func TestEnvSetAttachedURLRejectedUntilDetach(t *testing.T) {
 	if err := s.Detach(inst.ID, "shop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CheckEnvSet(inst.ID, "shop", map[string]*string{color: &next}); err != nil {
+	if err := s.CheckEnvSet(inst.ID, "shop", map[string]*string{cKey: &next}); err != nil {
 		t.Fatalf("after detach: %v", err)
 	}
 }
@@ -569,7 +579,8 @@ func TestPsqlTargetsInstanceURLOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := PsqlCommand(colorURL(env))
+	_, conn := firstAppURL(env)
+	args, err := PsqlCommand(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,8 +598,7 @@ func TestSecondDatabaseOnAnAppUsesNamedURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	aKey, _ := firstColorURL(envA)
-	if aKey == "" || envA["DATABASE_URL"] != "" {
+	if envA["DATABASE_URL"] == "" || colorURL(envA) == "" {
 		t.Fatalf("first: %#v", envA)
 	}
 	_, envB, err := s.Provision(ProvisionRequest{App: "shop"})
@@ -596,9 +606,16 @@ func TestSecondDatabaseOnAnAppUsesNamedURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	bKey, _ := firstColorURL(envB)
-	if envB["DATABASE_URL"] != "" || bKey == "" || bKey == aKey {
-		t.Fatalf("second: %#v first %s", envB, aKey)
+	if envB["DATABASE_URL"] != "" || bKey == "" {
+		t.Fatalf("second: %#v", envB)
 	}
+}
+
+func firstAppURL(env map[string]string) (key, val string) {
+	if v := strings.TrimSpace(env["DATABASE_URL"]); v != "" {
+		return "DATABASE_URL", v
+	}
+	return firstColorURL(env)
 }
 
 func firstColorURL(env map[string]string) (key, val string) {

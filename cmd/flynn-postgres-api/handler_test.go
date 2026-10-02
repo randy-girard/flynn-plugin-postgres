@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,7 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Env["ANALYTICS_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
+	if out.Env["ANALYTICS_URL"] == "" || out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" {
 		t.Fatalf("env %#v", out.Env)
 	}
 	if colorURL(out.Env) != "" {
@@ -42,9 +44,6 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	}
 	if out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("POSTGRES_URL must not be stored: %#v", out.Env)
-	}
-	if out.Env["DATABASE_URL"] != "" {
-		t.Fatalf("DATABASE_URL must not be stored: %#v", out.Env)
 	}
 	if out.Env["POSTGRES_ROLE"] != "primary" {
 		t.Fatalf("role %#v", out.Env)
@@ -81,12 +80,16 @@ func TestHTTPProvisionWithoutAppReturnsDatabaseURL(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
-	if colorURL(out.Env) == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != "" {
+	if out.Env["DATABASE_URL"] == "" || out.Env["FLYNN_POSTGRES"] == "" || out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("env %#v", out.Env)
 	}
-	if strings.Contains(colorURL(out.Env), "postgres-api.discoverd") {
-		t.Fatal(colorURL(out.Env))
+	if colorURL(out.Env) == "" {
+		t.Fatalf("provision must also set a color URL: %#v", out.Env)
 	}
+	if strings.Contains(out.Env["DATABASE_URL"], "postgres-api.discoverd") {
+		t.Fatal(out.Env["DATABASE_URL"])
+	}
+	assertRandomDatabaseInURL(t, out.Env["DATABASE_URL"])
 }
 
 func TestHTTPProvisionFollowStampsRole(t *testing.T) {
@@ -132,16 +135,18 @@ func TestHTTPProvisionFollowStampsRole(t *testing.T) {
 	if fol.Env["POSTGRES_URL"] != "" || leader.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("POSTGRES_URL must not be stored leader=%q follower=%q", leader.Env["POSTGRES_URL"], fol.Env["POSTGRES_URL"])
 	}
+	if leader.Env["DATABASE_URL"] == "" {
+		t.Fatalf("leader missing DATABASE_URL %#v", leader.Env)
+	}
+	assertRandomDatabaseInURL(t, leader.Env["DATABASE_URL"])
 	if colorURL(leader.Env) == "" {
 		t.Fatalf("leader missing color URL %#v", leader.Env)
 	}
 	if colorURL(fol.Env) == "" {
 		t.Fatalf("follower missing color URL %#v", fol.Env)
 	}
-	if leaderKey, _ := firstColorURL(leader.Env); leaderKey != "" {
-		if folKey, _ := firstColorURL(fol.Env); folKey == leaderKey {
-			t.Fatalf("follower must use another color: leader %#v follower %#v", leader.Env, fol.Env)
-		}
+	if fol.Env["DATABASE_URL"] != "" {
+		t.Fatalf("follower must not steal DATABASE_URL %#v", fol.Env)
 	}
 	if fol.Env["PGDATABASE"] != "" || fol.Env["PGUSER"] != "" || fol.Env["PGPASSWORD"] != "" {
 		t.Fatalf("follower must not include split PG keys: %#v", fol.Env)
@@ -198,11 +203,10 @@ func TestHTTPEnvSetRejected(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
 		t.Fatalf("create: %s %v", rec.Body.String(), err)
 	}
-	color, _ := firstColorURL(created.Env)
-	if color == "" {
+	if created.Env["DATABASE_URL"] == "" {
 		t.Fatalf("env %#v", created.Env)
 	}
-	body, err := json.Marshal(map[string]any{"app": "shop", "vars": map[string]string{color: "postgres://x"}})
+	body, err := json.Marshal(map[string]any{"app": "shop", "vars": map[string]string{"DATABASE_URL": "postgres://x"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,4 +494,21 @@ func firstColorURL(env map[string]string) (key, val string) {
 func colorURL(env map[string]string) string {
 	_, v := firstColorURL(env)
 	return v
+}
+
+var randomPostgresDB = regexp.MustCompile(`^[a-z][a-z0-9]{11}$`)
+
+func assertRandomDatabaseInURL(t *testing.T, raw string) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url %q: %v", raw, err)
+	}
+	db := strings.Trim(u.Path, "/")
+	if i := strings.IndexByte(db, '/'); i >= 0 {
+		db = db[:i]
+	}
+	if !randomPostgresDB.MatchString(db) {
+		t.Fatalf("first database name must be random alphanumeric, got %q in %s", db, raw)
+	}
 }

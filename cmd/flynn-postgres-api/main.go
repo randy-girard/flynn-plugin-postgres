@@ -148,7 +148,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		}
 	}
 	if len(env) == 0 {
-		env = postgres.AttachmentEnv(body.As, inst.ConnectionURL())
+		env = postgres.AttachmentKeys(body.As, "", "", inst.ConnectionURL(), nil, true)
 	}
 	var leader *postgres.Instance
 	if inst.LeaderID != "" {
@@ -481,10 +481,10 @@ var tenantPostgresCredentialKeys = []string{
 }
 
 // applyPostgresResourceEnv is the controller resource env the dashboard lists.
-// Connection strings stay on FLYNN_POSTGRESQL_<COLOR>_URL (or --as NAME_URL).
-// POSTGRES_URL is an interpolation alias for pg:psql, not a stored env var.
-// POSTGRES_ROLE/POSTGRES_LEADER mark --follow replicas so the Followers tab
-// can find them after the API restarts.
+// Connection strings stay on DATABASE_URL or FLYNN_POSTGRESQL_<COLOR>_URL
+// (or --as NAME_URL). POSTGRES_URL is an interpolation alias for pg:psql, not
+// a stored env var. POSTGRES_ROLE/POSTGRES_LEADER mark --follow replicas so
+// the Followers tab can find them after the API restarts.
 func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, leader *postgres.Instance) {
 	if inst == nil || env == nil {
 		return
