@@ -222,6 +222,11 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if wait == nil {
 		wait = waitInstanceReady
 	}
+	// Followers copy via pg_basebackup before postgres listens. Return after
+	// the job is scheduled so pg:wait / the dashboard can show live progress.
+	if inst.Role == postgres.RoleFollower {
+		return nil
+	}
 	if err := wait(service, instanceReadyTimeout); err != nil {
 		_, _ = c.DeleteApp(app.ID)
 		return err

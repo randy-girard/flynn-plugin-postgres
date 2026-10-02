@@ -144,6 +144,33 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedFollowerDoesNotWaitForDiscoverd(t *testing.T) {
+	ctrl := &fakeInstanceControl{}
+	waited := false
+	leader := &postgres.Instance{App: "postgresql-meadow-11111", AppUser: "u", AppPassword: "p"}
+	fol := &postgres.Instance{
+		App:         "postgresql-upland-22222",
+		AppUser:     "u",
+		AppPassword: "p",
+		Role:        postgres.RoleFollower,
+		LeaderID:    leader.App,
+		Databases:   []postgres.Database{{Name: "db"}},
+	}
+	err := startIsolatedInstance(ctrl, "img-1", fol, leader, func(string, time.Duration) error {
+		waited = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waited {
+		t.Fatal("follower start must return before discoverd so wait/progress can stream copy percent")
+	}
+	if len(ctrl.scaled) != 1 || !ctrl.scaled[0].NoWait {
+		t.Fatalf("scale %#v", ctrl.scaled)
+	}
+}
+
 func TestStartIsolatedInstanceDeletesAppWhenDiscoverdWaitFails(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{App: "pg-fail"}, nil, func(string, time.Duration) error {

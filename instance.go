@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ResourceIDEnv is stamped on the isolated instance release so deprovision can
@@ -106,6 +104,9 @@ type Instance struct {
 	Mode              ReplicationMode
 	ReadOnly          bool
 	LagBytes          int64
+	BackupCopied      int64
+	BackupTotal       int64
+	CatchupMax        int64
 	ServiceHost       string
 	Databases         []Database
 	Users             []User
@@ -166,6 +167,7 @@ type Store struct {
 
 	tasks           map[string]*Task
 	upgradeByLeader map[string]string
+	liveProgress    LiveProgressFunc
 }
 
 // Primaries are isolated instances that are not followers.
@@ -663,33 +665,13 @@ func (s *Store) SetLag(id string, bytes int64) error {
 		return ErrNotFollower
 	}
 	inst.LagBytes = bytes
+	if bytes > inst.CatchupMax {
+		inst.CatchupMax = bytes
+	}
 	if bytes == 0 {
 		s.catchUpLocked(inst)
 	}
 	return nil
-}
-
-// Wait blocks until follower lag is zero.
-func (s *Store) Wait(ctx context.Context, id string) error {
-	for {
-		s.mu.Lock()
-		inst := s.lookupLocked(id)
-		if inst == nil {
-			s.mu.Unlock()
-			return ErrNotFound
-		}
-		lag := inst.LagBytes
-		following := inst.Role == RoleFollower
-		s.mu.Unlock()
-		if !following || lag == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
 }
 
 // Promote makes the follower writable, ends the follow, and rewrites the

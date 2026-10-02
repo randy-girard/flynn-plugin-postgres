@@ -122,7 +122,7 @@ const (
 	cmdQuick     = 20 * time.Second
 	cmdProvision = 5 * time.Minute // matches plugin instanceReadyTimeout (initdb + TLS)
 	cmdFollow    = 5 * time.Minute
-	cmdWait      = 45 * time.Second
+	cmdWait      = 5 * time.Minute
 	cmdDump      = 20 * time.Second
 	cmdDestroy   = 45 * time.Second
 	cmdGone      = 2 * time.Minute

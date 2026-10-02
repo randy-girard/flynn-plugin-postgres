@@ -197,7 +197,10 @@ func TestPostgresCLI(t *testing.T) {
 		if follower == "" {
 			t.Fatalf("no new follower after pg follow; list:\n%s", h.appMust(cmdQuick, "pg"))
 		}
-		h.appMust(cmdWait, "pg", "wait", follower)
+		waitOut := h.appMust(cmdWait, "pg", "wait", follower)
+		if !strings.Contains(strings.ToLower(waitOut), "ready") && !strings.Contains(waitOut, "%") {
+			t.Fatalf("pg:wait should print live copy progress:\n%s", waitOut)
+		}
 		h.waitReady(follower, cmdWait)
 		assertPostgresAppEnv(t, h.appMust(cmdQuick, "env"), h.primary())
 		got := strings.TrimSpace(h.psqlOn(cmdQuick, follower, "-Atc", "SELECT n FROM e2e_probe"))

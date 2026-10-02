@@ -63,10 +63,10 @@ is a fallback.
 | `flynn pg:info` | Show leader, followers, lag, and attached apps |
 | `flynn pg:create <name>` | Create a logical database on this instance |
 | `flynn pg:follow` | Create a streaming read-only follower |
-| `flynn pg:wait` | Block until follower lag is zero |
+| `flynn pg:wait` | Print live copy progress and block until follower lag is zero |
 | `flynn pg:promote` | Make a follower writable and rewrite the primary URL |
 | `flynn pg:unfollow` | Stop replication and leave a standalone writable copy |
-| `flynn pg:upgrade` | Follow, wait, promote, then recreate followers |
+| `flynn pg:upgrade` | Follow, wait with live progress, promote, then recreate followers |
 | `flynn pg:dump` / `pg:restore` | Custom-format dump of this instance |
 | `flynn pg:psql` | Open psql against this instance |
 

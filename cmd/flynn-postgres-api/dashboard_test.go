@@ -298,6 +298,12 @@ func TestDashReplicationAddFollower(t *testing.T) {
 	if strings.Contains(body, ">Wait<") {
 		t.Fatalf("wait belongs on the CLI, not the followers table: %s", body)
 	}
+	if !strings.Contains(body, ">Status<") {
+		t.Fatalf("followers table should show copy status: %s", body)
+	}
+	if !strings.Contains(body, "api/progress") {
+		t.Fatalf("followers page should poll live progress: %s", body)
+	}
 }
 
 func TestDashReplicationPromote(t *testing.T) {

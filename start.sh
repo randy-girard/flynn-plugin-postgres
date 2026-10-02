@@ -68,6 +68,7 @@ if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
   as_postgres "${PG_BIN}/pg_ctl" -D /data -w start
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres <<SQL
 CREATE ROLE ${user} LOGIN PASSWORD '${pass}' CONNECTION LIMIT 20 NOSUPERUSER CREATEDB CREATEROLE REPLICATION;
+GRANT pg_monitor TO ${user};
 CREATE DATABASE ${db} OWNER ${user};
 REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;

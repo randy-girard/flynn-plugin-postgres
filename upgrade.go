@@ -25,15 +25,16 @@ const DefaultUpgradeTimeout = 30 * time.Minute
 
 // Task is one background plugin job. Upgrade walks the whole topology.
 type Task struct {
-	ID         string          `json:"id"`
-	Kind       string          `json:"kind"`
-	Target     string          `json:"target"`
-	FollowerID string          `json:"follower_id,omitempty"`
-	Mode       ReplicationMode `json:"replication,omitempty"`
-	Status     string          `json:"status"`
-	Error      string          `json:"error,omitempty"`
-	StartedAt  time.Time       `json:"started_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID         string           `json:"id"`
+	Kind       string           `json:"kind"`
+	Target     string           `json:"target"`
+	FollowerID string           `json:"follower_id,omitempty"`
+	Mode       ReplicationMode  `json:"replication,omitempty"`
+	Status     string           `json:"status"`
+	Error      string           `json:"error,omitempty"`
+	StartedAt  time.Time        `json:"started_at"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	Progress   *ReplicaProgress `json:"progress,omitempty"`
 }
 
 // UpgradeOptions selects replication mode and optional hooks after a follower
@@ -68,6 +69,10 @@ func (t *Task) snapshot() *Task {
 		return nil
 	}
 	out := *t
+	if t.Progress != nil {
+		p := *t.Progress
+		out.Progress = &p
+	}
 	return &out
 }
 
@@ -100,24 +105,27 @@ func (s *Store) activeUpgradeLocked(leaderID string) *Task {
 // GetTask returns a copy of one background task.
 func (s *Store) GetTask(id string) (*Task, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.ensureTaskMaps()
 	task := s.tasks[id]
 	if task == nil {
+		s.mu.Unlock()
 		return nil, ErrNotFound
 	}
-	return task.snapshot(), nil
+	out := task.snapshot()
+	s.mu.Unlock()
+	s.attachTaskProgress(out)
+	return out, nil
 }
 
 // ListTasks returns every background task, newest first.
 func (s *Store) ListTasks() []*Task {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.ensureTaskMaps()
 	out := make([]*Task, 0, len(s.tasks))
 	for _, task := range s.tasks {
 		out = append(out, task.snapshot())
 	}
+	s.mu.Unlock()
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
 			if out[j].StartedAt.After(out[i].StartedAt) {
@@ -125,33 +133,51 @@ func (s *Store) ListTasks() []*Task {
 			}
 		}
 	}
+	for _, task := range out {
+		s.attachTaskProgress(task)
+	}
 	return out
 }
 
 // LatestUpgrade is the newest upgrade task for a primary (id or app name).
 func (s *Store) LatestUpgrade(id string) *Task {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	leader := s.lookupLocked(id)
 	if leader == nil {
+		s.mu.Unlock()
 		return nil
 	}
 	s.ensureTaskMaps()
+	var latest *Task
 	if tid := s.upgradeByLeader[leader.ID]; tid != "" {
 		if task := s.tasks[tid]; task != nil {
-			return task.snapshot()
+			latest = task.snapshot()
 		}
 	}
-	var latest *Task
-	for _, task := range s.tasks {
-		if task.Kind != TaskKindUpgrade || task.Target != leader.ID {
-			continue
-		}
-		if latest == nil || task.StartedAt.After(latest.StartedAt) {
-			latest = task
+	if latest == nil {
+		for _, task := range s.tasks {
+			if task.Kind != TaskKindUpgrade || task.Target != leader.ID {
+				continue
+			}
+			if latest == nil || task.StartedAt.After(latest.StartedAt) {
+				latest = task.snapshot()
+			}
 		}
 	}
-	return latest.snapshot()
+	s.mu.Unlock()
+	s.attachTaskProgress(latest)
+	return latest
+}
+
+func (s *Store) attachTaskProgress(task *Task) {
+	if task == nil || task.done() || strings.TrimSpace(task.FollowerID) == "" {
+		return
+	}
+	p, err := s.Progress(task.FollowerID)
+	if err != nil {
+		return
+	}
+	task.Progress = &p
 }
 
 func (s *Store) setTaskLocked(id, status, errMsg, followerID string) {

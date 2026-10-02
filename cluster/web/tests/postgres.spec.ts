@@ -263,8 +263,10 @@ test.describe('postgres dashboard (live cluster)', () => {
     const addFollower = page.getByRole('button', { name: 'Add follower' })
     await expect(addFollower).toBeEnabled()
     await addFollower.click()
+    await expect(page.getByRole('columnheader', { name: 'Status' })).toBeVisible()
     follower = await waitForNewFollower(app, before)
-    await waitForPsql(app, follower, replicaWait)
+    await expect(page.getByRole('progressbar').or(page.getByText(/ready|basebackup|starting|streaming|copying|catching/i))).toBeVisible({ timeout: followMs })
+    await waitForPsql(app, follower, followMs)
     const rows = parsePgRows(flynnApp(app, ['pg']))
     const primary = rows.find((r) => r.role !== 'follower')?.name
     if (!primary) throw new Error(`no primary postgres resource on ${app}`)

@@ -48,7 +48,12 @@ func runPluginTask(args []string) error {
 			return fmt.Errorf("usage: flynn-postgres-api task create-db <resource> <database>")
 		}
 		return runCreateDBTask(strings.TrimSpace(args[1]), strings.TrimSpace(args[2]))
-	case "wait", "promote", "unfollow":
+	case "wait":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: flynn-postgres-api task wait <resource>")
+		}
+		return runWaitTask(strings.TrimSpace(args[1]))
+	case "promote", "unfollow":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: flynn-postgres-api task %s <resource>", args[0])
 		}
@@ -161,6 +166,55 @@ func runInfoTask(resource string) error {
 	return nil
 }
 
+func runWaitTask(resource string) error {
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return fmt.Errorf("wait requires a postgres resource name")
+	}
+	deadline := time.Now().Add(postgres.DefaultUpgradeTimeout)
+	var last string
+	for time.Now().Before(deadline) {
+		p, err := fetchProgress(resource)
+		if err != nil {
+			return err
+		}
+		line := postgres.FormatProgress(p)
+		if line != last {
+			fmt.Println(line)
+			last = line
+		}
+		if p.Phase == postgres.PhaseFailed {
+			msg := strings.TrimSpace(p.Error)
+			if msg == "" {
+				msg = "replica failed"
+			}
+			return fmt.Errorf("%s", msg)
+		}
+		if p.Ready {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("wait timed out")
+}
+
+func fetchProgress(resource string) (postgres.ReplicaProgress, error) {
+	resp, err := http.Get(pluginAPIBase() + "/databases/" + resource + "/progress")
+	if err != nil {
+		return postgres.ReplicaProgress{}, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return postgres.ReplicaProgress{}, fmt.Errorf("progress %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var p postgres.ReplicaProgress
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return postgres.ReplicaProgress{}, fmt.Errorf("progress decode: %w", err)
+	}
+	return p, nil
+}
+
 func runInstanceActionTask(action, resource string) error {
 	action = strings.TrimSpace(action)
 	resource = strings.TrimSpace(resource)
@@ -204,6 +258,7 @@ func runUpgradeTask(target string) error {
 
 func waitForTask(id string) error {
 	deadline := time.Now().Add(postgres.DefaultUpgradeTimeout)
+	var last string
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(pluginAPIBase() + "/tasks/" + id)
 		if err != nil {
@@ -218,7 +273,14 @@ func waitForTask(id string) error {
 		if err := json.Unmarshal(raw, &task); err != nil {
 			return err
 		}
-		fmt.Printf("status %s\n", task.Status)
+		line := "status " + task.Status
+		if task.Progress != nil {
+			line = formatWaitLine(task.Status, *task.Progress)
+		}
+		if line != last {
+			fmt.Println(line)
+			last = line
+		}
 		switch task.Status {
 		case postgres.TaskDone:
 			fmt.Printf("upgrade complete (follower %s)\n", task.FollowerID)
@@ -226,7 +288,7 @@ func waitForTask(id string) error {
 		case postgres.TaskFailed:
 			return fmt.Errorf("upgrade failed: %s", task.Error)
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("upgrade timed out")
 }

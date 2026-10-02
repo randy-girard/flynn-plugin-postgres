@@ -410,6 +410,9 @@ a { color: var(--color-primary); }
 .banner { padding: .65rem .8rem; border-radius: var(--radius); background: var(--color-danger-soft); color: var(--color-danger); border: 1px solid var(--color-danger); margin-bottom: 1rem; }
 .ok { color: var(--color-success); }
 .pill { display: inline-block; font-size: .72rem; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; padding: .12rem .45rem; border-radius: 999px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+.replica-progress { min-width: 8rem; display: flex; flex-direction: column; gap: .25rem; }
+.replica-progress progress { width: 100%%; height: .45rem; }
+.replica-progress-label { font-size: .75rem; color: var(--color-text-muted); }
 .mono { font-family: var(--font-mono); font-size: .85rem; }
 .hint { color: var(--color-text-muted); font-size: .85rem; margin: 0; }
 .form-stack { display: flex; flex-direction: column; gap: .85rem; }

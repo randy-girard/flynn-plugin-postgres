@@ -181,10 +181,10 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		"Show leader, followers, lag, and attached apps",
 		"Create a logical database on this instance",
 		"Create a streaming read-only follower",
-		"Block until follower lag is zero",
+		"Print live copy progress and block until follower lag is zero",
 		"Make a follower writable and rewrite the primary URL",
 		"Stop replication and leave a standalone writable copy",
-		"Follow, wait, promote, then recreate followers",
+		"Follow, wait with live progress, promote, then recreate followers",
 		"Dump this instance in custom format",
 		"Restore a dump taken with pg dump",
 		"Open psql against this instance",
@@ -232,6 +232,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	}
 	if !strings.Contains(src, "host replication") || !strings.Contains(src, "REPLICATION;") {
 		t.Fatal("primaries must allow streaming replication")
+	}
+	if !strings.Contains(src, "GRANT pg_monitor") {
+		t.Fatal("tenant role must read replication/basebackup progress")
 	}
 	hook, err := os.ReadFile("script/install.sh")
 	if err != nil {

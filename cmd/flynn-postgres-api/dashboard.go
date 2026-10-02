@@ -49,6 +49,7 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/api/dump", wrap(h.dashDump))
 	h.router.POST("/dashboard/api/dump", wrap(h.dashDump))
 	h.router.POST("/dashboard/api/restore", wrap(h.dashRestore))
+	h.router.GET("/dashboard/api/progress", wrap(h.dashProgress))
 }
 
 func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
@@ -795,7 +796,7 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	if primaries := dashWritablePrimaries(insts); len(primaries) > 0 {
 		b.WriteString(primaryActionForms(instanceRef(primaries[0]), h.store))
 	}
-	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Database</th><th>Role</th><th>Host</th><th></th></tr>`)
+	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Database</th><th>Role</th><th>Status</th><th>Host</th><th></th></tr>`)
 	rows := 0
 	for _, inst := range insts {
 		view := h.replicationView(inst)
@@ -806,14 +807,28 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 		if inst != nil && len(inst.Databases) > 0 {
 			db = inst.Databases[0].Name
 		}
-		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td></tr>`,
-			html.EscapeString(view.App), html.EscapeString(db), html.EscapeString(view.Role), html.EscapeString(dashInstanceHost(inst)), view.Actions)
+		ref := instanceRef(inst)
+		status := `<span class="muted">Starting…</span>`
+		if h.store != nil {
+			if p, err := h.store.Progress(ref); err == nil {
+				if p.Ready {
+					status = `<span class="muted">` + html.EscapeString(postgres.FormatProgress(p)) + `</span>`
+				} else {
+					status = fmt.Sprintf(`<div class="replica-progress"><progress max="100" value="%d" aria-label="%s"></progress><span class="replica-progress-label">%s</span></div>`,
+						p.Percent, html.EscapeString(p.Message), html.EscapeString(p.Message))
+				}
+			}
+		}
+		fmt.Fprintf(&b, `<tr data-instance="%s"><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td class="replica-status">%s</td><td><code>%s</code></td><td>%s</td></tr>`,
+			html.EscapeString(ref),
+			html.EscapeString(view.App), html.EscapeString(db), html.EscapeString(view.Role), status, html.EscapeString(dashInstanceHost(inst)), view.Actions)
 		rows++
 	}
 	if rows == 0 {
-		b.WriteString(`<tr><td colspan="5" class="muted">This database has no followers yet.</td></tr>`)
+		b.WriteString(`<tr><td colspan="6" class="muted">This database has no followers yet.</td></tr>`)
 	}
-	b.WriteString(`</table></div><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>.</p>`)
+	b.WriteString(`</table></div><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>. Copy progress updates live on this page and on <code>flynn pg:wait</code>.</p>`)
+	b.WriteString(dashProgressScript())
 	writeDash(w, sess, "Followers", b.String())
 }
 
@@ -1139,7 +1154,15 @@ func instanceRef(inst *postgres.Instance) string {
 func primaryActionForms(ref string, store *postgres.Store) string {
 	if store != nil {
 		if task := store.LatestUpgrade(ref); task != nil && task.Status != postgres.TaskDone && task.Status != postgres.TaskFailed {
-			return `<span class="pill">` + html.EscapeString(task.Status) + `</span>`
+			msg := html.EscapeString(task.Status)
+			if task.Progress != nil {
+				msg = html.EscapeString(formatWaitLine(task.Status, *task.Progress))
+			}
+			bar := ""
+			if task.Progress != nil && !task.Progress.Ready {
+				bar = fmt.Sprintf(`<div class="replica-progress"><progress max="100" value="%d" aria-label="%s"></progress></div>`, task.Progress.Percent, msg)
+			}
+			return `<div class="replica-progress">` + bar + `<span class="pill">` + msg + `</span></div>`
 		}
 	}
 	esc := html.EscapeString(ref)
@@ -1194,6 +1217,36 @@ func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
 	b.WriteString(`<button class="btn btn-sm" type="submit">Add follower</button>`)
 	b.WriteString(`</form>`)
 	return b.String()
+}
+
+func dashProgressScript() string {
+	return `<script>
+(function(){
+  async function tick(){
+    try {
+      const r = await fetch('api/progress', {headers:{Accept:'application/json'}, credentials:'same-origin'});
+      if(!r.ok) return;
+      const data = await r.json();
+      const items = data.followers || [];
+      document.querySelectorAll('tr[data-instance]').forEach(row => {
+        const inst = row.getAttribute('data-instance');
+        const cell = row.querySelector('.replica-status');
+        if(!cell || !inst) return;
+        const p = items.find(x => (x.follower||'').toLowerCase() === inst.toLowerCase());
+        if(!p) return;
+        if(p.ready){
+          cell.innerHTML = '<span class="muted">'+(p.message||'ready')+'</span>';
+          return;
+        }
+        const msg = p.message || (p.percent+'%');
+        cell.innerHTML = '<div class="replica-progress"><progress max="100" value="'+(p.percent||0)+'" aria-label="'+msg.replace(/"/g,'')+'"></progress><span class="replica-progress-label">'+msg.replace(/</g,'')+'</span></div>';
+      });
+    } catch(e) {}
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>`
 }
 
 type logicalDatabaseView struct {

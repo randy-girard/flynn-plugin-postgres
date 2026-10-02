@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +81,9 @@ type handler struct {
 
 func newHandler(store *postgres.Store) *handler {
 	h := &handler{store: store, router: httprouter.New()}
+	if store != nil {
+		store.SetLiveProgress(h.liveReplicaProgress)
+	}
 	h.router.GET("/ping", func(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -91,6 +95,7 @@ func newHandler(store *postgres.Store) *handler {
 	h.router.POST("/databases/:id/databases", h.addDatabase)
 	h.router.POST("/databases/:id/write", h.write)
 	h.router.POST("/databases/:id/wait", h.wait)
+	h.router.GET("/databases/:id/progress", h.progress)
 	h.router.POST("/databases/:id/follow", h.follow)
 	h.router.POST("/databases/:id/promote", h.promote)
 	h.router.POST("/databases/:id/unfollow", h.unfollow)
@@ -310,7 +315,11 @@ func (h *handler) write(w http.ResponseWriter, r *http.Request, p httprouter.Par
 }
 
 func (h *handler) wait(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
-	ctx, cancel := timeoutCtx(r)
+	ctx := r.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, postgres.DefaultUpgradeTimeout)
 	defer cancel()
 	if err := h.store.Wait(ctx, p.ByName("id")); err != nil {
 		writeAPIError(w, err)
