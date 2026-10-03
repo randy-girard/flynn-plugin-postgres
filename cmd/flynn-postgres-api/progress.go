@@ -48,7 +48,7 @@ func (h *handler) progressReport(sess *dashui.Session, instance string) progress
 	} else {
 		seen := map[string]bool{}
 		for _, inst := range h.instancesFor(sess) {
-			if inst == nil || inst.Role != postgres.RoleFollower {
+			if inst == nil {
 				continue
 			}
 			ref := instanceRef(inst)
@@ -83,8 +83,11 @@ func (h *handler) progressReport(sess *dashui.Session, instance string) progress
 }
 
 func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.ReplicaProgress, error) {
-	if inst == nil || inst.Role != postgres.RoleFollower {
+	if inst == nil {
 		return nil, nil
+	}
+	if inst.Role != postgres.RoleFollower {
+		return liveDiscoverdProgress(inst), nil
 	}
 	p := postgres.ReplicaProgress{
 		Follower: firstNonEmpty(inst.App, inst.ID),
@@ -137,6 +140,23 @@ func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.Replic
 		}
 	}
 	return &p, nil
+}
+
+func liveDiscoverdProgress(inst *postgres.Instance) *postgres.ReplicaProgress {
+	p := &postgres.ReplicaProgress{
+		Follower: firstNonEmpty(inst.App, inst.ID),
+		Leader:   inst.LeaderID,
+		Phase:    postgres.PhaseStarting,
+		Percent:  5,
+	}
+	p.Message = postgres.FormatProgress(*p)
+	if peekDiscoverdInstances(inst.App) {
+		p.Phase = postgres.PhaseReady
+		p.Percent = 100
+		p.Ready = true
+		p.Message = postgres.FormatProgress(*p)
+	}
+	return p
 }
 
 func streamingOrReady(p *postgres.ReplicaProgress, lag int64) *postgres.ReplicaProgress {

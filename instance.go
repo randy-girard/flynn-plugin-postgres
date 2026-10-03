@@ -184,6 +184,20 @@ func (s *Store) Primaries() []*Instance {
 	return out
 }
 
+// All returns every isolated instance, including followers.
+func (s *Store) All() []*Instance {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Instance
+	for _, inst := range s.byID {
+		if inst == nil {
+			continue
+		}
+		out = append(out, inst.snapshot())
+	}
+	return out
+}
+
 // NewStore returns a store aimed at this plugin's discoverd host.
 func NewStore() *Store {
 	return &Store{

@@ -75,6 +75,10 @@
         "title": "Overview"
       },
       {
+        "path": "/metrics",
+        "title": "Metrics"
+      },
+      {
         "path": "/databases",
         "title": "Databases"
       },

@@ -49,7 +49,7 @@ func (s *Store) Progress(id string) (ReplicaProgress, error) {
 	if inst == nil {
 		return ReplicaProgress{}, ErrNotFound
 	}
-	if live != nil && inst.Role == RoleFollower {
+	if live != nil {
 		if got, err := live(inst); err == nil && got != nil {
 			if got.Follower == "" {
 				got.Follower = firstNonEmpty(inst.App, inst.ID)
@@ -213,7 +213,7 @@ func FormatProgress(p ReplicaProgress) string {
 		if name != "" {
 			return "starting " + name
 		}
-		return "starting replica"
+		return "starting"
 	case PhaseReady:
 		if name != "" {
 			return "ready " + name

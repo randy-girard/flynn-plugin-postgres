@@ -198,3 +198,21 @@ func TestUpgradeTaskIncludesFollowerProgress(t *testing.T) {
 	}
 	t.Fatal("upgrade did not finish")
 }
+
+func TestLiveProgressAppliesToPrimary(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetLiveProgress(func(*Instance) (*ReplicaProgress, error) {
+		return &ReplicaProgress{Phase: PhaseStarting, Percent: 5}, nil
+	})
+	p, err := s.Progress(leader.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Ready || p.Phase != PhaseStarting {
+		t.Fatalf("starting primary: %+v", p)
+	}
+}

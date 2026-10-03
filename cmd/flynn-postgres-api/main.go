@@ -62,6 +62,7 @@ func main() {
 	}
 	log.Info("listening", "addr", addr, "provider", postgres.ProviderURL())
 	h.autoStartClusterUpgrades()
+	go h.metricsLoop()
 	if err := http.Serve(ln, h); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		shutdown.Fatal(err)
 	}
@@ -198,10 +199,7 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		return
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
-		if _, err := h.client.DeleteApp(inst.App); err != nil && !missingApp(err) {
-			writeAPIError(w, err)
-			return
-		}
+		startIsolatedAppDeletion(h.client, inst.App)
 	}
 	h.store.Forget(inst.ID)
 	w.WriteHeader(http.StatusOK)

@@ -71,3 +71,24 @@ func TestHTTPProgressJSON(t *testing.T) {
 		t.Fatalf("message %q", p.Message)
 	}
 }
+
+func TestLiveDiscoverdProgressForPrimary(t *testing.T) {
+	orig := peekDiscoverdInstances
+	t.Cleanup(func() { peekDiscoverdInstances = orig })
+	inst := &postgres.Instance{App: "pg-harbor-abcdef"}
+	peekDiscoverdInstances = func(service string) bool {
+		if service != inst.App {
+			t.Fatalf("service %q", service)
+		}
+		return false
+	}
+	got := liveDiscoverdProgress(inst)
+	if got == nil || got.Ready || got.Phase != postgres.PhaseStarting {
+		t.Fatalf("starting: %+v", got)
+	}
+	peekDiscoverdInstances = func(string) bool { return true }
+	got = liveDiscoverdProgress(inst)
+	if got == nil || !got.Ready || got.Phase != postgres.PhaseReady {
+		t.Fatalf("ready: %+v", got)
+	}
+}

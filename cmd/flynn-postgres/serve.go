@@ -42,6 +42,7 @@ func servePostgres() error {
 		return err
 	}
 	postgres.LogEngineVersion(os.Stderr)
+	ensurePgStatStatements(bin)
 	if _, err := os.Stat("/data/standby.signal"); err != nil && os.Getenv("POSTGRES_PRIMARY_URL") == "" {
 		if err := ensureConnectIsolation(bin); err != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -64,6 +65,24 @@ func servePostgres() error {
 	shutdown.BeforeExit(func() { hb.Close() })
 
 	return <-exited
+}
+
+func ensurePgStatStatements(postgresBin string) {
+	db := os.Getenv("POSTGRES_DB")
+	if db == "" {
+		db = "postgres"
+	}
+	for _, c := range db {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
+			return
+		}
+	}
+	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
+	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
+		psql, "-h", "/tmp", "-d", db, "-c", "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }
 
 func ensureConnectIsolation(postgresBin string) error {

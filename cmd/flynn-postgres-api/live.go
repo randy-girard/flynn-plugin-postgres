@@ -11,7 +11,7 @@ import (
 	"github.com/randy-girard/flynn/pkg/httphelper"
 )
 
-// instanceReadyTimeout is how long provision waits for the new postgres
+// instanceReadyTimeout is how long pg:wait will poll for the new postgres
 // process to register in discoverd after initdb and TLS setup.
 const instanceReadyTimeout = 5 * time.Minute
 
@@ -103,6 +103,34 @@ var waitInstanceReady = func(service string, timeout time.Duration) error {
 	return postgres.WrapDiscoverdAuth(err)
 }
 
+// peekDiscoverdInstances is a non-blocking ready check for pg:wait and
+// dashboard progress. Tests replace it so they do not talk to a cluster.
+var peekDiscoverdInstances = func(service string) bool {
+	service = strings.TrimSpace(service)
+	if service == "" {
+		return false
+	}
+	insts, err := postgres.NewDiscoverdClient().Service(service).Instances()
+	return err == nil && len(insts) > 0
+}
+
+type appDeleter interface {
+	DeleteApp(string) (*ct.AppDeletion, error)
+}
+
+// startIsolatedAppDeletion enqueues controller app_deletion and returns.
+// Client.DeleteApp waits up to 60s for EventTypeAppDeletion; resource:remove
+// must not block on that teardown.
+func startIsolatedAppDeletion(c appDeleter, name string) {
+	name = strings.TrimSpace(name)
+	if c == nil || name == "" {
+		return
+	}
+	go func() {
+		_, _ = c.DeleteApp(name)
+	}()
+}
+
 // copyClusterDiscoverdEnv copies discoverd address/key from the plugin API
 // process onto an isolated instance so RegisterInstance can authenticate
 // (SEC-003). flynn-host also injects the key when the daemon has it.
@@ -124,8 +152,8 @@ func copyClusterDiscoverdEnv(env map[string]string) {
 // starting until discoverd registration. That happens after initdb,
 // bootstrap, and TLS — longer than ScaleStartingStuckTimeout (30s). A 5m
 // ScaleAppRelease wait enables stall probes (timeout > DefaultDeployTimeout)
-// and fails while postgres is still starting. Readiness is
-// waitInstanceReady, the same NoWait + ping pattern as plugin install.
+// and fails while postgres is still starting. resource:add returns after
+// scale; pg:wait and the dashboard poll discoverd.
 func instanceScaleOptions() ct.ScaleOptions {
 	timeout := instanceReadyTimeout
 	return ct.ScaleOptions{
@@ -219,18 +247,9 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		_, _ = c.DeleteApp(app.ID)
 		return err
 	}
-	if wait == nil {
-		wait = waitInstanceReady
-	}
-	// Followers copy via pg_basebackup before postgres listens. Return after
-	// the job is scheduled so pg:wait / the dashboard can show live progress.
-	if inst.Role == postgres.RoleFollower {
-		return nil
-	}
-	if err := wait(service, instanceReadyTimeout); err != nil {
-		_, _ = c.DeleteApp(app.ID)
-		return err
-	}
+	// Return after the job is scheduled. pg:wait and the dashboard poll
+	// discoverd; resource:add must not block on initdb.
+	_ = wait
 	return nil
 }
 

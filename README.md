@@ -4,8 +4,11 @@
 
 Tenant Postgres for Flynn. Each `flynn resource:add postgres` creates one
 isolated instance: its own Flynn app, its own volume, and exactly one Postgres
-node. It does not start a sirenia pair. Provision waits until the instance
-registers in discoverd (after `initdb`), not until a 30s job-up scale probe.
+node. It does not start a sirenia pair. `flynn resource:add postgres` returns
+after the job is scheduled. The instance finishes `initdb` and registers in
+discoverd in the background; check with `flynn pg:wait` or the dashboard.
+`flynn resource:remove` detaches immediately; the isolated instance is
+destroyed in the background.
 
 This is not the platform appliance. That appliance stays on
 `postgres-api.discoverd` with provider name `platform-postgres` and is only for
@@ -70,8 +73,28 @@ is a fallback.
 | `flynn pg:dump` / `pg:restore` | Custom-format dump of this instance |
 | `flynn pg:psql` | Open psql against this instance |
 
-The dashboard pages (overview, databases, users, backup, follow) are served by
-this plugin. A signed-in app sees only its own instances.
+The dashboard pages (overview, metrics, databases, users, backup, follow) are
+served by this plugin. A signed-in app sees only its own instances. The Metrics
+tab charts samples the API posts every 20s
+(`active_connections`, `db_size_bytes`, cache hit rates, `xact_commit`,
+`replay_lag_seconds`, `slow_query_count`, and related series). The dashboard
+stores every posted series over time so Metrics charts and **Add alert**
+threshold previews share the same history. Slow queries
+from `pg_stat_statements` (falling back to long-running `pg_stat_activity`
+rows) live on the Slow queries tab. **Add alert** on Metrics (and the app
+Alerts page) can watch those series when this plugin is installed.
+
+The same sample is written as a Heroku-style log line on the plugin job:
+
+```text
+flynn -a postgres-plugin log | grep heroku-postgres
+```
+
+Example:
+
+```text
+heroku-postgres source=postgresql-harbor-12345 addon=res-abc sample#service-available=1 sample#db_size=1024bytes sample#tables=3 sample#active-connections=2 sample#index-cache-hit-rate=0.99000
+```
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes
 (`pg_dumpall` is the platform appliance only). Use the dashboard Backup page

@@ -16,6 +16,7 @@ import (
 
 var dashNav = [][2]string{
 	{"./", "Overview"},
+	{"metrics", "Metrics"},
 	{"databases", "Databases"},
 	{"users", "Users"},
 	{"backup", "Backup"},
@@ -32,6 +33,8 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard", wrap(h.dashOverview))
 	h.router.GET("/dashboard/", wrap(h.dashOverview))
 	h.router.GET("/dashboard/card", wrap(h.dashCard))
+	h.router.GET("/dashboard/metrics", wrap(h.dashMetrics))
+	h.router.GET("/dashboard/api/diagnostics", wrap(h.dashDiagnostics))
 	h.router.GET("/dashboard/databases", wrap(h.dashDatabases))
 	h.router.POST("/dashboard/databases", wrap(h.dashDatabases))
 	h.router.GET("/dashboard/users", wrap(h.dashUsers))
@@ -271,6 +274,33 @@ func writeDash(w http.ResponseWriter, sess *dashui.Session, title, body string) 
 
 func (h *handler) dashOverview(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
 	writeDash(w, sess, "Postgres", overviewHTML(h.instancesFor(sess)))
+}
+
+func (h *handler) dashMetrics(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	diag := h.diagnosticsFor(sess)
+	var b strings.Builder
+	if diag.Source == "" && len(h.instancesFor(sess)) == 0 {
+		b.WriteString(`<div class="card"><p class="muted">No samples yet. The plugin posts series every 20s to the dashboard plugin-metrics webhook and logs heroku-postgres sample# lines.</p></div>`)
+		writeDash(w, sess, "Metrics", b.String())
+		return
+	}
+	b.WriteString(`<div class="card"><table><tr><th>Series</th><th>Value</th></tr>`)
+	for _, name := range postgresMetricSeries {
+		fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%v</td></tr>`, html.EscapeString(name), diag.Series[name])
+	}
+	b.WriteString(`</table><p class="muted">Posted to the dashboard plugin-metrics webhook. Charts and slow queries render in the cluster dashboard Metrics tab.</p></div>`)
+	if len(diag.SlowQueries) > 0 {
+		b.WriteString(`<div class="card"><h2>Slow queries</h2><table><tr><th>Query</th><th>Calls</th><th>Mean</th><th>Max</th></tr>`)
+		for _, q := range diag.SlowQueries {
+			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td>%d</td><td>%.1f ms</td><td>%.1f ms</td></tr>`, html.EscapeString(q.Query), q.Calls, q.MeanMS, q.MaxMS)
+		}
+		b.WriteString(`</table></div>`)
+	}
+	writeDash(w, sess, "Metrics", b.String())
+}
+
+func (h *handler) dashDiagnostics(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	dashui.WriteJSON(w, http.StatusOK, h.diagnosticsFor(sess))
 }
 
 func (h *handler) dashCard(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {

@@ -123,8 +123,11 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 	if len(ctrl.scaled) != 1 || !ctrl.scaled[0].NoWait {
 		t.Fatalf("scale %#v", ctrl.scaled)
 	}
-	if waited != "pg-shop" || waitFor != instanceReadyTimeout {
-		t.Fatalf("discoverd wait service=%q timeout=%s", waited, waitFor)
+	if waited != "" {
+		t.Fatalf("provision must return before discoverd; waited %q", waited)
+	}
+	if waitFor != 0 {
+		t.Fatalf("timeout %s", waitFor)
 	}
 	if len(ctrl.deleted) != 0 {
 		t.Fatalf("deleted %v", ctrl.deleted)
@@ -142,6 +145,37 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 	if proc.Service != "pg-shop" || strings.Contains(proc.Service, postgres.PlatformApplianceHost) {
 		t.Fatalf("service %q", proc.Service)
 	}
+}
+
+type hangAppDeleter struct {
+	started chan struct{}
+	block   chan struct{}
+}
+
+func (h hangAppDeleter) DeleteApp(string) (*ct.AppDeletion, error) {
+	close(h.started)
+	<-h.block
+	return &ct.AppDeletion{}, nil
+}
+
+func TestStartIsolatedAppDeletionReturnsBeforeTeardown(t *testing.T) {
+	d := hangAppDeleter{started: make(chan struct{}), block: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		startIsolatedAppDeletion(d, "pg-shop")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("resource delete waited for app teardown")
+	}
+	select {
+	case <-d.started:
+	case <-time.After(time.Second):
+		t.Fatal("DeleteApp was not started")
+	}
+	close(d.block)
 }
 
 func TestStartIsolatedFollowerDoesNotWaitForDiscoverd(t *testing.T) {
@@ -171,15 +205,20 @@ func TestStartIsolatedFollowerDoesNotWaitForDiscoverd(t *testing.T) {
 	}
 }
 
-func TestStartIsolatedInstanceDeletesAppWhenDiscoverdWaitFails(t *testing.T) {
+func TestStartIsolatedInstanceDoesNotWaitForDiscoverd(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
+	waited := false
 	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{App: "pg-fail"}, nil, func(string, time.Duration) error {
+		waited = true
 		return errDiscoverdWait
 	})
-	if !errors.Is(err, errDiscoverdWait) {
-		t.Fatalf("got %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(ctrl.deleted) != 1 || ctrl.deleted[0] != "pg-fail" {
+	if waited {
+		t.Fatal("provision must return after scale; pg:wait / the dashboard poll discoverd")
+	}
+	if len(ctrl.deleted) != 0 {
 		t.Fatalf("deleted %v", ctrl.deleted)
 	}
 }

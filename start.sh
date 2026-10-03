@@ -57,7 +57,15 @@ fi
 grep -q "^ssl " "${conf}" || echo "ssl = on" >> "${conf}"
 grep -q "^ssl_cert_file" "${conf}" || echo "ssl_cert_file = '/data/server.crt'" >> "${conf}"
 grep -q "^ssl_key_file" "${conf}" || echo "ssl_key_file = '/data/server.key'" >> "${conf}"
-grep -q "^shared_preload_libraries" "${conf}" || echo "shared_preload_libraries = 'timescaledb'" >> "${conf}"
+# timescaledb must stay first. pg_stat_statements feeds slow-query metrics.
+if grep -q "^shared_preload_libraries" "${conf}"; then
+  if ! grep -q "pg_stat_statements" "${conf}"; then
+    sed -i "s/^shared_preload_libraries = '\\([^']*\\)'/shared_preload_libraries = '\\1,pg_stat_statements'/" "${conf}"
+  fi
+else
+  echo "shared_preload_libraries = 'timescaledb,pg_stat_statements'" >> "${conf}"
+fi
+grep -q "^pg_stat_statements.track" "${conf}" || echo "pg_stat_statements.track = all" >> "${conf}"
 grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max_background_workers = 8" >> "${conf}"
 
 if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
@@ -81,6 +89,7 @@ SQL
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d "${db}" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
   as_postgres "${PG_BIN}/pg_ctl" -D /data -m fast -w stop
   touch /data/.flynn-bootstrapped

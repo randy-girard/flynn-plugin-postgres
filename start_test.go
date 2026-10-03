@@ -224,8 +224,11 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "ssl = on") || !strings.Contains(src, "ssl_cert_file") {
 		t.Fatal("connection strings use sslmode=require, so the server must speak TLS")
 	}
-	if !strings.Contains(src, "shared_preload_libraries = 'timescaledb'") {
-		t.Fatal("timescaledb must be preloaded or CREATE EXTENSION fails")
+	if !strings.Contains(src, "timescaledb") || !strings.Contains(src, "pg_stat_statements") {
+		t.Fatal("timescaledb and pg_stat_statements must be preloaded")
+	}
+	if !strings.Contains(src, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements") {
+		t.Fatal("bootstrap must create pg_stat_statements for slow-query metrics")
 	}
 	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
@@ -279,6 +282,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	src := string(b)
 	listen := strings.Index(src, "waitLocalPort(")
 	reg := strings.Index(src, "RegisterInstance(")
+	if !strings.Contains(src, "ensurePgStatStatements") {
+		t.Fatal("isolated instances must create pg_stat_statements after postgres listens")
+	}
 	if listen < 0 || reg < 0 || reg < listen {
 		t.Fatal("discoverd registration must follow a listening postgres")
 	}
@@ -299,8 +305,19 @@ func TestStartInstanceDoesNotWaitOnScaleStallProbes(t *testing.T) {
 	if !strings.Contains(src, "true") {
 		t.Fatal("NoWait must be true")
 	}
-	if !strings.Contains(src, "GetInstances(") && !strings.Contains(src, "waitInstanceReady") {
-		t.Fatal("provision must wait for discoverd, not job-up")
+	if strings.Contains(src, "wait(service, instanceReadyTimeout)") {
+		t.Fatal("provision must return after scale; pg:wait / the dashboard poll discoverd")
+	}
+}
+
+func TestDeprovisionDoesNotWaitForAppDeletion(t *testing.T) {
+	b, err := os.ReadFile("cmd/flynn-postgres-api/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	if !strings.Contains(src, "startIsolatedAppDeletion(") {
+		t.Fatal("resource:remove must return before DeleteApp waits for teardown")
 	}
 }
 
