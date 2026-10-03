@@ -95,12 +95,17 @@ test.describe('postgres dashboard (live cluster)', () => {
     await panel.getByRole('button', { name: 'Plugin' }).click()
     await page.getByRole('option', { name: /Postgres/i }).click()
     await panel.getByRole('button', { name: 'Provision' }).click()
-    await page.waitForURL(/\/resources\/postgres\//, { timeout: provision })
+    await expect(panel).toBeHidden({ timeout: ui })
+    await expect(page).toHaveURL(/\/apps\/[^/]+\/resources\/?$/)
     await waitForPsql(app)
-    await expect(page.locator('h1')).toContainText(/postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8}/i, { timeout: ui })
     const rows = parsePgRows(flynnApp(app, ['pg']))
     const primary = rows.find((r) => r.role !== 'follower')?.name
     if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    await expect(page.getByText(primary, { exact: true })).toBeVisible()
+    await expect(page.getByRole('link', { name: primary })).toBeVisible({ timeout: provision })
+    await page.getByRole('link', { name: primary }).click()
+    await expect(page).toHaveURL(new RegExp(`/resources/postgres/${primary}`))
+    await expect(page.locator('h1')).toContainText(/postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8}/i, { timeout: ui })
     assertPostgresAppEnv(flynnApp(app, ['env']), primary)
     const listed = pgPsql(app, ['-Atc', "SELECT datname FROM pg_database WHERE datallowconn AND datname NOT IN ('template0','template1','postgres') ORDER BY 1"])
     assertOneRandomPostgresDatabase(listed)
@@ -157,7 +162,10 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(row).toBeVisible()
     page.once('dialog', (d) => d.accept())
     await row.getByRole('button', { name: 'Remove' }).click()
-    await expect(row).toHaveCount(0)
+    const gone = pgPsql(app, ['-Atc', `SELECT 1 FROM pg_roles WHERE rolname = '${userName}'`])
+    expect(gone.trim(), 'login role must be gone after Remove').not.toContain('1')
+    await page.reload()
+    await expect(page.getByRole('row', { name: new RegExp(userName) })).toHaveCount(0)
   })
 
   test('inserts data on the primary and reads it back', async () => {
@@ -200,7 +208,8 @@ test.describe('postgres dashboard (live cluster)', () => {
     await openPostgresInstanceTab(page, app, primary, 'Overview')
     await expect(page.getByRole('heading', { name: 'Attached apps' })).toBeVisible()
     await expect(page.getByRole('link', { name: peer })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Copy / })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Copy DATABASE_URL' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /Copy FLYNN_POSTGRESQL_/ })).toBeVisible()
 
     const attachedEnv = flynnApp(peer, ['env'])
     assertPostgresAttachEnv(attachedEnv, primary)
@@ -240,10 +249,12 @@ test.describe('postgres dashboard (live cluster)', () => {
     await page.getByRole('button', { name: 'Attach existing' }).click()
     const attach = page.getByRole('dialog', { name: 'Attach existing' })
     await expect(attach).toBeVisible()
-    await attach.getByRole('button', { name: 'Postgres resource' }).click()
+    await attach.getByRole('button', { name: /Postgres resource|Resource/ }).click()
     await page.getByRole('option', { name: new RegExp(primary) }).click()
     await attach.getByRole('button', { name: 'Attach' }).click()
-    await page.waitForURL(new RegExp(`/resources/postgres/${primary}`), { timeout: ui })
+    await expect(attach).toBeHidden({ timeout: ui })
+    await expect(page).toHaveURL(/\/apps\/[^/]+\/resources\/?$/)
+    await expect(page.getByRole('link', { name: primary })).toBeVisible()
     assertPostgresAttachEnv(flynnApp(peer, ['env']), primary)
 
     await openPostgresInstanceTab(page, peer, primary, 'Settings')
@@ -265,7 +276,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     await addFollower.click()
     await expect(page.getByRole('columnheader', { name: 'Status' })).toBeVisible()
     follower = await waitForNewFollower(app, before)
-    await expect(page.getByRole('progressbar').or(page.getByText(/ready|basebackup|starting|streaming|copying|catching/i))).toBeVisible({ timeout: followMs })
+    await expect(page.getByRole('progressbar').or(page.getByText(/ready|basebackup|starting|streaming|copying|catching/i)).first()).toBeVisible({ timeout: followMs })
     await waitForPsql(app, follower, followMs)
     const rows = parsePgRows(flynnApp(app, ['pg']))
     const primary = rows.find((r) => r.role !== 'follower')?.name
@@ -305,7 +316,6 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(del).toBeEnabled()
     page.once('dialog', (d) => d.accept())
     await del.click()
-    await page.waitForURL(/\/resources\/?$/, { timeout: destroy })
     await waitUntilPostgresInstanceGone(app, follower)
     follower = ''
   })
@@ -324,7 +334,6 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(del).toBeEnabled()
     page.once('dialog', (d) => d.accept())
     await del.click()
-    await page.waitForURL(/\/resources\/?$/, { timeout: destroy })
     const deadline = Date.now() + destroy
     while (Date.now() < deadline) {
       const listed = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
