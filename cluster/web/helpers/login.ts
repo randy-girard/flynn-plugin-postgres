@@ -27,3 +27,9 @@ export async function login(page: Page): Promise<void> {
   }
   await expect(page.getByRole('heading', { name: 'Apps' })).toBeVisible({ timeout: loginTimeout })
 }
+
+export async function expectAppHeading(page: Page, app: string, timeout?: number): Promise<void> {
+  await expect(page.getByRole('heading').filter({ hasText: app }).first()).toBeVisible(
+    timeout != null ? { timeout } : undefined,
+  )
+}

@@ -14,7 +14,7 @@ import {
   waitForPsql,
   waitUntilPostgresInstanceGone,
 } from '../helpers/flynn'
-import { login } from '../helpers/login'
+import { expectAppHeading, login } from '../helpers/login'
 import {
   destroy,
   dump as dumpMs,
@@ -83,7 +83,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(panel).toBeHidden()
     await expect(page.getByRole('link', { name: app, exact: true })).toBeVisible({ timeout: ui })
     await page.getByRole('link', { name: app, exact: true }).click()
-    await expect(page.getByRole('heading', { name: app })).toBeVisible()
+    await expectAppHeading(page, app)
   })
 
   test('provisions postgres', async ({ page }) => {
