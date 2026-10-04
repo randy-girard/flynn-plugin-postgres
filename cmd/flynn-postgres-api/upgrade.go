@@ -85,7 +85,9 @@ func (h *handler) clusterUpgrades(w http.ResponseWriter, _ *http.Request, _ http
 
 // autoStartClusterUpgrades upgrades primaries whose ENGINE_VERSION is behind
 // this plugin image. It does not logical-upgrade on a plugin:update --rebuild
-// that only changes the artifact id.
+// that only changes the artifact id. Tenant Flynn apps are never candidates:
+// plugin:update restarts this API, and a CreateRelease/ScaleAppRelease on a
+// user app can leave formation at zero if the worker dies mid-rollout.
 func (h *handler) autoStartClusterUpgrades() {
 	if h == nil || !h.live() {
 		return
@@ -124,11 +126,21 @@ func (h *handler) beginClusterUpgrades() (started []*postgres.Task, skipped []st
 	return started, skipped
 }
 
+// isolatedUpgradeCandidate is a primary postgres instance app. Tenant Flynn
+// apps must never be cluster-upgrade targets: plugin:update restarts this API
+// and must not CreateRelease/ScaleAppRelease on user apps.
+func isolatedUpgradeCandidate(inst *postgres.Instance) bool {
+	if inst == nil || inst.Role == postgres.RoleFollower {
+		return false
+	}
+	return postgres.IsolatedInstanceApp(inst.App)
+}
+
 func (h *handler) upgradeCandidates() []*postgres.Instance {
 	seen := map[string]bool{}
 	var out []*postgres.Instance
 	add := func(inst *postgres.Instance) {
-		if inst == nil || inst.Role == postgres.RoleFollower {
+		if !isolatedUpgradeCandidate(inst) {
 			return
 		}
 		key := inst.ID
@@ -155,7 +167,7 @@ func (h *handler) upgradeCandidates() []*postgres.Instance {
 		return out
 	}
 	for _, app := range apps {
-		if app == nil {
+		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
 			continue
 		}
 		live := loadLivePostgres(h.client, app.Name)

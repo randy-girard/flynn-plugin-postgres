@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -64,25 +65,127 @@ func servePostgres() error {
 	}
 	shutdown.BeforeExit(func() { hb.Close() })
 
+	go runInstanceMetrics()
 	return <-exited
 }
 
-func ensurePgStatStatements(postgresBin string) {
+var instancePsql = localPsql
+var instanceMetricsLog = func(line string) {
+	// stdout so flynn-host can promote the line to StreamTypeSystem
+	// (flynn[postgres.N], white). stderr is painted red as app errors.
+	fmt.Fprintln(os.Stdout, line)
+}
+
+func runInstanceMetrics() {
+	emitInstanceMetricLine()
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		emitInstanceMetricLine()
+	}
+}
+
+func emitInstanceMetricLine() {
+	series := collectInstanceSeries()
+	source, addon := postgres.InstanceMetricIDs()
+	instanceMetricsLog(postgres.FormatFlynnPostgresLine(source, addon, series))
+}
+
+func collectInstanceSeries() map[string]float64 {
+	series := map[string]float64{"service_available": 0, "errors": 1}
+	raw, err := instancePsql(postgres.SnapshotSQL)
+	if err != nil {
+		return series
+	}
+	parsed, ok := postgres.ParsePostgresSnapshot(raw)
+	if !ok {
+		return series
+	}
+	for k, v := range parsed {
+		series[k] = v
+	}
+	series["service_available"] = 1
+	series["errors"] = 0
+	series["slow_query_count"] = float64(countLocalSlowQueries())
+	return series
+}
+
+func countLocalSlowQueries() int {
+	query := postgres.ActivitySlowSQL
+	if exists, err := instancePsql(postgres.StatStatementsExistsSQL); err == nil {
+		v := strings.ToLower(strings.TrimSpace(exists))
+		if i := strings.IndexByte(v, '\n'); i >= 0 {
+			v = strings.TrimSpace(v[:i])
+		}
+		if v == "t" || v == "true" {
+			query = postgres.StatStatementsSQL
+		}
+	}
+	raw, err := instancePsql(query)
+	if err != nil {
+		return 0
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return 0
+	}
+	return strings.Count(raw, `"query"`)
+}
+
+func localPsql(query string) (string, error) {
+	bin := os.Getenv("POSTGRES_BIN")
+	if bin == "" || strings.TrimSpace(query) == "" {
+		return "", fmt.Errorf("missing POSTGRES_BIN or query")
+	}
+	psql := filepath.Join(filepath.Dir(bin), "psql")
 	db := os.Getenv("POSTGRES_DB")
 	if db == "" {
 		db = "postgres"
 	}
-	for _, c := range db {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
-			return
+	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
+		psql, "-h", "/tmp", "-d", db, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", query)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("psql: %s: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func ensurePgStatStatements(postgresBin string) {
+	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
+	asPostgres := []string{"setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all", psql, "-h", "/tmp"}
+	names := map[string]bool{"template1": true}
+	if db := os.Getenv("POSTGRES_DB"); postgresIdentOK(db) {
+		names[db] = true
+	}
+	list := append(append([]string{}, asPostgres...), "-d", "postgres", "-At", "-c",
+		"SELECT datname FROM pg_database WHERE datallowconn AND datname <> 'template0'")
+	if out, err := exec.Command(list[0], list[1:]...).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if postgresIdentOK(line) {
+				names[line] = true
+			}
 		}
 	}
-	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
-	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
-		psql, "-h", "/tmp", "-d", db, "-c", "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	for db := range names {
+		cmd := exec.Command(asPostgres[0], append(asPostgres[1:], "-d", db, "-c", "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;")...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cmd.Run()
+	}
+}
+
+func postgresIdentOK(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureConnectIsolation(postgresBin string) error {

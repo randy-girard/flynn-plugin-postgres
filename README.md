@@ -84,16 +84,16 @@ from `pg_stat_statements` (falling back to long-running `pg_stat_activity`
 rows) live on the Slow queries tab. **Add alert** on Metrics (and the app
 Alerts page) can watch those series when this plugin is installed.
 
-The same sample is written as a Heroku-style log line on the plugin job:
+The same sample is written as a Flynn log line on the plugin job:
 
 ```text
-flynn -a postgres-plugin log | grep heroku-postgres
+flynn -a postgres-plugin log | grep flynn-postgres
 ```
 
 Example:
 
 ```text
-heroku-postgres source=postgresql-harbor-12345 addon=res-abc sample#service-available=1 sample#db_size=1024bytes sample#tables=3 sample#active-connections=2 sample#index-cache-hit-rate=0.99000
+flynn-postgres source=postgresql-harbor-12345 addon=res-abc sample#service-available=1 sample#db_size=1024bytes sample#tables=3 sample#active-connections=2 sample#index-cache-hit-rate=0.99000
 ```
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes

@@ -456,6 +456,51 @@ func Require(next func(http.ResponseWriter, *http.Request, *Session)) http.Handl
 	}
 }
 
+var metricsHTTPClient = &http.Client{Timeout: 8 * time.Second}
+
+// ResolveMetricsEnv copies the dashboard webhook secret/URL from a live
+// dashboard release when this plugin was installed before the dashboard.
+func ResolveMetricsEnv(lookup func(app string) map[string]string) {
+	if lookup == nil {
+		return
+	}
+	needSecret := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_SECRET")) == ""
+	needURL := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_URL")) == ""
+	if !needSecret && !needURL {
+		return
+	}
+	for _, name := range []string{"dashboard-plugin", "dashboard"} {
+		env := lookup(name)
+		if len(env) == 0 {
+			continue
+		}
+		if needSecret {
+			s := strings.TrimSpace(env["WEBHOOK_INGEST_SECRET"])
+			if s == "" {
+				s = strings.TrimSpace(env["DASHBOARD_METRICS_SECRET"])
+			}
+			if s != "" {
+				os.Setenv("DASHBOARD_METRICS_SECRET", s)
+			}
+		}
+		if needURL {
+			if v := strings.TrimSpace(env["DASHBOARD_METRICS_URL"]); v != "" {
+				os.Setenv("DASHBOARD_METRICS_URL", v)
+			}
+		}
+		return
+	}
+}
+
+func webhookSecret() string {
+	for _, k := range []string{"DASHBOARD_METRICS_SECRET", "WEBHOOK_INGEST_SECRET"} {
+		if s := strings.TrimSpace(os.Getenv(k)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // PostMetrics best-effort posts a sample to the dashboard plugin-metrics webhook.
 func PostMetrics(ev MetricEvent) {
 	url := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_URL"))
@@ -465,22 +510,31 @@ func PostMetrics(ev MetricEvent) {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
+	if strings.TrimSpace(ev.AppID) == "" || strings.TrimSpace(ev.Plugin) == "" {
+		return
+	}
 	raw, err := json.Marshal(ev)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostMetrics marshal: %v\n", err)
 		return
 	}
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(raw)))
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostMetrics request: %v\n", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if s := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_SECRET")); s != "" {
+	if s := webhookSecret(); s != "" {
 		req.Header.Set("X-Flynn-Webhook-Secret", s)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := metricsHTTPClient.Do(req)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostMetrics %s: %v\n", url, err)
 		return
 	}
 	io.Copy(io.Discard, res.Body)
 	res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "dashui: PostMetrics %s: HTTP %d\n", url, res.StatusCode)
+	}
 }

@@ -2,9 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,10 +30,6 @@ var postgresMetricSeries = []string{
 	"errors",
 }
 
-var metricsLogLine = func(line string) {
-	fmt.Fprintln(os.Stderr, line)
-}
-
 type slowQuery struct {
 	Query   string  `json:"query"`
 	Calls   int64   `json:"calls"`
@@ -53,48 +46,6 @@ type addonDiagnostics struct {
 	SlowQueries []slowQuery        `json:"slow_queries"`
 }
 
-const postgresSnapshotSQL = `SELECT concat_ws('|',
-  COALESCE((SELECT SUM(pg_database_size(oid)) FROM pg_database WHERE datallowconn),0),
-  COALESCE((SELECT COUNT(*) FROM pg_stat_user_tables),0),
-  COALESCE((SELECT COUNT(*) FROM pg_stat_activity WHERE state IS DISTINCT FROM 'idle' AND pid <> pg_backend_pid()),0),
-  COALESCE((SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'),0),
-  COALESCE((SELECT setting::int FROM pg_settings WHERE name = 'max_connections'),0),
-  COALESCE((SELECT CASE WHEN SUM(idx_blks_hit+idx_blks_read)=0 THEN 1 ELSE SUM(idx_blks_hit)::float/SUM(idx_blks_hit+idx_blks_read) END FROM pg_statio_user_indexes),1),
-  COALESCE((SELECT CASE WHEN SUM(heap_blks_hit+heap_blks_read)=0 THEN 1 ELSE SUM(heap_blks_hit)::float/SUM(heap_blks_hit+heap_blks_read) END FROM pg_statio_user_tables),1),
-  COALESCE((SELECT SUM(xact_commit) FROM pg_stat_database),0),
-  COALESCE((SELECT SUM(wal_bytes) FROM pg_stat_wal),0),
-  COALESCE((SELECT pg_current_xact_id()::text::bigint),0),
-  COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) ELSE 0 END),0),
-  COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE 0 END),0)
-);`
-
-const pgStatStatementsSQL = `SELECT COALESCE(json_agg(t), '[]'::json) FROM (
-  SELECT left(regexp_replace(query, E'[\\n\\r]+', ' ', 'g'), 240) AS query,
-         calls,
-         mean_exec_time AS mean_ms,
-         total_exec_time AS total_ms,
-         max_exec_time AS max_ms
-  FROM pg_stat_statements
-  WHERE query NOT ILIKE '%pg_stat_statements%'
-  ORDER BY mean_exec_time DESC
-  LIMIT 15
-) t`
-
-const pgActivitySlowSQL = `SELECT COALESCE(json_agg(t), '[]'::json) FROM (
-  SELECT left(regexp_replace(query, E'[\\n\\r]+', ' ', 'g'), 240) AS query,
-         1::bigint AS calls,
-         EXTRACT(EPOCH FROM (now()-query_start))*1000 AS mean_ms,
-         EXTRACT(EPOCH FROM (now()-query_start))*1000 AS total_ms,
-         EXTRACT(EPOCH FROM (now()-query_start))*1000 AS max_ms
-  FROM pg_stat_activity
-  WHERE state = 'active'
-    AND pid <> pg_backend_pid()
-    AND query_start < now() - interval '500 milliseconds'
-    AND query NOT ILIKE '%pg_stat%'
-  ORDER BY query_start
-  LIMIT 15
-) t`
-
 func (h *handler) metricsLoop() {
 	h.reportAllMetrics()
 	ticker := time.NewTicker(metricsInterval)
@@ -105,6 +56,7 @@ func (h *handler) metricsLoop() {
 }
 
 func (h *handler) reportAllMetrics() {
+	h.refreshDashboardMetricsEnv()
 	for _, inst := range h.allMetricsInstances() {
 		h.reportInstanceMetrics(inst)
 	}
@@ -118,10 +70,7 @@ func (h *handler) reportInstanceMetrics(inst *postgres.Instance) {
 	if diag.Series == nil {
 		diag.Series = map[string]float64{"errors": 1, "service_available": 0}
 	}
-	source := firstNonEmpty(inst.App, inst.ID)
-	addon := firstNonEmpty(inst.ID, inst.App)
-	metricsLogLine(formatHerokuPostgresLine(source, addon, diag.Series))
-	for _, appID := range instanceMetricApps(inst) {
+	for _, appID := range h.expandMetricApps(instanceMetricApps(inst)) {
 		dashui.PostMetrics(dashui.MetricEvent{
 			AppID:      appID,
 			ResourceID: inst.ID,
@@ -129,6 +78,61 @@ func (h *handler) reportInstanceMetrics(inst *postgres.Instance) {
 			Series:     diag.Series,
 		})
 	}
+}
+
+func (h *handler) refreshDashboardMetricsEnv() {
+	if h == nil || h.client == nil {
+		return
+	}
+	dashui.ResolveMetricsEnv(func(name string) map[string]string {
+		rel, err := h.client.GetAppRelease(name)
+		if err != nil || rel == nil {
+			return nil
+		}
+		return rel.Env
+	})
+}
+
+func (h *handler) expandMetricApps(ids []string) []string {
+	out := uniqueNonEmpty(ids...)
+	if h == nil || h.client == nil {
+		return out
+	}
+	seen := map[string]bool{}
+	for _, id := range out {
+		seen[id] = true
+	}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	for _, id := range append([]string{}, out...) {
+		app, err := h.client.GetApp(id)
+		if err != nil || app == nil {
+			continue
+		}
+		add(app.ID)
+		add(app.Name)
+	}
+	return out
+}
+
+func uniqueNonEmpty(ids ...string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func (h *handler) diagnosticsFor(sess *dashui.Session) addonDiagnostics {
@@ -162,14 +166,15 @@ func collectPostgresDiagnostics(inst *postgres.Instance) addonDiagnostics {
 		out.Series["errors"] = 1
 		return out
 	}
-	_, _ = runSQL(url, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
-	raw, err := runSQL(url, postgresSnapshotSQL)
+	// Do not CREATE EXTENSION here: POSTGRES_USER is NOSUPERUSER. The
+	// postgres job installs pg_stat_statements as the OS postgres role.
+	raw, err := runSQL(url, postgres.SnapshotSQL)
 	if err != nil {
 		out.Series["errors"] = 1
 		out.Series["service_available"] = 0
 		return out
 	}
-	if parsed, ok := parsePostgresSnapshot(raw); ok {
+	if parsed, ok := postgres.ParsePostgresSnapshot(raw); ok {
 		for k, v := range parsed {
 			out.Series[k] = v
 		}
@@ -186,14 +191,29 @@ func collectPostgresDiagnostics(inst *postgres.Instance) addonDiagnostics {
 }
 
 func collectPostgresSlowQueries(connURL string) ([]slowQuery, error) {
-	raw, err := runSQL(connURL, pgStatStatementsSQL)
-	if err != nil {
-		raw, err = runSQL(connURL, pgActivitySlowSQL)
-		if err != nil {
-			return nil, err
+	if pgStatStatementsAvailable(connURL) {
+		raw, err := runSQL(connURL, postgres.StatStatementsSQL)
+		if err == nil {
+			return parseSlowQueries(raw)
 		}
 	}
+	raw, err := runSQL(connURL, postgres.ActivitySlowSQL)
+	if err != nil {
+		return nil, err
+	}
 	return parseSlowQueries(raw)
+}
+
+func pgStatStatementsAvailable(connURL string) bool {
+	raw, err := runSQL(connURL, postgres.StatStatementsExistsSQL)
+	if err != nil {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(v, '\n'); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v == "t" || v == "true"
 }
 
 func parseSlowQueries(raw string) ([]slowQuery, error) {
@@ -211,70 +231,12 @@ func parseSlowQueries(raw string) ([]slowQuery, error) {
 	return out, nil
 }
 
-func parsePostgresSnapshot(raw string) (map[string]float64, bool) {
-	line := strings.TrimSpace(raw)
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = strings.TrimSpace(line[:i])
-	}
-	parts := strings.Split(line, "|")
-	if len(parts) < 12 {
-		return nil, false
-	}
-	nums := make([]float64, 12)
-	for i := 0; i < 12; i++ {
-		n, err := strconv.ParseFloat(strings.TrimSpace(parts[i]), 64)
-		if err != nil {
-			return nil, false
-		}
-		nums[i] = n
-	}
-	return map[string]float64{
-		"db_size_bytes":        nums[0],
-		"tables":               nums[1],
-		"active_connections":   nums[2],
-		"waiting_connections":  nums[3],
-		"max_connections":      nums[4],
-		"index_cache_hit_rate": nums[5],
-		"table_cache_hit_rate": nums[6],
-		"xact_commit":          nums[7],
-		"wal_bytes":            nums[8],
-		"current_transaction":  nums[9],
-		"replay_lag_seconds":   nums[10],
-		"follower_lag_bytes":   nums[11],
-	}, true
-}
-
 func emptyPostgresSeries() map[string]float64 {
 	out := make(map[string]float64, len(postgresMetricSeries))
 	for _, name := range postgresMetricSeries {
 		out[name] = 0
 	}
 	return out
-}
-
-func formatHerokuPostgresLine(source, addon string, series map[string]float64) string {
-	if series == nil {
-		series = map[string]float64{}
-	}
-	return strings.Join([]string{
-		"heroku-postgres",
-		"source=" + firstNonEmpty(source, "postgres"),
-		"addon=" + firstNonEmpty(addon, source),
-		fmt.Sprintf("sample#service-available=%.0f", series["service_available"]),
-		fmt.Sprintf("sample#db_size=%.0fbytes", series["db_size_bytes"]),
-		fmt.Sprintf("sample#tables=%.0f", series["tables"]),
-		fmt.Sprintf("sample#active-connections=%.0f", series["active_connections"]),
-		fmt.Sprintf("sample#waiting-connections=%.0f", series["waiting_connections"]),
-		fmt.Sprintf("sample#max-connections=%.0f", series["max_connections"]),
-		fmt.Sprintf("sample#index-cache-hit-rate=%.5f", series["index_cache_hit_rate"]),
-		fmt.Sprintf("sample#table-cache-hit-rate=%.5f", series["table_cache_hit_rate"]),
-		fmt.Sprintf("sample#current_transaction=%.0f", series["current_transaction"]),
-		fmt.Sprintf("sample#xact-commit=%.0f", series["xact_commit"]),
-		fmt.Sprintf("sample#wal-bytes=%.0f", series["wal_bytes"]),
-		fmt.Sprintf("sample#follower-lag-bytes=%.0f", series["follower_lag_bytes"]),
-		fmt.Sprintf("sample#replay-lag-seconds=%.3f", series["replay_lag_seconds"]),
-		fmt.Sprintf("sample#slow-queries=%.0f", series["slow_query_count"]),
-	}, " ")
 }
 
 func (h *handler) allMetricsInstances() []*postgres.Instance {
@@ -353,5 +315,6 @@ func instanceMetricApps(inst *postgres.Instance) []string {
 		add(a.App)
 	}
 	add(inst.Tenant)
+	add(inst.App)
 	return out
 }

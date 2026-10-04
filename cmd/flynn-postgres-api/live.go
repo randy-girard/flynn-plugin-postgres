@@ -46,6 +46,9 @@ func loadLivePostgresDepth(c appReleaseClient, name string, depth int) *postgres
 			return inst
 		}
 	}
+	if !postgres.IsolatedInstanceApp(app.Name) {
+		return nil
+	}
 	return postgres.InstanceFromEnv(app.ID, app.Name, rel.Env)
 }
 
@@ -183,6 +186,9 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if inst == nil {
 		return fmt.Errorf("missing instance")
 	}
+	if !postgres.IsolatedInstanceApp(inst.App) {
+		return fmt.Errorf("postgres plugin must not start tenant app %q as a datastore instance", inst.App)
+	}
 	db := "postgres"
 	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
 		db = inst.Databases[0].Name
@@ -277,6 +283,9 @@ func (h *handler) stampIsolatedRole(inst *postgres.Instance) error {
 func stampIsolatedRole(c isolatedReleaseClient, inst *postgres.Instance, leader *postgres.Instance) error {
 	if c == nil || inst == nil || strings.TrimSpace(inst.App) == "" {
 		return nil
+	}
+	if !postgres.IsolatedInstanceApp(inst.App) {
+		return fmt.Errorf("postgres plugin must not rewrite tenant app %q", inst.App)
 	}
 	app, err := c.GetApp(inst.App)
 	if err != nil || app == nil {

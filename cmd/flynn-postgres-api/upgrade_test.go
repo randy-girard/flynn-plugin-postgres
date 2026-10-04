@@ -118,3 +118,18 @@ func TestBeginClusterUpgradesStartsOlderEngine(t *testing.T) {
 		t.Fatalf("older engine must start a logical upgrade: started %#v skipped %#v", started, skipped)
 	}
 }
+
+func TestIsolatedUpgradeCandidateSkipsTenantApps(t *testing.T) {
+	if isolatedUpgradeCandidate(&postgres.Instance{App: "app-one", Role: postgres.RolePrimary}) {
+		t.Fatal("tenant app-one must not be a cluster-upgrade candidate")
+	}
+	if isolatedUpgradeCandidate(&postgres.Instance{App: "shop", Role: postgres.RolePrimary}) {
+		t.Fatal("tenant shop must not be a cluster-upgrade candidate")
+	}
+	if isolatedUpgradeCandidate(&postgres.Instance{App: "postgresql-harbor-12345", Role: postgres.RoleFollower}) {
+		t.Fatal("followers are not upgrade candidates")
+	}
+	if !isolatedUpgradeCandidate(&postgres.Instance{App: "postgresql-harbor-12345", Role: postgres.RolePrimary}) {
+		t.Fatal("isolated primary must be an upgrade candidate")
+	}
+}

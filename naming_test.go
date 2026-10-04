@@ -107,7 +107,7 @@ func TestIsolatedInstanceApp(t *testing.T) {
 			t.Fatalf("%s should be an isolated instance", name)
 		}
 	}
-	skip := []string{"", "postgres", "postgres-plugin", "postgres-api", "shop", "controller", "pg-missing"}
+	skip := []string{"", "postgres", "postgres-plugin", "postgres-api", "shop", "app-one", "controller", "pg-missing"}
 	for _, name := range skip {
 		if IsolatedInstanceApp(name) {
 			t.Fatalf("%s must not be treated as an isolated instance", name)

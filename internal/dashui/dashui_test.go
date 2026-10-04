@@ -148,3 +148,33 @@ func TestPostMetricsNoPanic(t *testing.T) {
 	t.Cleanup(func() { os.Unsetenv("DASHBOARD_METRICS_URL") })
 	PostMetrics(MetricEvent{AppID: "demo", Plugin: "example", Series: map[string]float64{"x": 1}})
 }
+
+func TestPostMetricsUsesWebhookIngestSecret(t *testing.T) {
+	var got string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Flynn-Webhook-Secret")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("DASHBOARD_METRICS_URL", ts.URL)
+	t.Setenv("DASHBOARD_METRICS_SECRET", "")
+	t.Setenv("WEBHOOK_INGEST_SECRET", "from-dashboard")
+	PostMetrics(MetricEvent{AppID: "demo", Plugin: "postgres", Series: map[string]float64{"x": 1}})
+	if got != "from-dashboard" {
+		t.Fatalf("secret header %q", got)
+	}
+}
+
+func TestResolveMetricsEnvCopiesDashboardSecret(t *testing.T) {
+	t.Setenv("DASHBOARD_METRICS_SECRET", "")
+	t.Setenv("DASHBOARD_METRICS_URL", "")
+	ResolveMetricsEnv(func(app string) map[string]string {
+		if app != "dashboard-plugin" {
+			t.Fatalf("lookup %q", app)
+		}
+		return map[string]string{"WEBHOOK_INGEST_SECRET": "ingest"}
+	})
+	if os.Getenv("DASHBOARD_METRICS_SECRET") != "ingest" {
+		t.Fatalf("secret %q", os.Getenv("DASHBOARD_METRICS_SECRET"))
+	}
+}

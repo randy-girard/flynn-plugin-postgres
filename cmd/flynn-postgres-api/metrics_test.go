@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,49 +12,11 @@ import (
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
 )
 
-func TestParsePostgresSnapshot(t *testing.T) {
-	raw := "26322537984|16|4|0|200|0.97144|0.97086|1200|4096|5609354|0|12\n"
-	got, ok := parsePostgresSnapshot(raw)
-	if !ok {
-		t.Fatal("parse failed")
-	}
-	if got["db_size_bytes"] != 26322537984 || got["tables"] != 16 || got["active_connections"] != 4 {
-		t.Fatalf("%+v", got)
-	}
-	if got["index_cache_hit_rate"] != 0.97144 || got["follower_lag_bytes"] != 12 {
-		t.Fatalf("%+v", got)
-	}
-}
-
-func TestFormatHerokuPostgresLine(t *testing.T) {
-	line := formatHerokuPostgresLine("postgresql-harbor-12345", "res-abc", map[string]float64{
-		"service_available":    1,
-		"db_size_bytes":        1024,
-		"tables":               3,
-		"active_connections":   2,
-		"waiting_connections":  0,
-		"max_connections":      100,
-		"index_cache_hit_rate": 0.99,
-		"table_cache_hit_rate": 0.98,
-		"current_transaction":  12,
-		"xact_commit":          8,
-		"wal_bytes":            64,
-		"follower_lag_bytes":   0,
-		"replay_lag_seconds":   0.25,
-		"slow_query_count":     1,
-	})
-	for _, want := range []string{
-		"heroku-postgres",
-		"source=postgresql-harbor-12345",
-		"addon=res-abc",
-		"sample#service-available=1",
-		"sample#db_size=1024bytes",
-		"sample#active-connections=2",
-		"sample#index-cache-hit-rate=0.99000",
-		"sample#slow-queries=1",
-	} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("missing %q in %s", want, line)
+func TestReportInstanceMetricsDoesNotRaiseIntoServerLog(t *testing.T) {
+	for _, q := range []string{postgres.SnapshotSQL, postgres.StatStatementsExistsSQL, postgres.StatStatementsSQL, postgres.ActivitySlowSQL} {
+		lower := strings.ToLower(q)
+		if strings.Contains(lower, "log_min_messages") || strings.Contains(q, "RAISE") || strings.Contains(q, "$flynn_metrics$") {
+			t.Fatalf("metrics SQL must not RAISE into the server log: %s", q)
 		}
 	}
 }
@@ -72,9 +35,14 @@ func TestParseSlowQueries(t *testing.T) {
 func TestCollectPostgresDiagnosticsUsesSQL(t *testing.T) {
 	orig := runSQL
 	t.Cleanup(func() { runSQL = orig })
+	var queries []string
 	runSQL = func(connURL, query string) (string, error) {
+		queries = append(queries, query)
 		if strings.Contains(query, "concat_ws") {
 			return "100|2|1|0|50|1|1|10|0|3|0|0", nil
+		}
+		if strings.Contains(query, "pg_extension") {
+			return "t", nil
 		}
 		if strings.Contains(query, "pg_stat_statements") && strings.Contains(query, "json_agg") {
 			return `[{"query":"SELECT slow","calls":4,"mean_ms":210,"total_ms":840,"max_ms":400}]`, nil
@@ -89,20 +57,47 @@ func TestCollectPostgresDiagnosticsUsesSQL(t *testing.T) {
 	if len(diag.SlowQueries) != 1 || diag.SlowQueries[0].Query != "SELECT slow" {
 		t.Fatalf("%+v", diag.SlowQueries)
 	}
+	for _, q := range queries {
+		if strings.Contains(strings.ToUpper(q), "CREATE EXTENSION") {
+			t.Fatalf("metrics must not CREATE EXTENSION as the tenant role: %s", q)
+		}
+	}
 }
 
-func TestReportInstanceMetricsPostsAndLogs(t *testing.T) {
+func TestCollectPostgresSlowQueriesSkipsMissingExtension(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	var queries []string
+	runSQL = func(_ string, query string) (string, error) {
+		queries = append(queries, query)
+		if strings.Contains(query, "pg_extension") {
+			return "f", nil
+		}
+		if strings.Contains(query, "pg_stat_activity") {
+			return `[{"query":"SELECT now()","calls":1,"mean_ms":800,"total_ms":800,"max_ms":800}]`, nil
+		}
+		if strings.Contains(query, "FROM pg_stat_statements") {
+			t.Fatal("must not query pg_stat_statements when the extension is missing")
+		}
+		return "", fmt.Errorf("unexpected %s", query)
+	}
+	got, err := collectPostgresSlowQueries("postgres://ignored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Query != "SELECT now()" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
 	origSQL := runSQL
-	origLog := metricsLogLine
-	var logs []string
-	t.Cleanup(func() {
-		runSQL = origSQL
-		metricsLogLine = origLog
-	})
-	runSQL = func(string, string) (string, error) {
+	var queries []string
+	t.Cleanup(func() { runSQL = origSQL })
+	runSQL = func(_ string, query string) (string, error) {
+		queries = append(queries, query)
 		return "50|1|2|0|20|1|1|5|0|1|0|0", nil
 	}
-	metricsLogLine = func(line string) { logs = append(logs, line) }
 
 	var posted []dashui.MetricEvent
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,14 +118,34 @@ func TestReportInstanceMetricsPostsAndLogs(t *testing.T) {
 		Tenant:      "shop",
 		Attachments: []postgres.Attachment{{App: "shop"}},
 	})
-	if len(logs) != 1 || !strings.Contains(logs[0], "heroku-postgres") {
-		t.Fatalf("logs=%v", logs)
+	var raise bool
+	for _, q := range queries {
+		lower := strings.ToLower(q)
+		if strings.Contains(lower, "log_min_messages") {
+			t.Fatalf("tenant cannot SET log_min_messages: %s", q)
+		}
+		if strings.Contains(q, "RAISE LOG") || strings.Contains(q, "$flynn_metrics$") {
+			raise = true
+		}
 	}
-	if len(posted) != 1 || posted[0].AppID != "shop" || posted[0].Plugin != "postgres" {
+	if raise {
+		t.Fatalf("must not RAISE LOG into the instance server log: %v", queries)
+	}
+	if len(posted) != 2 {
 		t.Fatalf("posted=%+v", posted)
 	}
-	if posted[0].Series["service_available"] != 1 {
-		t.Fatalf("series=%+v", posted[0].Series)
+	gotApp := map[string]bool{}
+	for _, ev := range posted {
+		gotApp[ev.AppID] = true
+		if ev.Plugin != "postgres" {
+			t.Fatalf("posted=%+v", posted)
+		}
+		if ev.Series["service_available"] != 1 {
+			t.Fatalf("series=%+v", ev.Series)
+		}
+	}
+	if !gotApp["shop"] || !gotApp["postgresql-harbor-12345"] {
+		t.Fatalf("posted apps=%v", gotApp)
 	}
 }
 

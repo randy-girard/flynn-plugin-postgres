@@ -999,6 +999,8 @@ func (i *Instance) MaintenanceURL() string {
 
 // InstanceFromEnv rebuilds a live isolated instance from its Flynn app release.
 // Follow uses this when the API process no longer has the in-memory leader.
+// Tenant apps (app-one, shop) are not instances even when they carry
+// DATABASE_URL or FLYNN_POSTGRES pointing at the datastore.
 func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	if env == nil {
 		return nil
@@ -1007,6 +1009,12 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		return nil
 	}
 	name := firstNonEmpty(env["FLYNN_POSTGRES"], app)
+	if !IsolatedInstanceApp(name) {
+		return nil
+	}
+	if strings.TrimSpace(app) != "" && !IsolatedInstanceApp(app) {
+		return nil
+	}
 	resourceID := strings.TrimSpace(env[ResourceIDEnv])
 	db := firstNonEmpty(env["POSTGRES_DB"], env["PGDATABASE"])
 	user := firstNonEmpty(env["POSTGRES_USER"], env["PGUSER"])

@@ -270,6 +270,17 @@ func TestInstanceFromEnv(t *testing.T) {
 	if InstanceFromEnv("id", "shop", map[string]string{"REDIS_URL": "redis://x"}) != nil {
 		t.Fatal("non-postgres env")
 	}
+	if InstanceFromEnv("id", "app-one", map[string]string{
+		"DATABASE_URL":   "postgres://u:p@leader.postgresql-harbor-12345.discoverd:5432/db?sslmode=require",
+		"FLYNN_POSTGRES": "postgresql-harbor-12345",
+	}) != nil {
+		t.Fatal("tenant app env is not an isolated instance")
+	}
+	if InstanceFromEnv("id", "app-one", map[string]string{
+		"DATABASE_URL": "postgres://u:p@leader.postgresql-harbor-12345.discoverd:5432/db?sslmode=require",
+	}) != nil {
+		t.Fatal("tenant DATABASE_URL must not hydrate a postgres instance")
+	}
 	fromPG := InstanceFromEnv("res-1", "", map[string]string{
 		"FLYNN_POSTGRES": "pg-harbor-kxmnpq",
 		"PGUSER":         "app_from_pg",

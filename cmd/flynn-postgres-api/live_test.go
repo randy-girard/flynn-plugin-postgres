@@ -106,11 +106,11 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 	var waited string
 	var waitFor time.Duration
 	inst := &postgres.Instance{
-		App:         "pg-shop",
+		App:         "pg-harbor-kxmnpq",
 		AppUser:     "app_u",
 		AppPassword: "apppw",
 		Databases:   []postgres.Database{{Name: "db_shop"}},
-		ServiceHost: "leader.pg-shop.discoverd",
+		ServiceHost: "leader.pg-harbor-kxmnpq.discoverd",
 	}
 	err := startIsolatedInstance(ctrl, "img-1", inst, nil, func(service string, timeout time.Duration) error {
 		waited = service
@@ -132,7 +132,7 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 	if len(ctrl.deleted) != 0 {
 		t.Fatalf("deleted %v", ctrl.deleted)
 	}
-	if ctrl.current["pg-shop"] == "" {
+	if ctrl.current["pg-harbor-kxmnpq"] == "" {
 		t.Fatal("current release not set")
 	}
 	if len(ctrl.releases) != 1 {
@@ -142,7 +142,7 @@ func TestStartIsolatedInstanceScalesWithoutWaitingForJobUp(t *testing.T) {
 		t.Fatalf("empty process env must not invent DISCOVERD_AUTH_KEY: %v", ctrl.releases[0].Env)
 	}
 	proc := ctrl.releases[0].Processes[postgres.ProcessName]
-	if proc.Service != "pg-shop" || strings.Contains(proc.Service, postgres.PlatformApplianceHost) {
+	if proc.Service != "pg-harbor-kxmnpq" || strings.Contains(proc.Service, postgres.PlatformApplianceHost) {
 		t.Fatalf("service %q", proc.Service)
 	}
 }
@@ -208,7 +208,7 @@ func TestStartIsolatedFollowerDoesNotWaitForDiscoverd(t *testing.T) {
 func TestStartIsolatedInstanceDoesNotWaitForDiscoverd(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	waited := false
-	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{App: "pg-fail"}, nil, func(string, time.Duration) error {
+	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{App: "pg-harbor-aaaaaa"}, nil, func(string, time.Duration) error {
 		waited = true
 		return errDiscoverdWait
 	})
@@ -236,7 +236,7 @@ func TestStartIsolatedInstanceCopiesDiscoverdAuthKey(t *testing.T) {
 	t.Setenv("DISCOVERD", "http://192.0.2.200:1111")
 	ctrl := &fakeInstanceControl{}
 	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{
-		App:         "pg-auth",
+		App:         "pg-harbor-bbbbbb",
 		AppUser:     "u",
 		AppPassword: "p",
 		Databases:   []postgres.Database{{Name: "db"}},
@@ -276,14 +276,14 @@ func TestStartIsolatedInstanceStampsResourceID(t *testing.T) {
 func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	leader := &postgres.Instance{
-		App:         "pg-leader",
+		App:         "pg-harbor-cccccc",
 		AppUser:     "app_u",
 		AppPassword: "apppw",
 		Databases:   []postgres.Database{{Name: "db_shop"}},
-		ServiceHost: "leader.pg-leader.discoverd",
+		ServiceHost: "leader.pg-harbor-cccccc.discoverd",
 	}
 	fol := &postgres.Instance{
-		App:         "pg-follower",
+		App:         "pg-harbor-dddddd",
 		AppUser:     "app_u",
 		AppPassword: "apppw",
 		Role:        postgres.RoleFollower,
@@ -296,7 +296,7 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	if ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"] != leader.ConnectionURL() {
 		t.Fatalf("POSTGRES_PRIMARY_URL=%q", ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"])
 	}
-	if ctrl.releases[0].Env["POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["POSTGRES_LEADER"] != "pg-leader" {
+	if ctrl.releases[0].Env["POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["POSTGRES_LEADER"] != "pg-harbor-cccccc" {
 		t.Fatalf("role env %#v", ctrl.releases[0].Env)
 	}
 }
@@ -304,14 +304,14 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 func TestStampIsolatedRoleClearsFollowerMarkers(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	leader := &postgres.Instance{
-		App:         "pg-leader",
+		App:         "pg-harbor-cccccc",
 		AppUser:     "app_u",
 		AppPassword: "apppw",
 		Databases:   []postgres.Database{{Name: "db_shop"}},
-		ServiceHost: "leader.pg-leader.discoverd",
+		ServiceHost: "leader.pg-harbor-cccccc.discoverd",
 	}
 	fol := &postgres.Instance{
-		App:         "pg-follower",
+		App:         "pg-harbor-dddddd",
 		AppUser:     "app_u",
 		AppPassword: "apppw",
 		Role:        postgres.RoleFollower,
@@ -326,7 +326,7 @@ func TestStampIsolatedRoleClearsFollowerMarkers(t *testing.T) {
 	if err := stampIsolatedRole(ctrl, fol, nil); err != nil {
 		t.Fatal(err)
 	}
-	rel, err := ctrl.GetAppRelease("pg-follower")
+	rel, err := ctrl.GetAppRelease("pg-harbor-dddddd")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,6 +450,70 @@ func TestLoadLivePostgresFollowsIdentityEnv(t *testing.T) {
 	}
 	if loadLivePostgres(c, "missing") != nil {
 		t.Fatal("missing")
+	}
+}
+
+func TestLoadLivePostgresIgnoresTenantApp(t *testing.T) {
+	c := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"app-one":                 {ID: "app-one", Name: "app-one"},
+			"postgresql-harbor-12345": {ID: "pg-id", Name: "postgresql-harbor-12345"},
+		},
+		releases: map[string]*ct.Release{
+			"app-one": {Env: map[string]string{
+				"DATABASE_URL":   "postgres://u:p@leader.postgresql-harbor-12345.discoverd:5432/db?sslmode=require",
+				"FLYNN_POSTGRES": "postgresql-harbor-12345",
+			}},
+			"pg-id": {Env: map[string]string{
+				"FLYNN_POSTGRES": "postgresql-harbor-12345",
+				"POSTGRES_USER":  "app_live",
+				"ENGINE_VERSION": "15",
+			}},
+		},
+	}
+	viaTenant := loadLivePostgres(c, "app-one")
+	if viaTenant == nil || viaTenant.App != "postgresql-harbor-12345" {
+		t.Fatalf("must follow FLYNN_POSTGRES to isolated instance, got %+v", viaTenant)
+	}
+	tenantOnly := fakeAppRelease{
+		apps: map[string]*ct.App{
+			"app-one": {ID: "app-one", Name: "app-one"},
+		},
+		releases: map[string]*ct.Release{
+			"app-one": {Env: map[string]string{
+				"DATABASE_URL": "postgres://u:p@leader.postgresql-harbor-12345.discoverd:5432/db?sslmode=require",
+			}},
+		},
+	}
+	if inst := loadLivePostgres(tenantOnly, "app-one"); inst != nil {
+		t.Fatalf("tenant DATABASE_URL must not hydrate a postgres instance: %+v", inst)
+	}
+}
+
+func TestStartIsolatedInstanceRefusesTenantApp(t *testing.T) {
+	ctrl := &fakeInstanceControl{}
+	err := startIsolatedInstance(ctrl, "img-1", &postgres.Instance{
+		App:         "app-one",
+		AppUser:     "u",
+		AppPassword: "p",
+		Databases:   []postgres.Database{{Name: "db"}},
+	}, nil, func(string, time.Duration) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "tenant") {
+		t.Fatalf("got %v", err)
+	}
+	if len(ctrl.apps) != 0 || len(ctrl.releases) != 0 || len(ctrl.scaled) != 0 {
+		t.Fatalf("plugin boot must not deploy tenant apps: apps=%d releases=%d scales=%d", len(ctrl.apps), len(ctrl.releases), len(ctrl.scaled))
+	}
+}
+
+func TestStampIsolatedRoleRefusesTenantApp(t *testing.T) {
+	ctrl := &fakeInstanceControl{}
+	err := stampIsolatedRole(ctrl, &postgres.Instance{App: "app-one"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "tenant") {
+		t.Fatalf("got %v", err)
+	}
+	if len(ctrl.releases) != 0 || len(ctrl.current) != 0 {
+		t.Fatalf("must not rewrite tenant release: releases=%d current=%v", len(ctrl.releases), ctrl.current)
 	}
 }
 

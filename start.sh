@@ -86,6 +86,9 @@ REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 REVOKE CONNECT ON DATABASE ${db} FROM PUBLIC;
 GRANT CONNECT ON DATABASE ${db} TO ${user};
 SQL
+  as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d template1 <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+SQL
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d "${db}" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;

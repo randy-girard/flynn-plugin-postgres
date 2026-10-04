@@ -221,6 +221,22 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "exec /bin/flynn-postgres serve") {
 		t.Fatal("the postgres process must stay up under the discoverd supervisor")
 	}
+	serve, err := os.ReadFile("cmd/flynn-postgres/serve.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(serve), "runInstanceMetrics") || !strings.Contains(string(serve), "FormatFlynnPostgresLine") {
+		t.Fatal("the isolated postgres job must print flynn-postgres sample lines to its own logs")
+	}
+	if strings.Contains(string(serve), "Fprintln(os.Stderr, line)") {
+		t.Fatal("sample lines on stderr show as red app[] errors; write them to stdout")
+	}
+	if !strings.Contains(string(serve), "Fprintln(os.Stdout, line)") {
+		t.Fatal("sample lines must go to stdout so flynn-host can promote them to flynn[postgres.N]")
+	}
+	if strings.Contains(string(serve), "RAISE LOG") {
+		t.Fatal("instance metrics must not RAISE LOG into the postgres server log")
+	}
 	if !strings.Contains(src, "ssl = on") || !strings.Contains(src, "ssl_cert_file") {
 		t.Fatal("connection strings use sslmode=require, so the server must speak TLS")
 	}
@@ -229,6 +245,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	}
 	if !strings.Contains(src, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements") {
 		t.Fatal("bootstrap must create pg_stat_statements for slow-query metrics")
+	}
+	if !strings.Contains(src, "-d template1") {
+		t.Fatal("bootstrap must install pg_stat_statements in template1 for later CREATE DATABASE")
 	}
 	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
@@ -263,6 +282,13 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if strings.Contains(string(upgSrc), "ArtifactIDs[0]") || strings.Contains(string(upgSrc), "rel.ArtifactIDs") {
 		t.Fatal("boot cluster upgrades must not compare release image ids; plugin:update --rebuild would logical-upgrade every instance")
 	}
+	liveSrc, err := os.ReadFile("cmd/flynn-postgres-api/live.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(liveSrc), "CreateDeployment") || strings.Contains(string(upgSrc), "CreateDeployment") {
+		t.Fatal("postgres plugin must not CreateDeployment on tenant apps during plugin:update")
+	}
 	pkgs, err := os.ReadFile("img/packages.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +310,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	reg := strings.Index(src, "RegisterInstance(")
 	if !strings.Contains(src, "ensurePgStatStatements") {
 		t.Fatal("isolated instances must create pg_stat_statements after postgres listens")
+	}
+	if !strings.Contains(src, "template1") {
+		t.Fatal("pg_stat_statements must be created in template1 so new databases inherit it")
 	}
 	if listen < 0 || reg < 0 || reg < listen {
 		t.Fatal("discoverd registration must follow a listening postgres")
