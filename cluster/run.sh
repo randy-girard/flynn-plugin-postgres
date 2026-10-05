@@ -140,6 +140,37 @@ else
   echo "    cluster=(flynn default; run: flynn cluster)"
 fi
 
+# CLI commands (plugin, env, create) need a controller session. Bootstrap
+# admin is email+password (vagrant default flynn-dev).
+ensure_cluster_login() {
+  if "${FLYNN}" whoami >/dev/null 2>&1; then
+    local session
+    session="$("${FLYNN}" whoami 2>/dev/null | awk -F': ' '/^email:/{print $2; exit}')"
+    echo "    session=${session:-ok}"
+    return 0
+  fi
+  local domain="1.localflynn.com"
+  local url="${cluster_url:-${DASHBOARD_URL:-}}"
+  if [[ -n "${url}" ]]; then
+    local host="${url#https://}"
+    host="${host#http://}"
+    host="${host%%/*}"
+    host="${host#controller.}"
+    host="${host#dashboard.}"
+    host="${host#auth.}"
+    domain="${host}"
+  fi
+  local email="${FLYNN_EMAIL:-${DASHBOARD_EMAIL:-admin@${domain}}}"
+  local password="${FLYNN_PASSWORD:-${FLYNN_ADMIN_PASSWORD:-${DASHBOARD_PASSWORD:-${BOOTSTRAP_ADMIN_PASSWORD:-flynn-dev}}}}"
+  echo "    login=${email}"
+  if ! "${FLYNN}" login --email "${email}" --password "${password}"; then
+    echo "flynn login failed for cluster ${cluster_name:-default}." >&2
+    echo "Set FLYNN_EMAIL and FLYNN_PASSWORD to the bootstrap admin on this cluster." >&2
+    exit 1
+  fi
+}
+ensure_cluster_login
+
 if ! plugins="$("${FLYNN}" plugin 2>/dev/null)"; then
   echo "flynn cannot list plugins on cluster ${cluster_name:-default}." >&2
   echo "Configured clusters:" >&2
@@ -175,12 +206,10 @@ export DASHBOARD_EMAIL
 if [[ -z "${DASHBOARD_PASSWORD:-}" ]]; then
   DASHBOARD_PASSWORD="$(password_from_dashboard_app || true)"
 fi
-if [[ "${run_web}" -eq 1 && -z "${DASHBOARD_PASSWORD:-}" ]]; then
-  echo "DASHBOARD_PASSWORD is required for the browser suite." >&2
-  echo "Sign in at ${DASHBOARD_URL} once, then export the current admin password." >&2
-  exit 1
+if [[ -z "${DASHBOARD_PASSWORD:-}" ]]; then
+  DASHBOARD_PASSWORD="${FLYNN_PASSWORD:-${FLYNN_ADMIN_PASSWORD:-${BOOTSTRAP_ADMIN_PASSWORD:-flynn-dev}}}"
 fi
-export DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
+export DASHBOARD_PASSWORD
 
 if [[ "${headed}" -eq 1 ]]; then
   export HEADLESS=0
