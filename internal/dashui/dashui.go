@@ -436,11 +436,71 @@ html[data-theme="light"] .side-panel-backdrop { background: rgba(28,25,23,.28); 
 .side-panel-title .hint { margin: .35rem 0 0; }
 .side-panel-body { flex: 1; min-height: 0; overflow: auto; padding: 1.1rem 1.15rem; }
 .side-panel-foot { display: flex; justify-content: flex-end; align-items: center; gap: .5rem; padding: .85rem 1.15rem; border-top: 1px solid var(--color-border); background: var(--color-surface); }
+
+@media (max-width: 720px) {
+  body.plugin-ui { padding: 0 0 1.25rem; }
+  .card { padding: .9rem .85rem; }
+  .row { align-items: stretch; }
+  input, textarea, select { max-width: 100%%; }
+  .tab-toolbar, .tab-toolbar.is-spread { flex-direction: column; align-items: stretch; }
+  .tab-toolbar-actions { width: 100%%; flex-wrap: wrap; }
+  .tab-toolbar-actions select { width: 100%%; max-width: 100%%; }
+  .table-card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { min-width: 36rem; }
+  table:has(td[data-label]) { min-width: 0; }
+  table:has(td[data-label]) thead { display: none; }
+  table:has(td[data-label]),
+  table:has(td[data-label]) tbody,
+  table:has(td[data-label]) tr,
+  table:has(td[data-label]) th,
+  table:has(td[data-label]) td { display: block; width: 100%%; }
+  table:has(td[data-label]) tbody tr { padding: .75rem 0; border-bottom: 1px solid var(--color-border); }
+  table:has(td[data-label]) th, table:has(td[data-label]) td { padding: .2rem 0; border: none; }
+  table:has(td[data-label]) td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: .72rem;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    margin-bottom: .1rem;
+  }
+  .replica-progress { min-width: 0; }
+  .side-panel { width: min(32rem, 100vw); max-width: 100vw; }
+  .side-panel-foot { flex-wrap: wrap; }
+}
 </style>
 </head>
 <body class="%s">
 %s
 %s
+
+<script>
+(function(){
+  function labelTables(){
+    document.querySelectorAll("table").forEach(function(table){
+      if(table.classList.contains("definition-table")) return;
+      var headers=[].map.call(table.querySelectorAll("thead th"), function(th){return (th.textContent||"").trim();});
+      if(!headers.length) return;
+      table.querySelectorAll("tbody tr").forEach(function(tr){
+        if(tr.classList.contains("job-log-row")) return;
+        [].forEach.call(tr.children, function(td,i){
+          if(td.tagName!=="TD"||td.getAttribute("data-label")||!headers[i]) return;
+          if((td.colSpan||1)>1) return;
+          td.setAttribute("data-label", headers[i]);
+        });
+      });
+    });
+  }
+  if(document.readyState==="loading"){
+    document.addEventListener("DOMContentLoaded", labelTables);
+  } else {
+    labelTables();
+  }
+  if(window.MutationObserver && document.body){
+    new MutationObserver(labelTables).observe(document.body,{childList:true,subtree:true});
+  }
+})();
+</script>
 </body></html>`, attr, base, html.EscapeString(title), bodyClass, kicker, body)
 }
 

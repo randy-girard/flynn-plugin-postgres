@@ -70,6 +70,9 @@ func TestWriteJSONAndHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `data-theme="dark"`) || !strings.Contains(rec.Body.String(), "Back to app") {
 		t.Fatalf("standalone chrome missing: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "@media (max-width: 720px)") {
+		t.Fatalf("mobile chrome missing: %s", rec.Body.String())
+	}
 	rec = httptest.NewRecorder()
 	WriteHTML(rec, &Session{AppID: "demo", AppName: "demo", Base: "/api/plugin-ui/example/"}, "Overview", `<div class="card">hello</div>`)
 	if strings.Contains(rec.Body.String(), "Back to app") || strings.Contains(rec.Body.String(), "<h1>") {
