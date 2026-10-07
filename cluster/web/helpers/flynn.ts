@@ -26,6 +26,15 @@ export function flynnApp(app: string, args: string[], opts?: { timeoutMs?: numbe
   return flynn(['-a', app, ...args], opts)
 }
 
+const uuidResource = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const isolatedPostgresName = /^(postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8})$/i
+
+export function assertIsolatedPostgresName(name: string): void {
+  if (!name || uuidResource.test(name) || !isolatedPostgresName.test(name)) {
+    throw new Error(`want isolated postgres instance name, got ${JSON.stringify(name)}`)
+  }
+}
+
 export function parsePgRows(out: string): PgRow[] {
   const rows: PgRow[] = []
   const seen = new Set<string>()

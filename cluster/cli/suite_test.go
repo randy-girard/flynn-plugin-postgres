@@ -66,6 +66,7 @@ func TestPostgresCLI(t *testing.T) {
 		if primary == "" {
 			t.Fatal("provisioned resource missing from flynn pg")
 		}
+		assertIsolatedPostgresName(t, primary)
 		t.Logf("primary %s", primary)
 		env := h.appMust(cmdQuick, "env")
 		assertPostgresAppEnv(t, env, primary)
@@ -197,6 +198,7 @@ func TestPostgresCLI(t *testing.T) {
 		if follower == "" {
 			t.Fatalf("no new follower after pg follow; list:\n%s", h.appMust(cmdQuick, "pg"))
 		}
+		assertIsolatedPostgresName(t, follower)
 		waitOut := h.appMust(cmdWait, "pg", "wait", follower)
 		if !strings.Contains(strings.ToLower(waitOut), "ready") && !strings.Contains(waitOut, "%") {
 			t.Fatalf("pg:wait should print live copy progress:\n%s", waitOut)

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { dashboardPassword, uniqueSuffix } from '../helpers/env'
 import {
+  assertIsolatedPostgresName,
   assertOneRandomPostgresDatabase,
   assertPostgresAppEnv,
   assertPostgresAttachEnv,
@@ -101,6 +102,7 @@ test.describe('postgres dashboard (live cluster)', () => {
     const rows = parsePgRows(flynnApp(app, ['pg']))
     const primary = rows.find((r) => r.role !== 'follower')?.name
     if (!primary) throw new Error(`no primary postgres resource on ${app}`)
+    assertIsolatedPostgresName(primary)
     await expect(page.getByText(primary, { exact: true })).toBeVisible()
     await expect(page.getByRole('link', { name: primary })).toBeVisible({ timeout: provision })
     await page.getByRole('link', { name: primary }).click()
@@ -274,8 +276,13 @@ test.describe('postgres dashboard (live cluster)', () => {
     const addFollower = page.getByRole('button', { name: 'Add follower' })
     await expect(addFollower).toBeEnabled()
     await addFollower.click()
+    const dialog = page.getByRole('dialog', { name: 'Add follower' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Add follower' }).click()
     await expect(page.getByRole('columnheader', { name: 'Status' })).toBeVisible()
     follower = await waitForNewFollower(app, before)
+    assertIsolatedPostgresName(follower)
+    await expect(page.getByRole('link', { name: follower })).toBeVisible({ timeout: followMs })
     await expect(page.getByRole('progressbar').or(page.getByText(/ready|basebackup|starting|streaming|copying|catching/i)).first()).toBeVisible({ timeout: followMs })
     await waitForPsql(app, follower, followMs)
     const rows = parsePgRows(flynnApp(app, ['pg']))

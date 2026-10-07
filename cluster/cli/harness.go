@@ -118,6 +118,15 @@ func assertOneRandomPostgresDatabase(t *testing.T, listed string) {
 
 var pgResourceName = regexp.MustCompile(`\b(postgresql-[a-z0-9]+(?:-[a-z0-9]+)*-[0-9]{5,8}|pg-[a-z]+-[a-z]{6,8})\b`)
 
+var uuidResource = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func assertIsolatedPostgresName(t *testing.T, name string) {
+	t.Helper()
+	if name == "" || uuidResource.MatchString(name) || !pgResourceName.MatchString(name) {
+		t.Fatalf("want isolated postgres instance name, got %q", name)
+	}
+}
+
 const (
 	cmdQuick     = 20 * time.Second
 	cmdProvision = 5 * time.Minute // matches plugin instanceReadyTimeout (initdb + TLS)
