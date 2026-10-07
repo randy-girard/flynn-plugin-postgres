@@ -16,7 +16,19 @@ func (h *handler) afterFollow() func(*postgres.Instance) error {
 		if h == nil || !h.live() {
 			return nil
 		}
-		return h.startInstance(fol)
+		err := h.startInstance(fol)
+		if h.log != nil {
+			app := ""
+			if fol != nil {
+				app = fol.App
+			}
+			if err != nil {
+				h.log.Error("upgrade after-follow", "app", app, "err", err)
+			} else {
+				h.log.Info("upgrade after-follow", "app", app)
+			}
+		}
+		return err
 	}
 }
 
@@ -26,16 +38,85 @@ func (h *handler) afterDrop() func(*postgres.Instance) error {
 			return nil
 		}
 		_, err := h.client.DeleteApp(old.App)
+		if h.log != nil {
+			if err != nil {
+				h.log.Error("upgrade after-drop", "app", old.App, "err", err)
+			} else {
+				h.log.Info("upgrade after-drop", "app", old.App)
+			}
+		}
 		return err
 	}
 }
 
+func (h *handler) afterReplace() func(old, nf *postgres.Instance) error {
+	return func(old, nf *postgres.Instance) error {
+		if h == nil || !h.live() {
+			return nil
+		}
+		if err := h.cutoverAttachedApps(old, nf); err != nil {
+			if h.log != nil {
+				h.log.Error("upgrade after-replace cutover", "from", oldApp(old), "to", oldApp(nf), "err", err)
+			}
+			return err
+		}
+		return h.afterDrop()(old)
+	}
+}
+
+func oldApp(inst *postgres.Instance) string {
+	if inst == nil {
+		return ""
+	}
+	return inst.App
+}
+
 func (h *handler) upgradeOptions(mode postgres.ReplicationMode, runtime string) postgres.UpgradeOptions {
 	return postgres.UpgradeOptions{
-		Mode:        mode,
-		Runtime:     runtime,
-		AfterFollow: h.afterFollow(),
-		AfterDrop:   h.afterDrop(),
+		Mode:         mode,
+		Runtime:      runtime,
+		AfterFollow:  h.afterFollow(),
+		AfterPromote: h.afterPromote(),
+		AfterDrop:    h.afterDrop(),
+		AfterReplace: h.afterReplace(),
+	}
+}
+
+func (h *handler) imageRefreshOptions(inst *postgres.Instance) postgres.UpgradeOptions {
+	runtime := ""
+	if inst != nil {
+		runtime = inst.Runtime
+	}
+	opts := h.upgradeOptions(postgres.ModeStreaming, runtime)
+	opts.DropPrevious = true
+	return opts
+}
+
+func (h *handler) afterPromote() func(*postgres.PromoteResult) error {
+	return func(res *postgres.PromoteResult) error {
+		if h == nil || !h.live() || res == nil || res.Promoted == nil {
+			return nil
+		}
+		fromApp, toApp := "", res.Promoted.App
+		if res.PreviousLeader != nil {
+			fromApp = res.PreviousLeader.App
+		}
+		h.emitTopology(postgres.CodeReplicaReady, res.Promoted, fromApp, toApp, "")
+		if err := h.promoteIsolatedJob(res.Promoted); err != nil {
+			if h.log != nil {
+				h.log.Error("upgrade after-promote stamp", "app", res.Promoted.App, "err", err)
+			}
+			return err
+		}
+		h.emitTopology(postgres.CodePromoted, res.Promoted, fromApp, toApp, "")
+		if res.PreviousLeader != nil {
+			h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "")
+		}
+		err := h.cutoverAttachedApps(res.PreviousLeader, res.Promoted)
+		if err != nil && h.log != nil {
+			h.log.Error("upgrade after-promote cutover", "app", res.Promoted.App, "err", err)
+		}
+		return err
 	}
 }
 
@@ -45,7 +126,7 @@ func (h *handler) upgrade(w http.ResponseWriter, r *http.Request, p httprouter.P
 		Runtime     string `json:"runtime"`
 	}
 	_ = decode(r, &body)
-	task, err := h.store.StartUpgrade(p.ByName("id"), h.upgradeOptions(postgres.ReplicationMode(body.Replication), body.Runtime))
+	task, err := h.startUpgrade(p.ByName("id"), h.upgradeOptions(postgres.ReplicationMode(body.Replication), body.Runtime))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -84,16 +165,18 @@ func (h *handler) clusterUpgrades(w http.ResponseWriter, _ *http.Request, _ http
 }
 
 // autoStartClusterUpgrades upgrades primaries whose ENGINE_VERSION is behind
-// this plugin image. It does not logical-upgrade on a plugin:update --rebuild
-// that only changes the artifact id. Tenant Flynn apps are never candidates:
-// plugin:update restarts this API, and a CreateRelease/ScaleAppRelease on a
-// user app can leave formation at zero if the worker dies mid-rollout.
+// this plugin image. Image-only rebuilds use a streaming follower swap in
+// refreshIsolatedImages (not a logical dump/restore). Tenant Flynn apps are
+// never candidates: plugin:update restarts this API, and a CreateRelease /
+// ScaleAppRelease on a user app can leave formation at zero if the worker
+// dies mid-rollout.
 func (h *handler) autoStartClusterUpgrades() {
 	if h == nil || !h.live() {
 		return
 	}
 	go func() {
 		h.reapOrphanInstances()
+		h.refreshIsolatedImages()
 		started, skipped := h.beginClusterUpgrades()
 		if h.log != nil {
 			h.log.Info("cluster upgrades", "started", len(started), "skipped", len(skipped))
@@ -110,7 +193,7 @@ func (h *handler) beginClusterUpgrades() (started []*postgres.Task, skipped []st
 			skipped = append(skipped, inst.App)
 			continue
 		}
-		task, err := h.store.StartUpgrade(inst.ID, h.upgradeOptions(postgres.ModeLogical, inst.Runtime))
+		task, err := h.startUpgrade(inst.ID, h.upgradeOptions(postgres.ModeLogical, inst.Runtime))
 		if errors.Is(err, postgres.ErrUpgradeInProgress) {
 			if cur := h.store.LatestUpgrade(inst.ID); cur != nil {
 				started = append(started, cur)

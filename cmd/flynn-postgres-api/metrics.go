@@ -152,38 +152,35 @@ func collectPostgresDiagnostics(inst *postgres.Instance) addonDiagnostics {
 		Plugin:      "postgres",
 		Source:      "",
 		Addon:       "",
-		Series:      emptyPostgresSeries(),
+		Series:      map[string]float64{},
 		SlowQueries: []slowQuery{},
 	}
-	if inst == nil {
-		out.Series["errors"] = 1
+	failed := func() addonDiagnostics {
+		out.Series = map[string]float64{"errors": 1, "service_available": 0}
 		return out
+	}
+	if inst == nil {
+		return failed()
 	}
 	out.Source = firstNonEmpty(inst.App, inst.ID)
 	out.Addon = firstNonEmpty(inst.ID, inst.App)
 	url := strings.TrimSpace(inst.MaintenanceURL())
 	if url == "" {
-		out.Series["errors"] = 1
-		return out
+		return failed()
 	}
 	// Do not CREATE EXTENSION here: POSTGRES_USER is NOSUPERUSER. The
 	// postgres job installs pg_stat_statements as the OS postgres role.
 	raw, err := runSQL(url, postgres.SnapshotSQL)
 	if err != nil {
-		out.Series["errors"] = 1
-		out.Series["service_available"] = 0
-		return out
+		return failed()
 	}
-	if parsed, ok := postgres.ParsePostgresSnapshot(raw); ok {
-		for k, v := range parsed {
-			out.Series[k] = v
-		}
-		out.Series["service_available"] = 1
-		out.Series["errors"] = 0
-	} else {
-		out.Series["errors"] = 1
-		out.Series["service_available"] = 0
+	parsed, ok := postgres.ParsePostgresSnapshot(raw)
+	if !ok {
+		return failed()
 	}
+	out.Series = parsed
+	out.Series["service_available"] = 1
+	out.Series["errors"] = 0
 	slow, _ := collectPostgresSlowQueries(url)
 	out.SlowQueries = slow
 	out.Series["slow_query_count"] = float64(len(slow))
@@ -231,14 +228,6 @@ func parseSlowQueries(raw string) ([]slowQuery, error) {
 	return out, nil
 }
 
-func emptyPostgresSeries() map[string]float64 {
-	out := make(map[string]float64, len(postgresMetricSeries))
-	for _, name := range postgresMetricSeries {
-		out[name] = 0
-	}
-	return out
-}
-
 func (h *handler) allMetricsInstances() []*postgres.Instance {
 	seen := map[string]bool{}
 	var out []*postgres.Instance
@@ -246,7 +235,9 @@ func (h *handler) allMetricsInstances() []*postgres.Instance {
 		if inst == nil {
 			return
 		}
-		key := firstNonEmpty(inst.ID, inst.App)
+		// Prefer the isolated app name so the in-memory store copy and the
+		// controller resource for the same database are not both scraped.
+		key := firstNonEmpty(inst.App, inst.ID)
 		if key == "" || seen[key] {
 			return
 		}

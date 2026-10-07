@@ -20,7 +20,7 @@ const SnapshotSQL = `SELECT concat_ws('|',
   COALESCE((SELECT CASE WHEN SUM(heap_blks_hit+heap_blks_read)=0 THEN 1 ELSE SUM(heap_blks_hit)::float/SUM(heap_blks_hit+heap_blks_read) END FROM pg_statio_user_tables),1),
   COALESCE((SELECT SUM(xact_commit) FROM pg_stat_database),0),
   COALESCE((SELECT SUM(wal_bytes) FROM pg_stat_wal),0),
-  COALESCE((SELECT pg_current_xact_id()::text::bigint),0),
+  COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN 0 ELSE pg_current_xact_id()::text::bigint END),0),
   COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) ELSE 0 END),0),
   COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE 0 END),0)
 );`
@@ -99,23 +99,33 @@ func FormatFlynnPostgresLine(source, addon string, series map[string]float64) st
 	if series == nil {
 		series = map[string]float64{}
 	}
-	return strings.Join([]string{
+	parts := []string{
 		"flynn-postgres",
 		"source=" + firstNonEmpty(source, "postgres"),
 		"addon=" + firstNonEmpty(addon, source),
-		fmt.Sprintf("sample#service-available=%.0f", series["service_available"]),
-		fmt.Sprintf("sample#db_size=%.0fbytes", series["db_size_bytes"]),
-		fmt.Sprintf("sample#tables=%.0f", series["tables"]),
-		fmt.Sprintf("sample#active-connections=%.0f", series["active_connections"]),
-		fmt.Sprintf("sample#waiting-connections=%.0f", series["waiting_connections"]),
-		fmt.Sprintf("sample#max-connections=%.0f", series["max_connections"]),
-		fmt.Sprintf("sample#index-cache-hit-rate=%.5f", series["index_cache_hit_rate"]),
-		fmt.Sprintf("sample#table-cache-hit-rate=%.5f", series["table_cache_hit_rate"]),
-		fmt.Sprintf("sample#current_transaction=%.0f", series["current_transaction"]),
-		fmt.Sprintf("sample#xact-commit=%.0f", series["xact_commit"]),
-		fmt.Sprintf("sample#wal-bytes=%.0f", series["wal_bytes"]),
-		fmt.Sprintf("sample#follower-lag-bytes=%.0f", series["follower_lag_bytes"]),
-		fmt.Sprintf("sample#replay-lag-seconds=%.3f", series["replay_lag_seconds"]),
-		fmt.Sprintf("sample#slow-queries=%.0f", series["slow_query_count"]),
-	}, " ")
+	}
+	// Only emit keys that were actually collected. A failed scrape must not
+	// print sample#db_size=0bytes (and the rest) or charts sawtooth to zero.
+	appendSample := func(key, format string) {
+		v, ok := series[key]
+		if !ok {
+			return
+		}
+		parts = append(parts, fmt.Sprintf(format, v))
+	}
+	appendSample("service_available", "sample#service-available=%.0f")
+	appendSample("db_size_bytes", "sample#db_size=%.0fbytes")
+	appendSample("tables", "sample#tables=%.0f")
+	appendSample("active_connections", "sample#active-connections=%.0f")
+	appendSample("waiting_connections", "sample#waiting-connections=%.0f")
+	appendSample("max_connections", "sample#max-connections=%.0f")
+	appendSample("index_cache_hit_rate", "sample#index-cache-hit-rate=%.5f")
+	appendSample("table_cache_hit_rate", "sample#table-cache-hit-rate=%.5f")
+	appendSample("current_transaction", "sample#current_transaction=%.0f")
+	appendSample("xact_commit", "sample#xact-commit=%.0f")
+	appendSample("wal_bytes", "sample#wal-bytes=%.0f")
+	appendSample("follower_lag_bytes", "sample#follower-lag-bytes=%.0f")
+	appendSample("replay_lag_seconds", "sample#replay-lag-seconds=%.3f")
+	appendSample("slow_query_count", "sample#slow-queries=%.0f")
+	return strings.Join(parts, " ")
 }

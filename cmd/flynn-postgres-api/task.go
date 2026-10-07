@@ -40,9 +40,15 @@ func runPluginTask(args []string) error {
 		return runUpgradeTask(target)
 	case "follow":
 		if len(args) < 3 {
-			return fmt.Errorf("usage: flynn-postgres-api task follow <resource> <app>")
+			return fmt.Errorf("usage: flynn-postgres-api task follow <resource> <app> [--auto-failover]")
 		}
-		return runFollowTask(strings.TrimSpace(args[1]), strings.TrimSpace(args[2]))
+		auto := false
+		for _, a := range args[3:] {
+			if a == "--auto-failover" || a == "auto-failover" {
+				auto = true
+			}
+		}
+		return runFollowTask(strings.TrimSpace(args[1]), strings.TrimSpace(args[2]), auto)
 	case "create-db":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: flynn-postgres-api task create-db <resource> <database>")
@@ -63,11 +69,11 @@ func runPluginTask(args []string) error {
 	}
 }
 
-func runFollowTask(leader, app string) error {
+func runFollowTask(leader, app string, autoFailover bool) error {
 	if leader == "" || app == "" {
 		return fmt.Errorf("follow requires a postgres resource and app name")
 	}
-	body, err := json.Marshal(map[string]string{"app": app})
+	body, err := json.Marshal(map[string]any{"app": app, "auto_failover": autoFailover})
 	if err != nil {
 		return err
 	}
@@ -143,8 +149,8 @@ func runInfoTask(resource string) error {
 	if leader == "" {
 		leader = "-"
 	}
-	fmt.Printf("app\t%s\nrole\t%s\nleader\t%s\nfollowers\t%s\nlag_bytes\t%d\nengine\t%s\nhost\t%s\n",
-		info.App, info.Role, leader, followers, info.LagBytes, info.EngineVersion, info.Host)
+	fmt.Printf("app\t%s\nrole\t%s\nleader\t%s\nfollows\t%s\nfollowers\t%s\nauto_failover\t%t\nreplica_pending\t%t\nlag_bytes\t%d\nengine\t%s\nhost\t%s\n",
+		info.App, info.Role, leader, firstNonEmpty(info.Follows, "-"), followers, info.AutoFailover, info.ReplicaPending, info.LagBytes, info.EngineVersion, info.Host)
 	if len(info.Attachments) == 0 {
 		fmt.Printf("attached\t-\n")
 		return nil

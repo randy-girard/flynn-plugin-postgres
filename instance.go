@@ -22,6 +22,7 @@ const (
 	RolePrimary    Role = "primary"
 	RoleFollower   Role = "follower"
 	RoleStandalone Role = "standalone"
+	RoleDeposed    Role = "deposed"
 )
 
 // ReplicationMode is stored on the follower. Streaming is same-major.
@@ -34,18 +35,23 @@ const (
 )
 
 var (
-	ErrNotFound          = errors.New("postgres instance not found")
-	ErrReadOnly          = errors.New("follower is read-only")
-	ErrFollowFollower    = errors.New("a follower cannot follow another follower")
-	ErrNotFollower       = errors.New("only a follower can be promoted or unfollowed")
-	ErrNoResize          = errors.New("no in-place resize or upgrade; pg:upgrade follows, waits until caught up, then promotes")
-	ErrHasFollowers      = errors.New("cannot remove a resource while it still has followers")
-	ErrNotPrimary        = errors.New("only a primary can be upgraded")
-	ErrUpgradeInProgress = errors.New("an upgrade is already running for this instance")
-	ErrUpgradeFollower   = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
-	ErrFollowLogical     = errors.New("followers use streaming replication on the same engine version; use pg:upgrade for a major-version swap")
-	ErrFollowVersion     = errors.New("a follower must run the same engine version as its primary; use pg:upgrade to swap to a new version")
+	ErrNotFound           = errors.New("postgres instance not found")
+	ErrReadOnly           = errors.New("follower is read-only")
+	ErrFollowFollower     = errors.New("a follower cannot follow another follower")
+	ErrNotFollower        = errors.New("only a follower can be promoted or unfollowed")
+	ErrNoResize           = errors.New("no in-place resize or upgrade; pg:upgrade follows, waits until caught up, then promotes")
+	ErrHasFollowers       = errors.New("cannot remove a resource while it still has followers")
+	ErrNotPrimary         = errors.New("only a primary can be upgraded")
+	ErrUpgradeInProgress  = errors.New("an upgrade is already running for this instance")
+	ErrUpgradeFollower    = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
+	ErrFollowLogical      = errors.New("followers use streaming replication on the same engine version; use pg:upgrade for a major-version swap")
+	ErrFollowVersion      = errors.New("a follower must run the same engine version as its primary; use pg:upgrade to swap to a new version")
+	ErrAutoFailoverNoHost = errors.New("auto-failover followers need another live node; this cluster has only the primary's host")
+	ErrAutoFailoverExists = errors.New("this primary already has an auto-failover follower")
+	ErrAutoFailoverFollow = errors.New("auto-failover requires a follower (--follow)")
 )
+
+const EnvAutoFailover = "AUTO_FAILOVER"
 
 // User is a role that exists only in one instance's state.
 type User struct {
@@ -113,37 +119,46 @@ type Instance struct {
 	Rows              []Row
 	Attachments       []Attachment
 	Followers         []string
-	seq               int64
-	applied           int64
+	AutoFailover      bool
+	ReplicaPending    bool
+	// ServiceAlias is an extra discoverd name the promoted job registers
+	// (the previous primary's app) so existing DATABASE_URL hosts keep resolving.
+	ServiceAlias string
+	seq          int64
+	applied      int64
 }
 
 // Info is the pg:info view.
 type Info struct {
-	ID            string           `json:"id"`
-	Role          Role             `json:"role"`
-	LeaderID      string           `json:"leader_id,omitempty"`
-	Followers     []string         `json:"followers,omitempty"`
-	LagBytes      int64            `json:"lag_bytes"`
-	ReadOnly      bool             `json:"read_only"`
-	Nodes         int              `json:"nodes"`
-	Runtime       string           `json:"runtime"`
-	EngineVersion string           `json:"engine_version,omitempty"`
-	Mode          ReplicationMode  `json:"replication,omitempty"`
-	App           string           `json:"app"`
-	Volume        string           `json:"volume"`
-	Host          string           `json:"host"`
-	Attachments   []AttachmentInfo `json:"attachments,omitempty"`
+	ID             string           `json:"id"`
+	Role           Role             `json:"role"`
+	LeaderID       string           `json:"leader_id,omitempty"`
+	Followers      []string         `json:"followers,omitempty"`
+	LagBytes       int64            `json:"lag_bytes"`
+	ReadOnly       bool             `json:"read_only"`
+	Nodes          int              `json:"nodes"`
+	Runtime        string           `json:"runtime"`
+	EngineVersion  string           `json:"engine_version,omitempty"`
+	Mode           ReplicationMode  `json:"replication,omitempty"`
+	App            string           `json:"app"`
+	Volume         string           `json:"volume"`
+	Host           string           `json:"host"`
+	Follows        string           `json:"follows,omitempty"`
+	AutoFailover   bool             `json:"auto_failover,omitempty"`
+	ReplicaPending bool             `json:"replica_pending,omitempty"`
+	Attachments    []AttachmentInfo `json:"attachments,omitempty"`
 }
 
 // ProvisionRequest creates a primary, or a follower when Follow is set.
 type ProvisionRequest struct {
-	Tenant     string
-	App        string
-	As         string
-	Follow     string
-	Mode       ReplicationMode
-	Runtime    string
-	ForUpgrade bool
+	Tenant       string
+	App          string
+	As           string
+	Follow       string
+	Mode         ReplicationMode
+	Runtime      string
+	ForUpgrade   bool
+	AutoFailover bool
 }
 
 // PromoteResult is a promoted follower plus the previous leader, which remains.
@@ -251,6 +266,12 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 			return nil, nil, ErrFollowFollower
 		}
 	}
+	if req.AutoFailover && leader == nil {
+		return nil, nil, ErrAutoFailoverFollow
+	}
+	if req.AutoFailover && autoFailoverFollowerLocked(s, leader) != nil {
+		return nil, nil, ErrAutoFailoverExists
+	}
 
 	id := newID()
 	inst := &Instance{
@@ -305,6 +326,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 		if strings.TrimSpace(req.Runtime) == "" {
 			inst.Runtime = leader.Runtime
 		}
+		inst.AutoFailover = req.AutoFailover
 	}
 
 	s.byID[inst.ID] = inst
@@ -397,6 +419,59 @@ func (s *Store) Get(id string) (*Instance, error) {
 		return nil, ErrNotFound
 	}
 	return inst.snapshot(), nil
+}
+
+// Adopt inserts a live isolated instance discovered from the controller after
+// this process restarted. Existing IDs are merged, not replaced.
+func (s *Store) Adopt(inst *Instance) *Instance {
+	if s == nil || inst == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live := inst.snapshot()
+	if strings.TrimSpace(live.ID) == "" {
+		live.ID = firstNonEmpty(live.App)
+	}
+	if live.ID == "" {
+		return nil
+	}
+	if existing := s.findLocked(firstNonEmpty(live.App, live.ID)); existing != nil {
+		mergeLiveInstance(existing, live)
+		if existing.LeaderID == "" {
+			existing.LeaderID = live.LeaderID
+		}
+		if existing.Role == "" {
+			existing.Role = live.Role
+		}
+		if live.Role == RoleFollower && existing.Role == RoleFollower {
+			existing.ReadOnly = true
+			if live.AutoFailover {
+				existing.AutoFailover = true
+			}
+		}
+		s.linkFollowerLocked(existing)
+		return existing.snapshot()
+	}
+	s.byID[live.ID] = live
+	s.linkFollowerLocked(live)
+	return live.snapshot()
+}
+
+func (s *Store) linkFollowerLocked(fol *Instance) {
+	if fol == nil || fol.Role != RoleFollower || strings.TrimSpace(fol.LeaderID) == "" {
+		return
+	}
+	leader := s.findLocked(fol.LeaderID)
+	if leader == nil {
+		return
+	}
+	for _, fid := range leader.Followers {
+		if fid == fol.ID || fid == fol.App {
+			return
+		}
+	}
+	leader.Followers = append(leader.Followers, fol.ID)
 }
 
 // FollowerApps is the isolated app names still replicating from id (NAME or ID).
@@ -551,21 +626,32 @@ func (s *Store) Info(id string) (Info, error) {
 		return Info{}, ErrNotFound
 	}
 	followers := append([]string(nil), inst.Followers...)
+	follows := ""
+	if inst.Role == RoleFollower && inst.LeaderID != "" {
+		if leader := s.lookupLocked(inst.LeaderID); leader != nil {
+			follows = firstNonEmpty(leader.App, leader.ID)
+		} else {
+			follows = inst.LeaderID
+		}
+	}
 	return Info{
-		ID:            inst.ID,
-		Role:          inst.Role,
-		LeaderID:      inst.LeaderID,
-		Followers:     followers,
-		LagBytes:      inst.LagBytes,
-		ReadOnly:      inst.ReadOnly,
-		Nodes:         inst.Nodes,
-		Runtime:       inst.Runtime,
-		EngineVersion: inst.EngineVersion,
-		Mode:          inst.Mode,
-		App:           inst.App,
-		Volume:        inst.Volume,
-		Host:          inst.ServiceHost,
-		Attachments:   attachmentInfos(inst),
+		ID:             inst.ID,
+		Role:           inst.Role,
+		LeaderID:       inst.LeaderID,
+		Followers:      followers,
+		LagBytes:       inst.LagBytes,
+		ReadOnly:       inst.ReadOnly,
+		Nodes:          inst.Nodes,
+		Runtime:        inst.Runtime,
+		EngineVersion:  inst.EngineVersion,
+		Mode:           inst.Mode,
+		App:            inst.App,
+		Volume:         inst.Volume,
+		Host:           inst.ServiceHost,
+		Follows:        follows,
+		AutoFailover:   inst.AutoFailover,
+		ReplicaPending: inst.ReplicaPending,
+		Attachments:    attachmentInfos(inst),
 	}, nil
 }
 
@@ -760,7 +846,7 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 	if fol.Role != RoleFollower || fol.LeaderID == "" {
 		return nil, ErrNotFollower
 	}
-	leader := s.byID[fol.LeaderID]
+	leader := s.lookupLocked(fol.LeaderID)
 	if leader == nil {
 		return nil, ErrNotFound
 	}
@@ -775,11 +861,19 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 		rewritten = append(rewritten, leader.Attachments[i])
 	}
 	leader.Followers = removeFollowerRef(leader.Followers, fol)
+	auto := fol.AutoFailover
 	fol.Role = RolePrimary
 	fol.ReadOnly = false
 	fol.LeaderID = ""
 	fol.Mode = ""
 	fol.LagBytes = 0
+	fol.AutoFailover = false
+	if auto {
+		leader.Role = RoleDeposed
+		leader.ReadOnly = true
+		leader.LeaderID = fol.ID
+		fol.ReplicaPending = true
+	}
 	return &PromoteResult{
 		Promoted:       fol.snapshot(),
 		PreviousLeader: leader.snapshot(),
@@ -1068,12 +1162,29 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		inst.Role = RolePrimary
 		inst.ReadOnly = false
 		inst.LeaderID = ""
+	} else if strings.EqualFold(role, "deposed") {
+		inst.Role = RoleDeposed
+		inst.ReadOnly = true
+		inst.LeaderID = firstNonEmpty(env["POSTGRES_LEADER"], inst.LeaderID)
 	} else if strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_LEADER"]) != "" {
 		inst.Role = RoleFollower
 		inst.ReadOnly = true
 		inst.LeaderID = firstNonEmpty(env["POSTGRES_LEADER"], inst.LeaderID)
+		inst.AutoFailover = envBool(env[EnvAutoFailover])
+	}
+	inst.ReplicaPending = envBool(env["REPLICA_PENDING"])
+	if inst.Role == RolePrimary {
+		inst.AutoFailover = false
 	}
 	return inst
+}
+
+func envBool(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 func (i *Instance) appURL() string {

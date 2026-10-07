@@ -52,6 +52,19 @@ func TestFormatFlynnPostgresLine(t *testing.T) {
 	}
 }
 
+func TestFormatFlynnPostgresLineOmitsMissingGauges(t *testing.T) {
+	line := FormatFlynnPostgresLine("postgresql-basin-73690", "res-abc", map[string]float64{
+		"service_available": 0,
+		"errors":            1,
+	})
+	if !strings.Contains(line, "sample#service-available=0") {
+		t.Fatalf("missing health sample: %s", line)
+	}
+	if strings.Contains(line, "sample#db_size=") || strings.Contains(line, "sample#active-connections=") {
+		t.Fatalf("failed scrape must not emit zero gauges: %s", line)
+	}
+}
+
 func TestInstanceMetricIDsUseResourceApp(t *testing.T) {
 	t.Setenv("FLYNN_POSTGRES", "postgresql-basin-73690")
 	t.Setenv("FLYNN_APP_NAME", "postgresql-basin-73690")
@@ -74,6 +87,17 @@ func TestInstanceMetricIDsFallback(t *testing.T) {
 	source, addon := InstanceMetricIDs()
 	if source != "appdb" || addon != "appdb" {
 		t.Fatalf("source=%q addon=%q", source, addon)
+	}
+}
+
+func TestSnapshotSQLSkipsXactIdOnReplica(t *testing.T) {
+	if !strings.Contains(SnapshotSQL, "pg_is_in_recovery()") || !strings.Contains(SnapshotSQL, "pg_current_xact_id()") {
+		t.Fatal("replica metrics must not call pg_current_xact_id() during recovery")
+	}
+	idx := strings.Index(SnapshotSQL, "pg_current_xact_id()")
+	window := SnapshotSQL[:idx]
+	if !strings.Contains(window[strings.LastIndex(window, "CASE"):], "pg_is_in_recovery()") {
+		t.Fatal("pg_current_xact_id must be behind a recovery check")
 	}
 }
 

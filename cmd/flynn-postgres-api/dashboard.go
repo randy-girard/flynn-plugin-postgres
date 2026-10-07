@@ -36,12 +36,15 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/metrics", wrap(h.dashMetrics))
 	h.router.GET("/dashboard/api/diagnostics", wrap(h.dashDiagnostics))
 	h.router.GET("/dashboard/databases", wrap(h.dashDatabases))
+	h.router.GET("/dashboard/databases/new", wrap(h.dashDatabases))
 	h.router.POST("/dashboard/databases", wrap(h.dashDatabases))
 	h.router.GET("/dashboard/users", wrap(h.dashUsers))
 	h.router.POST("/dashboard/users", wrap(h.dashUsers))
 	h.router.GET("/dashboard/backup", wrap(h.dashBackup))
 	h.router.GET("/dashboard/replication", wrap(h.dashReplication))
+	h.router.GET("/dashboard/replication/new", wrap(h.dashReplication))
 	h.router.POST("/dashboard/replication", wrap(h.dashReplication))
+	h.router.POST("/dashboard/replication/new", wrap(h.dashReplication))
 	h.router.GET("/dashboard/settings", wrap(h.dashSettings))
 	h.router.POST("/dashboard/settings", wrap(h.dashSettings))
 	h.router.GET("/dashboard/api/databases", wrap(h.dashListDatabases))
@@ -89,8 +92,51 @@ func (h *handler) instancesFor(sess *dashui.Session) []*postgres.Instance {
 			add(h.store.ForApp(sess.AppName))
 		}
 	}
+	for _, inst := range out {
+		h.enrichFromLive(inst)
+	}
 	add(h.instancesFromController(sess))
+	out = h.pruneGoneIsolatedInstances(out)
 	linkFollowerApps(out)
+	return out
+}
+
+func appGone(err error) bool {
+	return err != nil && missingApp(err)
+}
+
+// pruneGoneIsolatedInstances drops in-memory instances whose Flynn app was
+// already deleted (the other API worker handled deprovision). Otherwise the
+// Followers tab keeps showing a replica of a gone primary (upland/basin).
+func (h *handler) pruneGoneIsolatedInstances(insts []*postgres.Instance) []*postgres.Instance {
+	if h == nil || h.client == nil {
+		return insts
+	}
+	return pruneGoneIsolated(h.forgetInstance, func(name string) error {
+		_, err := h.client.GetApp(name)
+		return err
+	}, insts)
+}
+
+func pruneGoneIsolated(forget func(*postgres.Instance), getApp func(string) error, insts []*postgres.Instance) []*postgres.Instance {
+	if getApp == nil {
+		return insts
+	}
+	var out []*postgres.Instance
+	for _, inst := range insts {
+		if inst == nil {
+			continue
+		}
+		if postgres.IsolatedInstanceApp(inst.App) {
+			if err := getApp(inst.App); appGone(err) {
+				if forget != nil {
+					forget(inst)
+				}
+				continue
+			}
+		}
+		out = append(out, inst)
+	}
 	return out
 }
 
@@ -211,6 +257,12 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 		inst.Role = postgres.RolePrimary
 		inst.ReadOnly = false
 		inst.LeaderID = ""
+	} else if strings.EqualFold(role, "deposed") {
+		inst.Role = postgres.RoleDeposed
+		inst.ReadOnly = true
+		if leader != "" {
+			inst.LeaderID = leader
+		}
 	} else if strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
 		inst.Role = postgres.RoleFollower
 		inst.ReadOnly = true
@@ -338,6 +390,26 @@ func mergeDetails(base map[string]string, extra map[string]string) map[string]st
 	return out
 }
 
+func dashNewPanel(r *http.Request) bool {
+	p := strings.TrimSuffix(strings.ToLower(r.URL.Path), "/")
+	return strings.HasSuffix(p, "/new")
+}
+
+func dashRedirectQueryNew(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodPost {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("new")))
+	if v != "1" && v != "true" {
+		return false
+	}
+	if dashNewPanel(r) {
+		return false
+	}
+	http.Redirect(w, r, strings.TrimSuffix(r.URL.Path, "/")+"/new", http.StatusFound)
+	return true
+}
+
 func (h *handler) dashDatabases(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
 	notice := ""
 	if r.Method == http.MethodPost {
@@ -357,13 +429,16 @@ func (h *handler) dashDatabases(w http.ResponseWriter, r *http.Request, sess *da
 			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
 		}
 	}
+	if dashRedirectQueryNew(w, r) {
+		return
+	}
 	insts := h.instancesFor(sess)
 	primaries := dashWritablePrimaries(insts)
 	var b strings.Builder
 	b.WriteString(notice)
 	b.WriteString(`<div class="tab-toolbar is-spread"><p class="hint">Logical databases on this Postgres server (<code>CREATE DATABASE</code>), not a new Flynn resource. Followers copy every database on the primary.</p>`)
 	if len(primaries) > 0 {
-		b.WriteString(`<div class="tab-toolbar-actions"><a class="btn btn-sm" href="databases?new=1">Create database</a></div>`)
+		b.WriteString(`<div class="tab-toolbar-actions"><a class="btn btn-sm" href="databases/new">Create database</a></div>`)
 	}
 	b.WriteString(`</div><div class="card table-card"><table><tr><th>Database</th><th>Instance</th><th>Role</th><th>Host</th></tr>`)
 	rows := 0
@@ -388,7 +463,7 @@ func (h *handler) dashDatabases(w http.ResponseWriter, r *http.Request, sess *da
 		b.WriteString(`<tr><td colspan="4" class="muted">No Postgres instance is attached yet.</td></tr>`)
 	}
 	b.WriteString(`</table></div><p class="muted">Same as <code>flynn pg create &lt;name&gt;</code>. Create new databases on the primary only.</p>`)
-	if r.URL.Query().Get("new") == "1" && len(primaries) > 0 {
+	if dashNewPanel(r) && len(primaries) > 0 {
 		b.WriteString(h.dashCreateDatabasePanel(primaries))
 	}
 	writeDash(w, sess, "Databases", b.String())
@@ -425,7 +500,7 @@ func (h *handler) dashCreateDatabasePanel(primaries []*postgres.Instance) string
 		"A logical database on this Postgres server, not a new Flynn resource.",
 		"databases",
 		"postgres-db-form",
-		"databases",
+		"..",
 		"Create",
 		h.dashCreateDatabaseFields(primaries),
 	)
@@ -817,47 +892,74 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 			notice = `<p class="ok">` + html.EscapeString(msg) + `</p>`
 		}
 	}
+	if dashRedirectQueryNew(w, r) {
+		return
+	}
 	insts := h.instancesFor(sess)
 	var b strings.Builder
 	b.WriteString(notice)
-	b.WriteString(`<div class="tab-toolbar is-spread"><p class="hint">A follower is a separate read-only resource. Adding one always uses <strong>streaming</strong> replication on the same engine version. Wait until lag is zero, then promote it or unfollow to keep a standalone writable copy. Major-version upgrades use logical replication on the primary (<code>flynn pg:upgrade</code>).</p>`)
+	b.WriteString(`<div class="tab-toolbar is-spread"><p class="hint">A follower is a separate read-only resource on another node. Wait until lag is zero, then promote it or unfollow.</p>`)
 	b.WriteString(`<div class="tab-toolbar-actions">`)
-	b.WriteString(h.dashAddFollowerForm(insts))
+	if followable := h.dashFollowablePrimaries(insts); len(followable) > 0 {
+		b.WriteString(`<a class="btn btn-sm" href="replication/new">Add follower</a>`)
+	}
 	if primaries := dashWritablePrimaries(insts); len(primaries) > 0 {
 		b.WriteString(primaryActionForms(instanceRef(primaries[0]), h.store))
 	}
-	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Database</th><th>Role</th><th>Status</th><th>Host</th><th></th></tr>`)
+	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Role</th><th>Follows</th><th>Auto-failover</th><th>Status</th><th>Host</th><th></th></tr>`)
 	rows := 0
 	for _, inst := range insts {
 		view := h.replicationView(inst)
-		if !strings.EqualFold(view.Role, string(postgres.RoleFollower)) {
+		if inst == nil {
 			continue
 		}
-		db := ""
-		if inst != nil && len(inst.Databases) > 0 {
-			db = inst.Databases[0].Name
+		role := view.Role
+		if role == "" {
+			role = string(postgres.RolePrimary)
 		}
-		ref := instanceRef(inst)
-		status := `<span class="muted">Starting…</span>`
-		if h.store != nil {
-			if p, err := h.store.Progress(ref); err == nil {
-				if p.Ready {
-					status = `<span class="muted">` + html.EscapeString(postgres.FormatProgress(p)) + `</span>`
-				} else {
-					status = fmt.Sprintf(`<div class="replica-progress"><progress max="100" value="%d" aria-label="%s"></progress><span class="replica-progress-label">%s</span></div>`,
-						p.Percent, html.EscapeString(p.Message), html.EscapeString(p.Message))
+		follows := ""
+		if strings.EqualFold(role, string(postgres.RoleFollower)) {
+			follows = firstNonEmpty(view.Follows, view.Leader)
+		}
+		auto := "—"
+		if view.AutoFailover {
+			auto = "yes"
+		}
+		if view.ReplicaPending {
+			auto = "replica pending"
+		}
+		status := `<span class="muted">—</span>`
+		if strings.EqualFold(role, string(postgres.RoleFollower)) {
+			status = `<span class="muted">Starting…</span>`
+			ref := instanceRef(inst)
+			if h.store != nil {
+				if p, err := h.store.Progress(ref); err == nil {
+					if p.Ready || p.Available {
+						status = `<span class="muted">` + html.EscapeString(firstNonEmpty(p.Message, postgres.FormatProgress(p))) + `</span>`
+					} else {
+						status = fmt.Sprintf(`<div class="replica-progress"><progress max="100" value="%d" aria-label="%s"></progress><span class="replica-progress-label">%s</span></div>`,
+							p.Percent, html.EscapeString(p.Message), html.EscapeString(p.Message))
+					}
 				}
 			}
 		}
-		fmt.Fprintf(&b, `<tr data-instance="%s"><td><code>%s</code></td><td><code>%s</code></td><td>%s</td><td class="replica-status">%s</td><td><code>%s</code></td><td>%s</td></tr>`,
-			html.EscapeString(ref),
-			html.EscapeString(view.App), html.EscapeString(db), html.EscapeString(view.Role), status, html.EscapeString(dashInstanceHost(inst)), view.Actions)
+		if view.ReplicaPending {
+			status = `<span class="muted">Replica pending: waiting for another node</span>`
+		}
+		fmt.Fprintf(&b, `<tr data-instance="%s"><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td><td class="replica-status">%s</td><td><code>%s</code></td><td>%s</td></tr>`,
+			html.EscapeString(instanceRef(inst)),
+			html.EscapeString(view.App), html.EscapeString(role), html.EscapeString(follows), html.EscapeString(auto), status, html.EscapeString(dashInstanceHost(inst)), view.Actions)
 		rows++
 	}
 	if rows == 0 {
-		b.WriteString(`<tr><td colspan="6" class="muted">This database has no followers yet.</td></tr>`)
+		b.WriteString(`<tr><td colspan="7" class="muted">This database has no instances yet.</td></tr>`)
 	}
 	b.WriteString(`</table></div><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>. Copy progress updates live on this page and on <code>flynn pg:wait</code>.</p>`)
+	if dashNewPanel(r) {
+		if followable := h.dashFollowablePrimaries(insts); len(followable) > 0 {
+			b.WriteString(h.dashAddFollowerPanel(followable))
+		}
+	}
 	b.WriteString(dashProgressScript())
 	writeDash(w, sess, "Followers", b.String())
 }
@@ -951,10 +1053,52 @@ func (h *handler) instanceByRef(sess *dashui.Session, ref string) *postgres.Inst
 			return inst
 		}
 	}
+	if inst := h.instanceFromResourceRef(sess, ref); inst != nil {
+		return inst
+	}
 	if h.store != nil {
 		if inst, err := h.store.Get(ref); err == nil {
 			return inst
 		}
+	}
+	return nil
+}
+
+// instanceFromResourceRef maps a controller resource id onto the isolated
+// instance the store already has (instancesFor dedupes by app name, so the
+// UUID is otherwise dropped).
+func (h *handler) instanceFromResourceRef(sess *dashui.Session, ref string) *postgres.Instance {
+	if h == nil || sess == nil {
+		return nil
+	}
+	app := strings.TrimSpace(sess.AppID)
+	if app == "" {
+		app = strings.TrimSpace(sess.AppName)
+	}
+	if app == "" {
+		return nil
+	}
+	resources, err := h.appResources(app)
+	if err != nil && sess.AppName != "" && sess.AppName != app {
+		resources, err = h.appResources(sess.AppName)
+	}
+	if err != nil {
+		return nil
+	}
+	for _, r := range resources {
+		if !resourceMatchesInstance(r, ref) {
+			continue
+		}
+		inst := instanceFromResource(r, app)
+		if inst == nil {
+			continue
+		}
+		if h.store != nil {
+			if existing, err := h.store.Get(firstNonEmptyLocal(inst.App, inst.ID)); err == nil && existing != nil {
+				return existing
+			}
+		}
+		return inst
 	}
 	return nil
 }
@@ -1034,7 +1178,7 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 	}
 	switch action {
 	case "follow":
-		if err := h.dashFollow(sess, id, r.FormValue("runtime")); err != nil {
+		if err := h.dashFollow(sess, id, r.FormValue("runtime"), r.FormValue("auto_failover") == "1" || r.FormValue("auto_failover") == "on"); err != nil {
 			return "", err
 		}
 		return "Follower started with streaming replication. It is read-only until you promote or unfollow it.", nil
@@ -1048,6 +1192,13 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 				return "", err
 			}
 			h.syncResourceEnv(sess, res.Promoted)
+			if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
+				_ = h.stampIsolatedRole(res.PreviousLeader)
+				_ = h.fenceIsolatedApp(res.PreviousLeader.App)
+				h.syncResourceEnv(sess, res.PreviousLeader)
+				_ = h.ensureAutoFailoverReplica(res.Promoted)
+				return "Follower promoted. It is now the primary. The previous leader is fenced and a replacement replica is created when another node is available.", nil
+			}
 		}
 		return "Follower promoted. It is now the primary. The previous leader remains as its own resource.", nil
 	case "unfollow":
@@ -1068,21 +1219,57 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		}
 		return "Follower lag is zero.", nil
 	default:
-		if _, err := h.store.StartUpgrade(id, h.upgradeOptions("", "")); err != nil {
+		if _, err := h.startUpgrade(id, h.imageRefreshOptions(nil)); err != nil {
 			return "", err
 		}
-		return "Upgrade started. It promotes a new primary on the current plugin image, then recreates each follower against that primary. The old leader stays as its own resource.", nil
+		return "Upgrade started. A follower on the current plugin image is promoted, attachments are rewritten, and the old primary is removed.", nil
 	}
 }
 
-func (h *handler) dashFollow(sess *dashui.Session, leader, runtime string) error {
+func (h *handler) dashFollow(sess *dashui.Session, leader, runtime string, autoFailover bool) error {
 	app := sessApp(sess)
 	appRef := app
 	if sess != nil && sess.AppID != "" {
 		appRef = sess.AppID
 	}
-	_, err := h.provisionFollow(app, appRef, leader, runtime)
+	inst := h.resolveFollowLeader(sess, leader)
+	if inst == nil {
+		return postgres.ErrNotFound
+	}
+	if inst.Role == postgres.RoleFollower {
+		return postgres.ErrFollowFollower
+	}
+	if inst.Role == postgres.RoleDeposed {
+		return fmt.Errorf("cannot add a follower of a deposed primary")
+	}
+	follow := instanceRef(inst)
+	if follow == "" {
+		return postgres.ErrNotFound
+	}
+	_, err := h.provisionFollow(app, appRef, follow, runtime, autoFailover)
 	return err
+}
+
+// resolveFollowLeader maps a dashboard instance field (app name, plugin id, or
+// controller resource id) onto a primary the store can Follow.
+func (h *handler) resolveFollowLeader(sess *dashui.Session, ref string) *postgres.Instance {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	inst := h.instanceByRef(sess, ref)
+	if inst == nil && h.store != nil {
+		inst, _ = h.store.Get(ref)
+	}
+	if inst == nil {
+		return nil
+	}
+	if h.store != nil {
+		if adopted := h.store.Adopt(inst); adopted != nil {
+			inst = adopted
+		}
+	}
+	return inst
 }
 
 func (h *handler) syncResourceEnv(sess *dashui.Session, inst *postgres.Instance) {
@@ -1131,14 +1318,17 @@ func sessApp(sess *dashui.Session) string {
 }
 
 type replicationView struct {
-	App       string
-	Role      string
-	Leader    string
-	Followers []string
-	Lag       int64
-	Runtime   string
-	Mode      string
-	Actions   string
+	App            string
+	Role           string
+	Leader         string
+	Follows        string
+	Followers      []string
+	Lag            int64
+	Runtime        string
+	Mode           string
+	AutoFailover   bool
+	ReplicaPending bool
+	Actions        string
 }
 
 func (h *handler) replicationView(inst *postgres.Instance) replicationView {
@@ -1159,10 +1349,13 @@ func (h *handler) replicationView(inst *postgres.Instance) replicationView {
 		if info, err := h.store.Info(ref); err == nil {
 			v.Role = string(info.Role)
 			v.Leader = info.LeaderID
+			v.Follows = info.Follows
 			v.Followers = info.Followers
 			v.Lag = info.LagBytes
 			v.Runtime = info.Runtime
 			v.Mode = string(info.Mode)
+			v.AutoFailover = info.AutoFailover
+			v.ReplicaPending = info.ReplicaPending
 			if info.App != "" {
 				v.App = info.App
 			}
@@ -1170,7 +1363,7 @@ func (h *handler) replicationView(inst *postgres.Instance) replicationView {
 	}
 	follower := strings.EqualFold(v.Role, string(postgres.RoleFollower))
 	if follower {
-		v.Actions = followerActionForms(ref)
+		v.Actions = followerActionForms(ref, v.AutoFailover)
 		return v
 	}
 	v.Actions = primaryActionForms(ref, h.store)
@@ -1205,15 +1398,19 @@ func primaryActionForms(ref string, store *postgres.Store) string {
 	return `<form method="post" style="margin:0"><input type="hidden" name="action" value="upgrade"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit">Upgrade</button></form>`
 }
 
-func followerActionForms(ref string) string {
+func followerActionForms(ref string, autoFailover bool) string {
 	esc := html.EscapeString(ref)
+	confirm := "Promote this follower to primary? The previous leader stays as its own resource."
+	if autoFailover {
+		confirm = "Promote this auto-failover follower to primary? The previous leader is fenced and a replacement replica is created."
+	}
 	return `<div class="row" style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">` +
-		`<form method="post" style="margin:0"><input type="hidden" name="action" value="promote"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit" onclick="return confirm('Promote this follower to primary? The previous leader stays as its own resource.')">Promote</button></form>` +
+		`<form method="post" style="margin:0"><input type="hidden" name="action" value="promote"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit" onclick="return confirm('` + html.EscapeString(confirm) + `')">Promote</button></form>` +
 		`<form method="post" style="margin:0"><input type="hidden" name="action" value="unfollow"><input type="hidden" name="instance" value="` + esc + `"><button class="danger" type="submit" onclick="return confirm('Stop replication and leave a standalone writable copy?')">Unfollow</button></form>` +
 		`</div>`
 }
 
-func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
+func (h *handler) dashFollowablePrimaries(insts []*postgres.Instance) []*postgres.Instance {
 	var primaries []*postgres.Instance
 	for _, inst := range insts {
 		if inst == nil {
@@ -1225,21 +1422,37 @@ func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
 				role = info.Role
 			}
 		}
-		if role == postgres.RoleFollower {
+		if role == postgres.RoleFollower || role == postgres.RoleDeposed {
 			continue
 		}
 		primaries = append(primaries, inst)
 	}
+	return primaries
+}
+
+func (h *handler) dashAddFollowerPanel(primaries []*postgres.Instance) string {
 	if len(primaries) == 0 {
 		return ""
 	}
+	return dashFormPanel(
+		"postgres-follow-panel",
+		"Add follower",
+		"A separate read-only replica. Choose options, then add it.",
+		"replication",
+		"add-follower-form",
+		"..",
+		"Add follower",
+		dashAddFollowerFields(primaries),
+	)
+}
+
+func dashAddFollowerFields(primaries []*postgres.Instance) string {
 	var b strings.Builder
-	b.WriteString(`<form method="post" style="margin:0">`)
 	b.WriteString(`<input type="hidden" name="action" value="follow">`)
 	if len(primaries) == 1 {
 		fmt.Fprintf(&b, `<input type="hidden" name="instance" value="%s">`, html.EscapeString(instanceRef(primaries[0])))
 	} else {
-		b.WriteString(`<label>Primary<select name="instance">`)
+		b.WriteString(`<label for="follow-primary">Primary</label><select id="follow-primary" name="instance">`)
 		for _, inst := range primaries {
 			ref := instanceRef(inst)
 			label := inst.App
@@ -1248,10 +1461,10 @@ func (h *handler) dashAddFollowerForm(insts []*postgres.Instance) string {
 			}
 			fmt.Fprintf(&b, `<option value="%s">%s</option>`, html.EscapeString(ref), html.EscapeString(label))
 		}
-		b.WriteString(`</select></label>`)
+		b.WriteString(`</select>`)
 	}
-	b.WriteString(`<button class="btn btn-sm" type="submit">Add follower</button>`)
-	b.WriteString(`</form>`)
+	b.WriteString(`<label><input type="checkbox" name="auto_failover" value="1"> Automatic failover</label>`)
+	b.WriteString(`<p class="hint">Place the replica on another host and promote it if the primary job is lost. Needs two or more live nodes. A replacement replica is then created to keep the pair.</p>`)
 	return b.String()
 }
 

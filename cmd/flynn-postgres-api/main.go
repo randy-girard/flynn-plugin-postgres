@@ -63,6 +63,7 @@ func main() {
 	log.Info("listening", "addr", addr, "provider", postgres.ProviderURL())
 	h.autoStartClusterUpgrades()
 	go h.metricsLoop()
+	h.startFailoverWatch()
 	if err := http.Serve(ln, h); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		shutdown.Fatal(err)
 	}
@@ -120,13 +121,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type provisionBody struct {
-	Platform    bool   `json:"platform"`
-	App         string `json:"app"`
-	Tenant      string `json:"tenant"`
-	As          string `json:"as"`
-	Follow      string `json:"follow"`
-	Runtime     string `json:"runtime"`
-	Replication string `json:"replication"`
+	Platform     bool   `json:"platform"`
+	App          string `json:"app"`
+	Tenant       string `json:"tenant"`
+	As           string `json:"as"`
+	Follow       string `json:"follow"`
+	Runtime      string `json:"runtime"`
+	Replication  string `json:"replication"`
+	AutoFailover bool   `json:"auto_failover"`
 }
 
 func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
@@ -140,12 +142,13 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		return
 	}
 	inst, env, err := h.store.Provision(postgres.ProvisionRequest{
-		Tenant:  body.Tenant,
-		App:     body.App,
-		As:      body.As,
-		Follow:  body.Follow,
-		Mode:    postgres.ReplicationMode(body.Replication),
-		Runtime: body.Runtime,
+		Tenant:       body.Tenant,
+		App:          body.App,
+		As:           body.As,
+		Follow:       body.Follow,
+		Mode:         postgres.ReplicationMode(body.Replication),
+		Runtime:      body.Runtime,
+		AutoFailover: body.AutoFailover,
 	})
 	if err != nil {
 		writeAPIError(w, err)
@@ -366,14 +369,15 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request, p httprouter.Para
 
 func (h *handler) follow(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	var body struct {
-		App     string `json:"app"`
-		Runtime string `json:"runtime"`
+		App          string `json:"app"`
+		Runtime      string `json:"runtime"`
+		AutoFailover bool   `json:"auto_failover"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	env, err := h.provisionFollow(strings.TrimSpace(body.App), "", strings.TrimSpace(p.ByName("id")), strings.TrimSpace(body.Runtime))
+	env, err := h.provisionFollow(strings.TrimSpace(body.App), "", strings.TrimSpace(p.ByName("id")), strings.TrimSpace(body.Runtime), body.AutoFailover)
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -383,7 +387,7 @@ func (h *handler) follow(w http.ResponseWriter, r *http.Request, p httprouter.Pa
 
 // provisionFollow creates a streaming replica the same way the dashboard does:
 // controller ProvisionResource so flynn pg / flynn resource list the follower.
-func (h *handler) provisionFollow(appName, appRef, leader, runtime string) (map[string]string, error) {
+func (h *handler) provisionFollow(appName, appRef, leader, runtime string, autoFailover bool) (map[string]string, error) {
 	appName = strings.TrimSpace(appName)
 	leader = strings.TrimSpace(leader)
 	if appName == "" || leader == "" {
@@ -392,16 +396,22 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string) (map[
 	if strings.TrimSpace(appRef) == "" {
 		appRef = appName
 	}
+	if h.store != nil {
+		if inst, err := h.store.Get(leader); err == nil && inst != nil {
+			leader = firstNonEmptyLocal(inst.App, inst.ID, leader)
+		}
+	}
 	if h.client != nil {
 		p, err := h.client.GetProvider("postgres")
 		if err != nil {
 			return nil, err
 		}
 		cfg, err := json.Marshal(provisionBody{
-			App:         appName,
-			Follow:      leader,
-			Runtime:     runtime,
-			Replication: string(postgres.ModeStreaming),
+			App:          appName,
+			Follow:       leader,
+			Runtime:      runtime,
+			Replication:  string(postgres.ModeStreaming),
+			AutoFailover: autoFailover,
 		})
 		if err != nil {
 			return nil, err
@@ -421,10 +431,11 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string) (map[
 		return res.Env, nil
 	}
 	inst, env, err := h.store.Provision(postgres.ProvisionRequest{
-		App:     appName,
-		Follow:  leader,
-		Mode:    postgres.ModeStreaming,
-		Runtime: runtime,
+		App:          appName,
+		Follow:       leader,
+		Mode:         postgres.ModeStreaming,
+		Runtime:      runtime,
+		AutoFailover: autoFailover,
 	})
 	if err != nil {
 		return nil, err
@@ -448,9 +459,24 @@ func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.P
 		return
 	}
 	if res != nil {
+		fromApp, toApp := "", ""
+		if res.PreviousLeader != nil {
+			fromApp = res.PreviousLeader.App
+		}
+		if res.Promoted != nil {
+			toApp = res.Promoted.App
+		}
+		h.emitTopology(postgres.CodePromoted, res.Promoted, fromApp, toApp, "reason=manual")
 		if err := h.stampIsolatedRole(res.Promoted); err != nil {
 			writeAPIError(w, err)
 			return
+		}
+		if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
+			h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=manual")
+			_ = h.stampIsolatedRole(res.PreviousLeader)
+			_ = h.fenceIsolatedApp(res.PreviousLeader.App)
+			h.syncResourceEnv(nil, res.PreviousLeader)
+			_ = h.ensureAutoFailoverReplica(res.Promoted)
 		}
 		h.syncResourceEnv(nil, res.Promoted)
 	}
@@ -552,14 +578,44 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 	delete(env, "POSTGRES_URL")
 	if inst.Role == postgres.RoleFollower {
 		env["POSTGRES_ROLE"] = "follower"
+		leaderApp := ""
+		if leader != nil {
+			leaderApp = strings.TrimSpace(leader.App)
+			if u := strings.TrimSpace(leader.ConnectionURL()); u != "" {
+				env["POSTGRES_PRIMARY_URL"] = u
+			}
+		}
+		if leaderApp == "" && postgres.IsolatedInstanceApp(inst.LeaderID) {
+			leaderApp = strings.TrimSpace(inst.LeaderID)
+		}
+		if leaderApp != "" {
+			env["POSTGRES_LEADER"] = leaderApp
+		}
+		if inst.AutoFailover {
+			env[postgres.EnvAutoFailover] = "true"
+		}
+		return
+	}
+	if inst.Role == postgres.RoleDeposed {
+		env["POSTGRES_ROLE"] = "deposed"
 		if leader != nil && strings.TrimSpace(leader.App) != "" {
 			env["POSTGRES_LEADER"] = leader.App
+		} else if strings.TrimSpace(inst.LeaderID) != "" {
+			env["POSTGRES_LEADER"] = inst.LeaderID
 		}
+		delete(env, "POSTGRES_PRIMARY_URL")
+		delete(env, postgres.EnvAutoFailover)
 		return
 	}
 	env["POSTGRES_ROLE"] = "primary"
 	delete(env, "POSTGRES_LEADER")
 	delete(env, "POSTGRES_PRIMARY_URL")
+	delete(env, postgres.EnvAutoFailover)
+	if inst.ReplicaPending {
+		env["REPLICA_PENDING"] = "true"
+	} else {
+		delete(env, "REPLICA_PENDING")
+	}
 }
 
 func stripTenantPostgresCredentials(env map[string]string) {

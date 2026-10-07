@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,5 +91,149 @@ func TestLiveDiscoverdProgressForPrimary(t *testing.T) {
 	got = liveDiscoverdProgress(inst)
 	if got == nil || !got.Ready || got.Phase != postgres.PhaseReady {
 		t.Fatalf("ready: %+v", got)
+	}
+}
+
+func TestReplicaCopyProgressIgnoresOtherReplicaLag(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	leader := &postgres.Instance{
+		App:         "postgresql-basin-73690",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-basin-73690.discoverd",
+		Role:        postgres.RolePrimary,
+	}
+	fol := &postgres.Instance{
+		App:         "postgresql-ember-50780",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-ember-50780.discoverd",
+		Role:        postgres.RoleFollower,
+		LeaderID:    "postgresql-basin-73690",
+	}
+	runSQL = func(connURL, query string) (string, error) {
+		if strings.Contains(query, "pg_stat_replication") {
+			t.Fatal("must not use another replica's pg_stat_replication row")
+		}
+		if strings.Contains(connURL, "ember") && strings.Contains(query, "pg_is_in_recovery") {
+			return "", errors.New("follower not up")
+		}
+		if strings.Contains(connURL, "basin") && strings.Contains(query, "pg_stat_progress_basebackup") {
+			return "", errors.New("no backup")
+		}
+		return "", errors.New("unexpected " + query)
+	}
+	got := replicaCopyProgress(fol, leader)
+	if got == nil || got.Ready {
+		t.Fatalf("upgrade copy is not ready just because another replica is: %+v", got)
+	}
+	if got.Phase != postgres.PhaseStarting {
+		t.Fatalf("phase %+v", got)
+	}
+}
+
+func TestReplicaCopyProgressNotReadyWhenWritable(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	leader := &postgres.Instance{
+		App:         "postgresql-basin-73690",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-basin-73690.discoverd",
+		Role:        postgres.RolePrimary,
+	}
+	fol := &postgres.Instance{
+		App:         "postgresql-ember-50780",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-ember-50780.discoverd",
+		Role:        postgres.RoleFollower,
+		LeaderID:    leader.App,
+	}
+	runSQL = func(connURL, query string) (string, error) {
+		if strings.Contains(connURL, "ember") && strings.Contains(query, "pg_is_in_recovery") {
+			return "0|0\n", nil
+		}
+		t.Fatalf("unexpected %s %s", connURL, query)
+		return "", nil
+	}
+	got := replicaCopyProgress(fol, leader)
+	if got == nil || got.Ready {
+		t.Fatalf("initdb primary must not look caught up: %+v", got)
+	}
+	if !got.Available {
+		t.Fatalf("writable instance must be available on resource pages: %+v", got)
+	}
+}
+
+func TestReplicaCopyProgressReadyWhenFollowerCaughtUp(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	leader := &postgres.Instance{
+		App:         "postgresql-basin-73690",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-basin-73690.discoverd",
+		Role:        postgres.RolePrimary,
+	}
+	fol := &postgres.Instance{
+		App:         "postgresql-ember-50780",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-ember-50780.discoverd",
+		Role:        postgres.RoleFollower,
+		LeaderID:    leader.App,
+	}
+	runSQL = func(connURL, query string) (string, error) {
+		if strings.Contains(connURL, "ember") && strings.Contains(query, "pg_is_in_recovery") {
+			return "1|100\n", nil
+		}
+		if strings.Contains(connURL, "basin") && strings.Contains(query, "pg_current_wal_lsn") {
+			return "100\n", nil
+		}
+		t.Fatalf("unexpected %s %s", connURL, query)
+		return "", nil
+	}
+	got := replicaCopyProgress(fol, leader)
+	if got == nil || !got.Ready || got.Phase != postgres.PhaseReady {
+		t.Fatalf("caught up: %+v", got)
+	}
+}
+
+func TestReplicaCopyProgressLeaderUnreachable(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	leader := &postgres.Instance{
+		App:         "postgresql-valley-30620",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-valley-30620.discoverd",
+		Role:        postgres.RolePrimary,
+	}
+	fol := &postgres.Instance{
+		App:         "postgresql-fjord-67828",
+		AppUser:     "u",
+		AppPassword: "p",
+		ServiceHost: "leader.postgresql-fjord-67828.discoverd",
+		Role:        postgres.RoleFollower,
+		LeaderID:    leader.App,
+	}
+	runSQL = func(connURL, query string) (string, error) {
+		if strings.Contains(connURL, "fjord") && strings.Contains(query, "pg_is_in_recovery") {
+			return "1|100\n", nil
+		}
+		if strings.Contains(connURL, "valley") {
+			return "", errors.New("could not translate host name")
+		}
+		t.Fatalf("unexpected %s %s", connURL, query)
+		return "", nil
+	}
+	got := replicaCopyProgress(fol, leader)
+	if got == nil || got.Ready || !got.Available {
+		t.Fatalf("orphan replica: %+v", got)
+	}
+	if !strings.Contains(got.Message, "unreachable") || !strings.Contains(got.Message, "postgresql-valley-30620") {
+		t.Fatalf("message %q", got.Message)
 	}
 }

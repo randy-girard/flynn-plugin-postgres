@@ -10,6 +10,7 @@ import (
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
+	ct "github.com/randy-girard/flynn/controller/types"
 )
 
 func TestReportInstanceMetricsDoesNotRaiseIntoServerLog(t *testing.T) {
@@ -61,6 +62,24 @@ func TestCollectPostgresDiagnosticsUsesSQL(t *testing.T) {
 		if strings.Contains(strings.ToUpper(q), "CREATE EXTENSION") {
 			t.Fatalf("metrics must not CREATE EXTENSION as the tenant role: %s", q)
 		}
+	}
+}
+
+func TestCollectPostgresDiagnosticsFailedIsSparse(t *testing.T) {
+	orig := runSQL
+	t.Cleanup(func() { runSQL = orig })
+	runSQL = func(string, string) (string, error) {
+		return "", fmt.Errorf("dial refused")
+	}
+	diag := collectPostgresDiagnostics(&postgres.Instance{ID: "res-1", App: "postgresql-harbor-12345"})
+	if diag.Series["service_available"] != 0 || diag.Series["errors"] != 1 {
+		t.Fatalf("%+v", diag.Series)
+	}
+	if _, ok := diag.Series["db_size_bytes"]; ok {
+		t.Fatalf("failed scrape must not fill gauges: %+v", diag.Series)
+	}
+	if _, ok := diag.Series["max_connections"]; ok {
+		t.Fatalf("failed scrape must not fill gauges: %+v", diag.Series)
 	}
 }
 
@@ -146,6 +165,31 @@ func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
 	}
 	if !gotApp["shop"] || !gotApp["postgresql-harbor-12345"] {
 		t.Fatalf("posted apps=%v", gotApp)
+	}
+}
+
+func TestAllMetricsInstancesDedupByApp(t *testing.T) {
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop", Tenant: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	h.listAllResources = func() ([]*ct.Resource, error) {
+		return []*ct.Resource{{
+			ID: "controller-copy",
+			Env: map[string]string{
+				"FLYNN_POSTGRES": inst.App,
+				"DATABASE_URL":   "postgres://db",
+			},
+		}}, nil
+	}
+	got := h.allMetricsInstances()
+	if len(got) != 1 {
+		t.Fatalf("got %d instances, want 1 (store+controller copies of the same app)", len(got))
+	}
+	if got[0].App != inst.App {
+		t.Fatalf("app=%q want %q", got[0].App, inst.App)
 	}
 }
 

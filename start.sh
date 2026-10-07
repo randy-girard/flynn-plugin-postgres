@@ -40,6 +40,10 @@ grep -q "^unix_socket_directories" "${conf}" || echo "unix_socket_directories = 
 grep -q "^wal_level" "${conf}" || echo "wal_level = replica" >> "${conf}"
 grep -q "^max_wal_senders" "${conf}" || echo "max_wal_senders = 10" >> "${conf}"
 grep -q "^max_replication_slots" "${conf}" || echo "max_replication_slots = 10" >> "${conf}"
+# Image-refresh basebackup jumps WAL by tens of MB, then checkpoints recycle
+# segments. Without a keep size, an existing follower (upland) requests WAL
+# that is already gone: "requested WAL segment ... has already been removed".
+grep -q "^wal_keep_size" "${conf}" || echo "wal_keep_size = '1GB'" >> "${conf}"
 if ! grep -q "0.0.0.0/0" /data/pg_hba.conf; then
   printf '%s\n' "host all all 0.0.0.0/0 md5" "host all all ::/0 md5" >> /data/pg_hba.conf
 fi
@@ -67,6 +71,12 @@ else
 fi
 grep -q "^pg_stat_statements.track" "${conf}" || echo "pg_stat_statements.track = all" >> "${conf}"
 grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max_background_workers = 8" >> "${conf}"
+
+# Follower-swap image refresh stamps POSTGRES_ROLE=primary and bounces this
+# job. pg_basebackup -R left standby.signal, which would keep us read-only.
+if [[ "${POSTGRES_ROLE:-}" == "primary" ]]; then
+  rm -f /data/standby.signal /data/recovery.signal
+fi
 
 if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
   user="${POSTGRES_USER:?POSTGRES_USER is required}"

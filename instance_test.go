@@ -785,3 +785,99 @@ func TestCanDeleteResource(t *testing.T) {
 		t.Fatalf("nil instance: %v", err)
 	}
 }
+
+func TestAutoFailoverFollowRejectedWithoutFollow(t *testing.T) {
+	s := NewStore()
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", AutoFailover: true}); !errors.Is(err, ErrAutoFailoverFollow) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAutoFailoverPromoteDeposesLeaderAndNeedsReplica(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, AutoFailover: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fol.AutoFailover {
+		t.Fatal("follower must record auto-failover")
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID, AutoFailover: true}); !errors.Is(err, ErrAutoFailoverExists) {
+		t.Fatalf("second auto follower: %v", err)
+	}
+	info, err := s.Info(fol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Follows != leader.App || !info.AutoFailover {
+		t.Fatalf("info: %+v", info)
+	}
+	res, err := s.Promote(fol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Promoted.Role != RolePrimary || !res.Promoted.ReplicaPending || res.Promoted.AutoFailover {
+		t.Fatalf("promoted: %+v", res.Promoted)
+	}
+	old, err := s.Get(leader.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Role != RoleDeposed || !old.ReadOnly {
+		t.Fatalf("deposed: %+v", old)
+	}
+	need := s.NeedsReplica()
+	if len(need) != 1 || need[0].ID != fol.ID {
+		t.Fatalf("needs replica: %+v", need)
+	}
+	converted, err := s.ConvertDeposedToFollower(old.ID, fol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converted.Role != RoleFollower || !converted.AutoFailover || converted.LeaderID != fol.ID {
+		t.Fatalf("converted: %+v", converted)
+	}
+	primary, err := s.Get(fol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary.ReplicaPending {
+		t.Fatal("replica pending after convert")
+	}
+}
+
+func TestAdoptLinksFollowerToLeader(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.Adopt(&Instance{
+		ID:       "postgresql-valley-30620",
+		App:      "postgresql-valley-30620",
+		Role:     RoleFollower,
+		LeaderID: leader.App,
+		ReadOnly: true,
+	})
+	if got == nil || got.App != "postgresql-valley-30620" {
+		t.Fatalf("adopt: %+v", got)
+	}
+	names := s.FollowerApps(leader.ID)
+	if len(names) != 1 || names[0] != "postgresql-valley-30620" {
+		t.Fatalf("followers=%v", names)
+	}
+	if err := s.SetAutoFailover(got.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	fol, err := s.Get(got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fol.AutoFailover {
+		t.Fatal("SetAutoFailover(false) must stick")
+	}
+}

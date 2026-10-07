@@ -27,7 +27,10 @@ type ReplicaProgress struct {
 	LagBytes    int64  `json:"lag_bytes,omitempty"`
 	Message     string `json:"message"`
 	Ready       bool   `json:"ready"`
-	Error       string `json:"error,omitempty"`
+	// Available is true when the isolated job is accepting connections.
+	// Wait/promote uses Ready (replica caught up). Resource pages use either.
+	Available bool   `json:"available,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // LiveProgressFunc reads live copy status (pg_stat_progress_basebackup / lag).
@@ -98,6 +101,7 @@ func storedProgress(inst *Instance) ReplicaProgress {
 		p.Phase = PhaseReady
 		p.Percent = 100
 		p.Ready = true
+		p.Available = true
 		p.Message = FormatProgress(p)
 		return p
 	}
@@ -120,6 +124,7 @@ func storedProgress(inst *Instance) ReplicaProgress {
 	p.Phase = PhaseReady
 	p.Percent = 100
 	p.Ready = true
+	p.Available = true
 	p.Message = FormatProgress(p)
 	return p
 }

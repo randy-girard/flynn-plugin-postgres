@@ -221,6 +221,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "exec /bin/flynn-postgres serve") {
 		t.Fatal("the postgres process must stay up under the discoverd supervisor")
 	}
+	if !strings.Contains(src, "POSTGRES_ROLE") || !strings.Contains(src, "standby.signal") {
+		t.Fatal("start.sh must drop standby.signal when POSTGRES_ROLE=primary so follower-swap can promote")
+	}
 	serve, err := os.ReadFile("cmd/flynn-postgres/serve.go")
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +261,9 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "host replication") || !strings.Contains(src, "REPLICATION;") {
 		t.Fatal("primaries must allow streaming replication")
 	}
+	if !strings.Contains(src, "wal_keep_size") {
+		t.Fatal("primaries must keep WAL so a follower-swap basebackup does not recycle segments a live replica still needs")
+	}
 	if !strings.Contains(src, "GRANT pg_monitor") {
 		t.Fatal("tenant role must read replication/basebackup progress")
 	}
@@ -287,7 +293,32 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(liveSrc), "CreateDeployment") || strings.Contains(string(upgSrc), "CreateDeployment") {
-		t.Fatal("postgres plugin must not CreateDeployment on tenant apps during plugin:update")
+		t.Fatal("start/refresh of isolated jobs must not CreateDeployment on tenant apps")
+	}
+	cutoverSrc, err := os.ReadFile("cmd/flynn-postgres-api/cutover_deploy.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cutoverSrc), "DeployAppRelease") {
+		t.Fatal("follower-swap must deploy attached apps with the new URL and wait before dropping the old primary")
+	}
+	if !strings.Contains(string(liveSrc), "imageSwapReplicaExists") {
+		t.Fatal("HA postgres-plugin workers must skip a second swap when a refresh replica already exists")
+	}
+	if !strings.Contains(string(liveSrc), "claimImageSwap") {
+		t.Fatal("HA postgres-plugin workers must claim the primary before starting a second swap")
+	}
+	swapStart := strings.Index(string(liveSrc), "CodeSwapStarted")
+	startUp := strings.Index(string(liveSrc), "h.startUpgrade(inst.ID, h.imageRefreshOptions(inst))")
+	if swapStart < 0 || startUp < 0 || swapStart > startUp {
+		t.Fatal("image refresh must log swap-start on the original instance before StartUpgrade (pg_basebackup/checkpoint)")
+	}
+	progSrc, err := os.ReadFile("cmd/flynn-postgres-api/progress.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(progSrc), "pg_stat_replication LIMIT 1") {
+		t.Fatal("Wait must not treat an existing replica's lag as the upgrade copy being ready")
 	}
 	pkgs, err := os.ReadFile("img/packages.sh")
 	if err != nil {
@@ -311,6 +342,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	if !strings.Contains(src, "ensurePgStatStatements") {
 		t.Fatal("isolated instances must create pg_stat_statements after postgres listens")
 	}
+	if !strings.Contains(src, "ensureWalKeepSize") {
+		t.Fatal("primaries must set wal_keep_size after postgres listens so a running job picks it up without rewriting postgresql.conf first")
+	}
 	if !strings.Contains(src, "template1") {
 		t.Fatal("pg_stat_statements must be created in template1 so new databases inherit it")
 	}
@@ -319,6 +353,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	}
 	if !strings.Contains(src, `"flynn-datastore": "true"`) {
 		t.Fatal("isolated instances must advertise flynn-datastore so user jobs can resolve leader.<name>.discoverd")
+	}
+	if strings.Contains(src, "POSTGRES_SERVICE_ALIAS") {
+		t.Fatal("do not alias the old discoverd name; attached apps deploy onto the new primary URL")
 	}
 }
 

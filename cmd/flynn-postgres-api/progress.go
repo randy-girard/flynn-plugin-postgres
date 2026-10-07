@@ -13,10 +13,9 @@ import (
 )
 
 const (
-	sqlBasebackup     = `SELECT COALESCE(backup_streamed,0), COALESCE(backup_total,0), COALESCE(phase,'') FROM pg_stat_progress_basebackup LIMIT 1`
-	sqlWalBytes       = `SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0'),0)`
-	sqlReplayBytes    = `SELECT pg_is_in_recovery()::int, COALESCE(pg_wal_lsn_diff(COALESCE(pg_last_wal_replay_lsn(), '0/0'), '0/0'),0)`
-	sqlReplicationLag = `SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), COALESCE(replay_lsn, flush_lsn, write_lsn, '0/0')),0), COALESCE(state,'') FROM pg_stat_replication LIMIT 1`
+	sqlBasebackup  = `SELECT COALESCE(backup_streamed,0), COALESCE(backup_total,0), COALESCE(phase,'') FROM pg_stat_progress_basebackup LIMIT 1`
+	sqlWalBytes    = `SELECT COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0'),0)`
+	sqlReplayBytes = `SELECT pg_is_in_recovery()::int, COALESCE(pg_wal_lsn_diff(COALESCE(pg_last_wal_replay_lsn(), '0/0'), '0/0'),0)`
 )
 
 func (h *handler) progress(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
@@ -86,24 +85,66 @@ func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.Replic
 	if inst == nil {
 		return nil, nil
 	}
-	if inst.Role != postgres.RoleFollower {
-		return liveDiscoverdProgress(inst), nil
+	cur := *inst
+	h.enrichFromLive(&cur)
+	if cur.Role != postgres.RoleFollower {
+		return liveDiscoverdProgress(&cur), nil
 	}
-	p := postgres.ReplicaProgress{
-		Follower: firstNonEmpty(inst.App, inst.ID),
-		Leader:   inst.LeaderID,
-		Phase:    postgres.PhaseStarting,
-		Percent:  0,
-	}
-	p.Message = postgres.FormatProgress(p)
 	if !h.live() {
 		return nil, nil
 	}
-	leader, _ := h.store.Get(inst.LeaderID)
-	if leader == nil && inst.LeaderID != "" {
-		leader, _ = h.store.Get(strings.TrimSpace(inst.LeaderID))
+	var leader *postgres.Instance
+	if h.store != nil && cur.LeaderID != "" {
+		leader, _ = h.store.Get(cur.LeaderID)
+		if leader == nil {
+			leader, _ = h.store.Get(strings.TrimSpace(cur.LeaderID))
+		}
 	}
-	if leader != nil {
+	return replicaCopyProgress(&cur, leader), nil
+}
+
+// replicaCopyProgress is whether THIS follower has copied and caught up.
+// Asking the primary for any replica's lag is the wrong signal: an existing
+// replica (upland while swapping meadow) can report lag 0 and Wait promotes
+// an empty initdb.
+func replicaCopyProgress(inst, leader *postgres.Instance) *postgres.ReplicaProgress {
+	p := postgres.ReplicaProgress{
+		Phase:   postgres.PhaseStarting,
+		Percent: 0,
+	}
+	if inst != nil {
+		p.Follower = firstNonEmpty(inst.App, inst.ID)
+		p.Leader = inst.LeaderID
+	}
+	p.Message = postgres.FormatProgress(p)
+	if inst != nil && inst.ConnectionURL() != "" {
+		recovering, replay, ok := queryFollowerReplay(inst.ConnectionURL())
+		if ok {
+			if !recovering {
+				// Accepting writes: promoted, or initdb without standby.
+				// Wait must not treat this as replica-ready (empty initdb).
+				// Resource pages should not stay on "provisioning".
+				p.Available = true
+				p.Percent = 100
+				p.Ready = false
+				p.Message = "running writable (not in recovery)"
+				return &p
+			}
+			if leader == nil || strings.TrimSpace(leader.ConnectionURL()) == "" {
+				return replicaWaitingForPrimary(&p, firstNonEmpty(inst.LeaderID, p.Leader))
+			}
+			wal, wok := queryWalBytes(leader.ConnectionURL())
+			if !wok {
+				return replicaWaitingForPrimary(&p, firstNonEmpty(leader.App, inst.LeaderID, p.Leader))
+			}
+			lag := wal - replay
+			if lag < 0 {
+				lag = 0
+			}
+			return streamingOrReady(&p, lag)
+		}
+	}
+	if leader != nil && leader.ConnectionURL() != "" {
 		if copied, total, phase, ok := queryBasebackup(leader.ConnectionURL()); ok {
 			p.Phase = postgres.PhaseBasebackup
 			p.BytesCopied = copied
@@ -114,32 +155,10 @@ func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.Replic
 			} else {
 				p.Message = postgres.FormatProgress(p)
 			}
-			return &p, nil
-		}
-		if lag, ok := queryPrimaryReplicationLag(leader.ConnectionURL()); ok {
-			return streamingOrReady(&p, lag), nil
+			return &p
 		}
 	}
-	if inst.ConnectionURL() != "" {
-		recovering, replay, ok := queryFollowerReplay(inst.ConnectionURL())
-		if ok {
-			if !recovering {
-				p.Phase = postgres.PhaseReady
-				p.Percent = 100
-				p.Ready = true
-				p.Message = postgres.FormatProgress(p)
-				return &p, nil
-			}
-			lag := replay
-			if leader != nil {
-				if wal, wok := queryWalBytes(leader.ConnectionURL()); wok && wal >= replay {
-					lag = wal - replay
-				}
-			}
-			return streamingOrReady(&p, lag), nil
-		}
-	}
-	return &p, nil
+	return &p
 }
 
 func liveDiscoverdProgress(inst *postgres.Instance) *postgres.ReplicaProgress {
@@ -154,7 +173,25 @@ func liveDiscoverdProgress(inst *postgres.Instance) *postgres.ReplicaProgress {
 		p.Phase = postgres.PhaseReady
 		p.Percent = 100
 		p.Ready = true
+		p.Available = true
 		p.Message = postgres.FormatProgress(*p)
+	}
+	return p
+}
+
+func replicaWaitingForPrimary(p *postgres.ReplicaProgress, leader string) *postgres.ReplicaProgress {
+	if p == nil {
+		p = &postgres.ReplicaProgress{}
+	}
+	p.Phase = postgres.PhaseStreaming
+	p.Percent = 90
+	p.Ready = false
+	p.Available = true
+	leader = strings.TrimSpace(leader)
+	if leader != "" {
+		p.Message = "waiting for primary " + leader + " (unreachable)"
+	} else {
+		p.Message = "waiting for primary (unreachable)"
 	}
 	return p
 }
@@ -168,6 +205,7 @@ func streamingOrReady(p *postgres.ReplicaProgress, lag int64) *postgres.ReplicaP
 		p.Phase = postgres.PhaseReady
 		p.Percent = 100
 		p.Ready = true
+		p.Available = true
 	} else {
 		p.Phase = postgres.PhaseStreaming
 		p.Percent = 95
@@ -227,23 +265,6 @@ func parseBasebackupRow(out string) (copied, total int64, phase string, ok bool)
 		phase = strings.TrimSpace(parts[2])
 	}
 	return copied, total, phase, true
-}
-
-func queryPrimaryReplicationLag(connURL string) (int64, bool) {
-	out, err := runSQL(connURL, sqlReplicationLag)
-	if err != nil {
-		return 0, false
-	}
-	line := firstSQLLine(out)
-	if line == "" {
-		return 0, false
-	}
-	parts := strings.Split(line, "|")
-	lag, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return lag, true
 }
 
 func queryFollowerReplay(connURL string) (recovering bool, replay int64, ok bool) {

@@ -102,3 +102,23 @@ func TestResourceMatchesInstance(t *testing.T) {
 		t.Fatal("matched nil resource")
 	}
 }
+
+func TestCutoverResourceEnvRewritesAttachmentURLs(t *testing.T) {
+	prev := &postgres.Instance{App: "postgresql-basin-73690", ServiceHost: "leader.postgresql-basin-73690.discoverd"}
+	next := &postgres.Instance{App: "postgresql-orchid-80127", ServiceHost: "leader.postgresql-orchid-80127.discoverd", Role: postgres.RolePrimary}
+	res := &ct.Resource{Env: map[string]string{
+		"FLYNN_POSTGRES": prev.App,
+		"DATABASE_URL":   "postgres://u:p@leader.postgresql-basin-73690.discoverd:5432/db?sslmode=require",
+	}}
+	h := newHandler(postgres.NewStore())
+	h.listAllResources = func() ([]*ct.Resource, error) {
+		return []*ct.Resource{res}, nil
+	}
+	h.cutoverResourceEnv(prev, next)
+	if res.Env["FLYNN_POSTGRES"] != next.App {
+		t.Fatalf("FLYNN_POSTGRES=%s", res.Env["FLYNN_POSTGRES"])
+	}
+	if res.Env["DATABASE_URL"] != "postgres://u:p@leader.postgresql-orchid-80127.discoverd:5432/db?sslmode=require" {
+		t.Fatalf("DATABASE_URL=%s", res.Env["DATABASE_URL"])
+	}
+}

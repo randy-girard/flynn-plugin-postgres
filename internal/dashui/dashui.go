@@ -6,8 +6,10 @@ package dashui
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -50,6 +52,21 @@ type MetricEvent struct {
 	Timestamp  time.Time          `json:"timestamp"`
 	JobID      string             `json:"job_id,omitempty"`
 	Series     map[string]float64 `json:"series"`
+}
+
+// FlynnEvent is one flynn-host-shaped row for POST /webhooks/flynn (EventSwimlane).
+type FlynnEvent struct {
+	EventID     string            `json:"event_id"`
+	Timestamp   time.Time         `json:"timestamp"`
+	HostID      string            `json:"host_id"`
+	Code        string            `json:"code"`
+	Description string            `json:"description"`
+	Severity    string            `json:"severity"`
+	JobID       string            `json:"job_id,omitempty"`
+	AppID       string            `json:"app_id"`
+	ProcessType string            `json:"process_type,omitempty"`
+	ReleaseID   string            `json:"release_id,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 // FromRequest authenticates a dashboard SSO JWT or optional dev headers.
@@ -394,6 +411,7 @@ input, textarea, select {
   width: 100%%; max-width: 40rem; font: inherit; color: var(--color-text);
   background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; padding: .45rem .6rem;
 }
+input[type="checkbox"] { width: auto; max-width: none; display: inline-block; }
 button, .btn {
   font: inherit; font-weight: 600; font-size: .875rem; padding: .45rem .9rem; border-radius: 4px; cursor: pointer;
   background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-border); box-shadow: var(--shadow-sm);
@@ -596,5 +614,64 @@ func PostMetrics(ev MetricEvent) {
 	res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		fmt.Fprintf(os.Stderr, "dashui: PostMetrics %s: HTTP %d\n", url, res.StatusCode)
+	}
+}
+
+func eventsURL() string {
+	if u := strings.TrimSpace(os.Getenv("DASHBOARD_EVENTS_URL")); u != "" {
+		return u
+	}
+	m := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_URL"))
+	if strings.Contains(m, "plugin-metrics") {
+		return strings.Replace(m, "plugin-metrics", "flynn", 1)
+	}
+	return "http://dashboard.discoverd/webhooks/flynn"
+}
+
+func newEventID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// PostFlynnEvent best-effort posts a topology/job event to POST /webhooks/flynn.
+func PostFlynnEvent(ev FlynnEvent) {
+	if strings.TrimSpace(ev.AppID) == "" || strings.TrimSpace(ev.Code) == "" {
+		return
+	}
+	if strings.TrimSpace(ev.EventID) == "" {
+		ev.EventID = newEventID()
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	if strings.TrimSpace(ev.HostID) == "" {
+		ev.HostID = "plugin"
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostFlynnEvent marshal: %v\n", err)
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, eventsURL(), strings.NewReader(string(raw)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostFlynnEvent request: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if s := webhookSecret(); s != "" {
+		req.Header.Set("X-Flynn-Webhook-Secret", s)
+	}
+	res, err := metricsHTTPClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashui: PostFlynnEvent %s: %v\n", eventsURL(), err)
+		return
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		fmt.Fprintf(os.Stderr, "dashui: PostFlynnEvent %s: HTTP %d\n", eventsURL(), res.StatusCode)
 	}
 }

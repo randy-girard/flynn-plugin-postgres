@@ -152,6 +152,34 @@ func TestPostMetricsNoPanic(t *testing.T) {
 	PostMetrics(MetricEvent{AppID: "demo", Plugin: "example", Series: map[string]float64{"x": 1}})
 }
 
+func TestPostFlynnEventPostsHostShapedBody(t *testing.T) {
+	var got FlynnEvent
+	var secret string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secret = r.Header.Get("X-Flynn-Webhook-Secret")
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(ts.Close)
+	t.Setenv("DASHBOARD_EVENTS_URL", ts.URL)
+	t.Setenv("WEBHOOK_INGEST_SECRET", "from-dashboard")
+	t.Setenv("DASHBOARD_METRICS_SECRET", "")
+	PostFlynnEvent(FlynnEvent{
+		Code:        "P13",
+		AppID:       "app-uuid",
+		HostID:      "node-a",
+		Description: "Auto-failover",
+		Severity:    "warning",
+		ProcessType: "postgres",
+	})
+	if secret != "from-dashboard" {
+		t.Fatalf("secret %q", secret)
+	}
+	if got.Code != "P13" || got.AppID != "app-uuid" || got.HostID != "node-a" || got.EventID == "" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestPostMetricsUsesWebhookIngestSecret(t *testing.T) {
 	var got string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

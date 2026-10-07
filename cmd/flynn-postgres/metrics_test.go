@@ -44,3 +44,17 @@ func TestEmitInstanceMetricLineWritesResourceSample(t *testing.T) {
 		t.Fatalf("must print a clean sample line, not plpgsql noise: %q", got)
 	}
 }
+
+func TestLogInstanceTopologyWritesFlynnLine(t *testing.T) {
+	t.Setenv("FLYNN_POSTGRES", "postgresql-upland-22935")
+	t.Setenv("POSTGRES_ROLE", "follower")
+	t.Setenv("POSTGRES_LEADER", "postgresql-basin-73690")
+	origLog := instanceMetricsLog
+	t.Cleanup(func() { instanceMetricsLog = origLog })
+	var got string
+	instanceMetricsLog = func(line string) { got = line }
+	logInstanceTopology()
+	if got != "flynn-postgres source=postgresql-upland-22935 event#follower role=follower leader=postgresql-basin-73690" {
+		t.Fatalf("got %q", got)
+	}
+}

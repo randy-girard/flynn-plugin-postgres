@@ -131,6 +131,54 @@ func TestUpgradeWaitsForLag(t *testing.T) {
 	}
 }
 
+func TestUpgradeAfterPromoteAndDropPrevious(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldApp := leader.App
+	var promotedID string
+	res, err := s.Upgrade(context.Background(), leader.ID, UpgradeOptions{
+		Mode: ModeStreaming,
+		AfterPromote: func(p *PromoteResult) error {
+			if p == nil || p.Promoted == nil || p.PreviousLeader == nil {
+				t.Fatalf("promote result: %+v", p)
+			}
+			promotedID = p.Promoted.ID
+			if p.PreviousLeader.Role != RoleDeposed {
+				t.Fatalf("drop-previous must depose old primary: %+v", p.PreviousLeader)
+			}
+			return nil
+		},
+		AfterDrop: func(old *Instance) error {
+			if old == nil || old.App != oldApp {
+				t.Fatalf("drop %v want %s", old, oldApp)
+			}
+			return nil
+		},
+		DropPrevious: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Promoted == nil || res.Promoted.ID != promotedID {
+		t.Fatalf("promoted %+v", res.Promoted)
+	}
+	if _, err := s.Get(leader.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old primary still in store: %v", err)
+	}
+	found := false
+	for _, app := range res.Dropped {
+		if app == oldApp {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("dropped=%v want %s", res.Dropped, oldApp)
+	}
+}
+
 func TestUpgradeRecreatesFollowersOnNewPrimary(t *testing.T) {
 	s := NewStore()
 	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
@@ -178,5 +226,81 @@ func TestUpgradeRecreatesFollowersOnNewPrimary(t *testing.T) {
 	names := s.FollowerApps(res.Promoted.ID)
 	if len(names) != 1 || names[0] != got.New.App {
 		t.Fatalf("new primary followers=%v", names)
+	}
+}
+
+func TestUpgradeAfterReplaceRewritesThenDropsOldFollower(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldFol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replacedOld, replacedNew string
+	dropped := []string{}
+	res, err := s.Upgrade(context.Background(), leader.ID, UpgradeOptions{
+		AfterReplace: func(old, nf *Instance) error {
+			replacedOld, replacedNew = old.ID, nf.ID
+			return nil
+		},
+		AfterDrop: func(old *Instance) error {
+			dropped = append(dropped, old.ID)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacedOld != oldFol.ID || replacedNew == "" || replacedNew == oldFol.ID {
+		t.Fatalf("replace old=%s new=%s want old %s", replacedOld, replacedNew, oldFol.ID)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("AfterReplace must own the old follower drop: %v", dropped)
+	}
+	if len(res.ReplacedFollowers) != 1 || res.ReplacedFollowers[0].New.ID != replacedNew {
+		t.Fatalf("replaced=%+v", res.ReplacedFollowers)
+	}
+	if _, err := s.Get(oldFol.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old follower still in store: %v", err)
+	}
+}
+
+func TestUpgradeReplacesAdoptedLiveFollower(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := &Instance{
+		ID:           "postgresql-valley-30620",
+		App:          "postgresql-valley-30620",
+		Role:         RoleFollower,
+		LeaderID:     leader.App,
+		AutoFailover: true,
+		ReadOnly:     true,
+		Mode:         ModeStreaming,
+	}
+	if got := s.Adopt(live); got == nil || got.App != live.App {
+		t.Fatalf("adopt: %+v", got)
+	}
+	res, err := s.Upgrade(context.Background(), leader.ID, UpgradeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ReplacedFollowers) != 1 {
+		t.Fatalf("replaced=%d %+v", len(res.ReplacedFollowers), res.ReplacedFollowers)
+	}
+	got := res.ReplacedFollowers[0]
+	if got.Old.App != live.App || got.New == nil || got.New.LeaderID != res.Promoted.ID {
+		t.Fatalf("replace: %+v promoted=%s", got, res.Promoted.ID)
+	}
+	if _, err := s.Get(live.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old live follower still in store: %v", err)
+	}
+	if !got.New.AutoFailover {
+		t.Fatal("replacement must keep auto-failover")
 	}
 }

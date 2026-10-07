@@ -44,6 +44,7 @@ func servePostgres() error {
 	}
 	postgres.LogEngineVersion(os.Stderr)
 	ensurePgStatStatements(bin)
+	ensureWalKeepSize()
 	if _, err := os.Stat("/data/standby.signal"); err != nil && os.Getenv("POSTGRES_PRIMARY_URL") == "" {
 		if err := ensureConnectIsolation(bin); err != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -66,6 +67,7 @@ func servePostgres() error {
 	shutdown.BeforeExit(func() { hb.Close() })
 
 	go runInstanceMetrics()
+	logInstanceTopology()
 	return <-exited
 }
 
@@ -89,6 +91,29 @@ func emitInstanceMetricLine() {
 	series := collectInstanceSeries()
 	source, addon := postgres.InstanceMetricIDs()
 	instanceMetricsLog(postgres.FormatFlynnPostgresLine(source, addon, series))
+}
+
+func logInstanceTopology() {
+	source, _ := postgres.InstanceMetricIDs()
+	role := strings.ToLower(strings.TrimSpace(os.Getenv("POSTGRES_ROLE")))
+	leader := strings.TrimSpace(os.Getenv("POSTGRES_LEADER"))
+	event := "primary"
+	msg := "role=primary"
+	switch role {
+	case "follower":
+		event = "follower"
+		msg = "role=follower"
+		if leader != "" {
+			msg += " leader=" + leader
+		}
+	case "deposed":
+		event = "deposed"
+		msg = "role=deposed"
+		if leader != "" {
+			msg += " leader=" + leader
+		}
+	}
+	instanceMetricsLog(postgres.FormatTopologyLine(source, event, msg))
 }
 
 func collectInstanceSeries() map[string]float64 {
@@ -149,6 +174,15 @@ func localPsql(query string) (string, error) {
 		return "", fmt.Errorf("psql: %s: %s", err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+func ensureWalKeepSize() {
+	if _, err := os.Stat("/data/standby.signal"); err == nil {
+		return
+	}
+	// Own statements: ALTER SYSTEM cannot run in a multi-command transaction.
+	_, _ = localPsql("ALTER SYSTEM SET wal_keep_size = '1GB'")
+	_, _ = localPsql("SELECT pg_reload_conf()")
 }
 
 func ensurePgStatStatements(postgresBin string) {

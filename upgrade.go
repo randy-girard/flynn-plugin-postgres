@@ -40,11 +40,19 @@ type Task struct {
 // UpgradeOptions selects replication mode and optional hooks after a follower
 // resource exists (live clusters start the isolated job) or an old follower is dropped.
 type UpgradeOptions struct {
-	Mode        ReplicationMode
-	Runtime     string
-	Timeout     time.Duration
-	AfterFollow func(*Instance) error
-	AfterDrop   func(*Instance) error
+	Mode         ReplicationMode
+	Runtime      string
+	Timeout      time.Duration
+	AfterFollow  func(*Instance) error
+	AfterPromote func(*PromoteResult) error
+	AfterDrop    func(*Instance) error
+	// AfterReplace rewrites tenant attachments from an old follower onto the
+	// new replica, then drops the old isolated app. If nil, AfterDrop is used.
+	AfterReplace func(old, nf *Instance) error
+	// DropPrevious deletes the old primary after the new one is serving and
+	// attachments have been rewritten. Image refresh uses this so plugin:update
+	// does not leave two writables. Engine upgrades leave the old app scaled to 0.
+	DropPrevious bool
 }
 
 // FollowerReplace is one old follower recreated against the new primary.
@@ -341,17 +349,30 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		return nil, err
 	}
 	newPrimary := promo.Promoted
+	if opts.DropPrevious && promo.PreviousLeader != nil {
+		s.mu.Lock()
+		if old := s.lookupLocked(promo.PreviousLeader.ID); old != nil {
+			old.Role = RoleDeposed
+			old.ReadOnly = true
+			old.LeaderID = newPrimary.ID
+			promo.PreviousLeader = old.snapshot()
+		}
+		s.mu.Unlock()
+	}
+	if opts.AfterPromote != nil {
+		if err := opts.AfterPromote(promo); err != nil {
+			return nil, err
+		}
+	}
 	res := &UpgradeResult{
 		Follower:       fol,
 		Promoted:       newPrimary,
 		PreviousLeader: promo.PreviousLeader,
 		Rewritten:      promo.Rewritten,
 	}
-	if len(oldFollowers) == 0 {
-		s.markUpgrade(leaderID, TaskDone, "", fol.ID)
-		return res, nil
+	if len(oldFollowers) > 0 {
+		s.markUpgrade(leaderID, TaskReplacingFollowers, "", fol.ID)
 	}
-	s.markUpgrade(leaderID, TaskReplacingFollowers, "", fol.ID)
 	for _, oldID := range oldFollowers {
 		old, err := s.Get(oldID)
 		if err != nil {
@@ -361,10 +382,18 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		if runtime != "" {
 			followRuntime = runtime
 		}
+		auto := old.AutoFailover
+		s.mu.Lock()
+		if cur := s.lookupLocked(oldID); cur != nil {
+			cur.AutoFailover = false
+		}
+		s.mu.Unlock()
 		nf, _, err := s.Provision(ProvisionRequest{
-			Follow:  newPrimary.ID,
-			Mode:    ModeStreaming,
-			Runtime: followRuntime,
+			Follow:       newPrimary.ID,
+			Mode:         ModeStreaming,
+			Runtime:      followRuntime,
+			AutoFailover: auto,
+			Tenant:       old.Tenant,
 		})
 		if err != nil {
 			return nil, err
@@ -377,7 +406,11 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		if err := s.Wait(ctx, nf.ID); err != nil {
 			return nil, err
 		}
-		if opts.AfterDrop != nil {
+		if opts.AfterReplace != nil {
+			if err := opts.AfterReplace(old, nf); err != nil {
+				return nil, err
+			}
+		} else if opts.AfterDrop != nil {
 			if err := opts.AfterDrop(old); err != nil {
 				return nil, err
 			}
@@ -385,6 +418,15 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		s.Forget(old.ID)
 		res.ReplacedFollowers = append(res.ReplacedFollowers, FollowerReplace{Old: old, New: nf})
 		res.Dropped = append(res.Dropped, old.App)
+	}
+	if opts.DropPrevious && promo.PreviousLeader != nil {
+		if opts.AfterDrop != nil {
+			if err := opts.AfterDrop(promo.PreviousLeader); err != nil {
+				return nil, err
+			}
+		}
+		s.Forget(promo.PreviousLeader.ID)
+		res.Dropped = append(res.Dropped, promo.PreviousLeader.App)
 	}
 	s.markUpgrade(leaderID, TaskDone, "", fol.ID)
 	return res, nil

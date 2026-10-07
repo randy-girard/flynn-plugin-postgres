@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
@@ -142,6 +143,77 @@ func (h *handler) resolveReleaseEnv(id string) map[string]string {
 		return nil
 	}
 	return rel.Env
+}
+
+func (h *handler) cutoverResourceEnv(previous, promoted *postgres.Instance) {
+	_ = h.cutoverAttachedApps(previous, promoted)
+}
+
+func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) error {
+	if h == nil || promoted == nil || strings.TrimSpace(promoted.App) == "" {
+		return nil
+	}
+	var list []*ct.Resource
+	var err error
+	if h.listAllResources != nil {
+		list, err = h.listAllResources()
+	} else if h.client != nil {
+		list, err = h.client.ResourceListAll()
+	}
+	if err != nil {
+		return err
+	}
+	refs := []string{promoted.App, promoted.ID}
+	if previous != nil {
+		refs = append(refs, previous.App, previous.ID)
+	}
+	seen := map[string]bool{}
+	matched := 0
+	for _, r := range list {
+		if r == nil || r.Env == nil {
+			continue
+		}
+		match := false
+		for _, ref := range refs {
+			if resourceMatchesInstance(r, ref) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		matched++
+		postgres.RewriteAttachmentEnv(r.Env, previous, promoted)
+		var leader *postgres.Instance
+		if promoted.Role == postgres.RoleFollower && h.store != nil && promoted.LeaderID != "" {
+			leader, _ = h.store.Get(promoted.LeaderID)
+		}
+		applyPostgresResourceEnv(promoted, r.Env, leader)
+		stripTenantPostgresCredentials(r.Env)
+		if h.client != nil {
+			if err := h.client.PutResource(r); err != nil {
+				return fmt.Errorf("put resource %s: %w", r.ID, err)
+			}
+		}
+		for _, appID := range resourceAppIDs(r) {
+			if seen[appID] {
+				continue
+			}
+			seen[appID] = true
+			if err := deployTenantPostgresEnv(h.client, appID, previous, promoted); err != nil {
+				return err
+			}
+		}
+	}
+	if h.log != nil {
+		prev := ""
+		if previous != nil {
+			prev = previous.App
+		}
+		h.log.Info("cutover attached apps", "previous", prev, "promoted", promoted.App, "matched", matched, "deployed", len(seen))
+	}
+	return nil
 }
 
 func (h *handler) hydrateInstanceAttachments(inst *postgres.Instance, r *ct.Resource) {

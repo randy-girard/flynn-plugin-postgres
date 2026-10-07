@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,46 @@ import (
 	"github.com/randy-girard/flynn-plugin-postgres"
 	ct "github.com/randy-girard/flynn/controller/types"
 )
+
+func TestPruneGoneIsolatedDropsFollowerOfDeletedPrimary(t *testing.T) {
+	s := postgres.NewStore()
+	upland := s.Adopt(&postgres.Instance{
+		ID:       "postgresql-upland-22935",
+		App:      "postgresql-upland-22935",
+		Role:     postgres.RoleFollower,
+		LeaderID: "postgresql-basin-73690",
+		Tenant:   "app-one",
+		ReadOnly: true,
+	})
+	if upland == nil {
+		t.Fatal("adopt")
+	}
+	concave := s.Adopt(&postgres.Instance{
+		ID:     "postgresql-concave-78237",
+		App:    "postgresql-concave-78237",
+		Role:   postgres.RolePrimary,
+		Tenant: "app-one",
+	})
+	forgotten := []string{}
+	got := pruneGoneIsolated(func(inst *postgres.Instance) {
+		forgotten = append(forgotten, inst.App)
+		s.Forget(inst.ID)
+	}, func(name string) error {
+		if name == "postgresql-upland-22935" || name == "postgresql-basin-73690" {
+			return errors.New("controller: not found")
+		}
+		return nil
+	}, []*postgres.Instance{upland, concave})
+	if len(got) != 1 || got[0].App != "postgresql-concave-78237" {
+		t.Fatalf("kept %+v", got)
+	}
+	if len(forgotten) != 1 || forgotten[0] != "postgresql-upland-22935" {
+		t.Fatalf("forgotten %v", forgotten)
+	}
+	if _, err := s.Get("postgresql-upland-22935"); !errors.Is(err, postgres.ErrNotFound) {
+		t.Fatalf("ghost still in store: %v", err)
+	}
+}
 
 func TestDashboardHidesOtherTenants(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
@@ -245,6 +286,109 @@ func TestDashReplicationUpgradeButton(t *testing.T) {
 	}
 }
 
+func TestDashFollowAdoptsLeaderMissingFromStore(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, id, role := leader.App, leader.ID, leader.Role
+	store.Forget(leader.ID)
+	store.LoadMissing = func(idOrApp string) *postgres.Instance {
+		if idOrApp == app || idOrApp == id {
+			return &postgres.Instance{ID: id, App: app, Role: role, Tenant: "shop-a"}
+		}
+		return nil
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=follow&instance=" + app)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Follower started") {
+		t.Fatalf("json: %s", rec.Body.String())
+	}
+}
+
+func TestDashFollowResolvesControllerResourceID(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	h.listResources = func(app string) ([]*ct.Resource, error) {
+		return []*ct.Resource{{
+			ID:         "controller-res-uuid",
+			ProviderID: "postgres",
+			Env: map[string]string{
+				"FLYNN_POSTGRES": leader.App,
+				"POSTGRES_ROLE":  "primary",
+			},
+		}}, nil
+	}
+	form := strings.NewReader("action=follow&instance=controller-res-uuid")
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication/new", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Follower started") {
+		t.Fatalf("json: %s", rec.Body.String())
+	}
+	followers := 0
+	for _, inst := range store.ForApp("shop-a") {
+		if inst.Role != postgres.RoleFollower {
+			continue
+		}
+		followers++
+		if inst.LeaderID != leader.ID && inst.LeaderID != leader.App {
+			t.Fatalf("follower leader %q want %q or %q", inst.LeaderID, leader.ID, leader.App)
+		}
+	}
+	if followers != 1 {
+		t.Fatalf("followers %d", followers)
+	}
+}
+
+func TestDashFollowRejectsDeposedPrimary(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	deposed := store.Adopt(&postgres.Instance{
+		ID:       "postgresql-basin-11111",
+		App:      "postgresql-basin-11111",
+		Role:     postgres.RoleDeposed,
+		Tenant:   "shop-a",
+		ReadOnly: true,
+	})
+	if deposed == nil {
+		t.Fatal("adopt")
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=follow&instance=" + deposed.App)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code == 200 || !strings.Contains(rec.Body.String(), "deposed") {
+		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDashReplicationJSONFollow(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	store := postgres.NewStore()
@@ -428,14 +572,14 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, `href="databases?new=1"`) {
+	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, `href="databases/new"`) {
 		t.Fatalf("create database should live in the tab toolbar: %s", body)
 	}
 	if !strings.Contains(body, `class="card table-card"`) || !strings.Contains(body, "<th>Database</th>") {
 		t.Fatalf("databases should list in a table card: %s", body)
 	}
 	if strings.Contains(body, `id="postgres-db-panel"`) {
-		t.Fatalf("create panel should stay closed until ?new=1: %s", body)
+		t.Fatalf("create panel should stay closed until /databases/new: %s", body)
 	}
 	idxToolbar := strings.Index(body, `class="tab-toolbar is-spread"`)
 	idxTable := strings.Index(body, `class="card table-card"`)
@@ -444,7 +588,7 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 		t.Fatalf("Create database must appear in the toolbar, not the table card: %s", body)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases?new=1", nil)
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases/new", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -454,6 +598,14 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 	panel := rec.Body.String()
 	if !strings.Contains(panel, `id="postgres-db-panel"`) || !strings.Contains(panel, `role="dialog"`) || !strings.Contains(panel, `id="logical-db-name"`) {
 		t.Fatalf("create panel: %s", panel)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases?new=1", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/databases/new" {
+		t.Fatalf("query new should redirect to /databases/new: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 }
 
@@ -472,24 +624,50 @@ func TestDashFollowersListIsTable(t *testing.T) {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, "Add follower") {
+	if !strings.Contains(body, `class="tab-toolbar is-spread"`) || !strings.Contains(body, `href="replication/new"`) {
 		t.Fatalf("add follower should live in the tab toolbar: %s", body)
+	}
+	if strings.Contains(body, `name="auto_failover"`) || strings.Contains(body, `id="postgres-follow-panel"`) {
+		t.Fatalf("follower options should stay in the side panel until /replication/new: %s", body)
 	}
 	if !strings.Contains(body, `class="card table-card"`) {
 		t.Fatalf("followers should list in a table card: %s", body)
 	}
-	for _, col := range []string{"<th>Instance</th>", "<th>Database</th>", "<th>Role</th>", "<th>Host</th>"} {
+	for _, col := range []string{"<th>Instance</th>", "<th>Role</th>", "<th>Follows</th>", "<th>Auto-failover</th>", "<th>Host</th>"} {
 		if !strings.Contains(body, col) {
 			t.Fatalf("missing %s in %s", col, body)
 		}
 	}
-	if !strings.Contains(body, "This database has no followers yet.") {
-		t.Fatalf("empty followers row: %s", body)
+	if !strings.Contains(body, ">primary<") {
+		t.Fatalf("primary row: %s", body)
 	}
 	idxToolbar := strings.Index(body, "Add follower")
 	idxTable := strings.Index(body, `class="card table-card"`)
 	if idxToolbar < 0 || idxTable < 0 || idxToolbar > idxTable {
 		t.Fatalf("Add follower must appear in the toolbar, not the table card: %s", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/replication/new", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("panel status %d %s", rec.Code, rec.Body.String())
+	}
+	panel := rec.Body.String()
+	if !strings.Contains(panel, `id="postgres-follow-panel"`) || !strings.Contains(panel, `role="dialog"`) || !strings.Contains(panel, `name="auto_failover"`) {
+		t.Fatalf("add follower panel: %s", panel)
+	}
+	if !strings.Contains(panel, `action=".."`) {
+		t.Fatalf("panel on /replication/new must POST to the parent /replication route: %s", panel)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/replication?new=1", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/replication/new" {
+		t.Fatalf("query new should redirect to /replication/new: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 }
 
