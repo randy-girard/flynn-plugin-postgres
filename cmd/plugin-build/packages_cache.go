@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +36,34 @@ func packagesCacheDisabled() bool {
 	default:
 		return false
 	}
+}
+
+// fetchEngineTarballs runs img/fetch-engine.sh before the packages cache key
+// is hashed so vendored engine tarballs are part of the reuse decision.
+func fetchEngineTarballs(repo string, plugin *pluginManifest) error {
+	if plugin == nil || plugin.Build.Packages == "" {
+		return nil
+	}
+	script := filepath.Join(repo, filepath.Dir(plugin.Build.Packages), "fetch-engine.sh")
+	st, err := os.Stat(script)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("%s is a directory", script)
+	}
+	fmt.Fprintf(os.Stderr, "==> fetch engine tarballs\n")
+	cmd := exec.Command("bash", script)
+	cmd.Dir = repo
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%s: %w", script, err)
+	}
+	return nil
 }
 
 func packagesCacheID(repo string, plugin *pluginManifest, base *resolvedBase) (string, error) {
@@ -165,7 +194,7 @@ func hashNamedTree(h io.Writer, label, dir string) error {
 		if info.IsDir() {
 			return nil
 		}
-		if info.Name() == ".DS_Store" {
+		if info.Name() == ".DS_Store" || strings.HasSuffix(info.Name(), ".partial") {
 			return nil
 		}
 		files = append(files, path)

@@ -1,3 +1,5 @@
+img/*.partial
+img/vendor/
 dist/
 *.squashfs
 .DS_Store

@@ -46,6 +46,9 @@ func buildPluginLayers(repo, outDir string, plugin *pluginManifest, base *resolv
 }
 
 func buildOrReusePackagesLayer(repo, outDir string, plugin *pluginManifest, base *resolvedBase) (*ct.ImageLayer, string, error) {
+	if err := fetchEngineTarballs(repo, plugin); err != nil {
+		return nil, "", err
+	}
 	id, err := packagesCacheID(repo, plugin, base)
 	if err != nil {
 		return nil, "", err
@@ -81,8 +84,10 @@ func buildPackagesLayer(repo, outDir string, plugin *pluginManifest, base *resol
 	}()
 
 	// Overlay cannot nest on Docker's overlay rootfs ("wrong fs type").
-	// Keep lower/upper/work on tmpfs.
-	if err := sudoCommand("mount", "-t", "tmpfs", "-o", "size=6G", "tmpfs", root).Run(); err != nil {
+	// Keep lower/upper/work on tmpfs. Postgres+PostGIS+Timescale compile needs
+	// more than the 6G default used by smaller plugins.
+	tmpfsSize := overlayPackagesTmpfs()
+	if err := sudoCommand("mount", "-t", "tmpfs", "-o", "size="+tmpfsSize, "tmpfs", root).Run(); err != nil {
 		if err := sudoCommand("mount", "-t", "tmpfs", "tmpfs", root).Run(); err != nil {
 			return nil, "", fmt.Errorf("tmpfs for overlay workspace: %w", err)
 		}
@@ -168,6 +173,15 @@ func installLayerFile(tmpLayer, outDir string) (*ct.ImageLayer, error) {
 	return layer, nil
 }
 
+const overlayPackagesTmpfsDefault = "10G"
+
+func overlayPackagesTmpfs() string {
+	if s := strings.TrimSpace(os.Getenv("PLUGIN_BUILD_OVERLAY_TMPFS")); s != "" {
+		return s
+	}
+	return overlayPackagesTmpfsDefault
+}
+
 func hostGoarch() (string, error) {
 	if env := strings.TrimSpace(os.Getenv("PLUGIN_GOARCH")); env != "" {
 		if !supportedGoarch(env) {
@@ -196,6 +210,18 @@ func overlayChroot(repo, lower, upper, work, merged string, plugin *pluginManife
 
 	setup := plugin.Build.Setup
 	packages := plugin.Build.Packages
+	aptArchives, aptLists := aptCacheDirs()
+	if aptArchives != "" {
+		fmt.Fprintf(os.Stderr, "==> apt cache %s\n", aptArchives)
+		if err := os.MkdirAll(filepath.Join(aptArchives, "partial"), 0777); err != nil {
+			return err
+		}
+		if aptLists != "" {
+			if err := os.MkdirAll(filepath.Join(aptLists, "partial"), 0777); err != nil {
+				return err
+			}
+		}
+	}
 	body := fmt.Sprintf(`#!/bin/bash
 set -euo pipefail
 LOWER=%q
@@ -205,8 +231,12 @@ MERGED=%q
 REPO=%q
 SETUP=%q
 PACKAGES=%q
+APT_ARCHIVES=%q
+APT_LISTS=%q
 
 cleanup() {
+  umount "${MERGED}/var/cache/apt/archives" 2>/dev/null || true
+  umount "${MERGED}/var/lib/apt/lists" 2>/dev/null || true
   umount "${MERGED}/proc" 2>/dev/null || true
   for d in null zero random urandom tty; do
     umount "${MERGED}/dev/${d}" 2>/dev/null || true
@@ -233,6 +263,28 @@ for d in null zero random urandom tty; do
   fi
 done
 
+# IPv6 to ports.ubuntu.com often stalls at "Connecting"; cap waits so a miss
+# fails instead of hanging the overlay.
+install -d "${MERGED}/etc/apt/apt.conf.d"
+printf '%%s\n' \
+  'APT::Sandbox::User "root";' \
+  'Acquire::Retries "5";' \
+  'Acquire::http::Timeout "30";' \
+  'Acquire::https::Timeout "30";' \
+  'Acquire::ForceIPv4 "true";' \
+  > "${MERGED}/etc/apt/apt.conf.d/80-flynn-retries"
+mkdir -p "${MERGED}/var/cache/apt/archives/partial" "${MERGED}/var/lib/apt/lists/partial"
+chmod a+rwx "${MERGED}/var/cache/apt/archives" "${MERGED}/var/cache/apt/archives/partial" \
+  "${MERGED}/var/lib/apt/lists" "${MERGED}/var/lib/apt/lists/partial" 2>/dev/null || true
+if [[ -n "${APT_ARCHIVES}" && -d "${APT_ARCHIVES}" ]]; then
+  mount --bind "${APT_ARCHIVES}" "${MERGED}/var/cache/apt/archives"
+  mkdir -p "${MERGED}/var/cache/apt/archives/partial"
+fi
+if [[ -n "${APT_LISTS}" && -d "${APT_LISTS}" ]]; then
+  mount --bind "${APT_LISTS}" "${MERGED}/var/lib/apt/lists"
+  mkdir -p "${MERGED}/var/lib/apt/lists/partial"
+fi
+
 if [[ -n "${SETUP}" ]]; then
   cp "${REPO}/${SETUP}" "${MERGED}/tmp/ubuntu-setup.sh"
   chroot "${MERGED}" bash -e /tmp/ubuntu-setup.sh
@@ -247,8 +299,13 @@ fi
 
 rm -rf "${MERGED}/tmp/plugin-img" "${MERGED}/tmp/ubuntu-setup.sh"
 : > "${MERGED}/etc/resolv.conf"
-rm -rf "${MERGED}/var/cache/apt/archives"/* "${MERGED}/var/lib/apt/lists"/* 2>/dev/null || true
-`, lower, upper, work, merged, repo, setup, packages)
+if ! mountpoint -q "${MERGED}/var/cache/apt/archives"; then
+  rm -rf "${MERGED}/var/cache/apt/archives"/* 2>/dev/null || true
+fi
+if ! mountpoint -q "${MERGED}/var/lib/apt/lists"; then
+  rm -rf "${MERGED}/var/lib/apt/lists"/* 2>/dev/null || true
+fi
+`, lower, upper, work, merged, repo, setup, packages, aptArchives, aptLists)
 	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
 		return err
 	}
@@ -256,6 +313,47 @@ rm -rf "${MERGED}/var/cache/apt/archives"/* "${MERGED}/var/lib/apt/lists"/* 2>/d
 		return fmt.Errorf("overlay chroot: %w", err)
 	}
 	return nil
+}
+
+func aptCacheDirs() (archives, lists string) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("FLYNN_NO_APT_ARCHIVE_CACHE")), "1") {
+		return "", ""
+	}
+	dir := strings.TrimSpace(os.Getenv("FLYNN_APT_ARCHIVE_CACHE"))
+	switch strings.ToLower(dir) {
+	case "-", "disable", "off":
+		return "", ""
+	}
+	if dir != "" {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return "", ""
+		}
+		if st, err := os.Stat(abs); err == nil && st.IsDir() {
+			return abs, filepath.Join(abs, "_apt_lists")
+		}
+		return "", ""
+	}
+	var cands []string
+	if wd, err := os.Getwd(); err == nil {
+		cands = append(cands,
+			filepath.Join(wd, "ubuntu_ports_cache"),
+			filepath.Join(wd, "..", "flynn", "ubuntu_ports_cache"),
+		)
+	}
+	if flynn := strings.TrimSpace(os.Getenv("FLYNN_DIR")); flynn != "" {
+		cands = append(cands, filepath.Join(flynn, "ubuntu_ports_cache"))
+	}
+	for _, c := range cands {
+		abs, err := filepath.Abs(c)
+		if err != nil {
+			continue
+		}
+		if st, err := os.Stat(abs); err == nil && st.IsDir() {
+			return abs, filepath.Join(abs, "_apt_lists")
+		}
+	}
+	return "", ""
 }
 
 func requireSquashfsFiles(squashfsPath string, dests []string) error {

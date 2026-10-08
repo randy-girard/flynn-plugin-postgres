@@ -3,7 +3,7 @@
 //
 // The OS rootfs is Flynn's ubuntu-noble layer from a Flynn GitHub Release
 // (images.json.gz). This tool overlays img/packages.sh as its own squashfs
-// layer (cached when the scripts are unchanged), then gobuild/copy as a
+// layer (cached when the scripts and engine tarballs are unchanged), then gobuild/copy as a
 // second layer. No Docker; no Ubuntu cloudimg download.
 //
 // Output (under -out, default dist/):

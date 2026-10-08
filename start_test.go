@@ -324,9 +324,35 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"postgresql-16-postgis-3", "postgresql-16-pgrouting", "timescaledb-2-postgresql-16"} {
+	for _, name := range []string{
+		"postgresql-16-postgis-3",
+		"postgresql-16-pgrouting",
+		"timescaledb-2-postgresql-16",
+		"postgis.control",
+		"pgrouting.control",
+		"timescaledb.control",
+		"aarch64",
+		"x86_64",
+	} {
 		if !strings.Contains(string(pkgs), name) {
 			t.Fatalf("packages.sh missing %s", name)
+		}
+	}
+	if strings.Contains(string(pkgs), "apt.postgresql.org") || strings.Contains(string(pkgs), "packagecloud.io/timescale") {
+		t.Fatal("plugin postgres must build from vendored tarballs, not PGDG/Timescale apt")
+	}
+	fetch, err := os.ReadFile("img/fetch-engine.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"postgresql-16.9.tar.gz", "postgis-3.5.2.tar.gz", "pgrouting-3.7.3.tar.gz", "timescaledb-2.17.2.tar.gz"} {
+		if !strings.Contains(string(fetch), name) {
+			t.Fatalf("fetch-engine.sh missing %s", name)
+		}
+		if _, err := os.Stat("img/" + name); err != nil {
+			if _, err2 := os.Stat("img/" + name + ".0"); err2 != nil {
+				t.Fatalf("img/ must store %s in the repo", name)
+			}
 		}
 	}
 }
