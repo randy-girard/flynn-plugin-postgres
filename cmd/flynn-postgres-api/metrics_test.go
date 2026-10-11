@@ -253,6 +253,27 @@ func TestReportInstanceMetricsWithoutResourcePostsInstanceApp(t *testing.T) {
 	}
 }
 
+// A deposed primary whose resource moved to the promoted follower must not
+// post under its internal instance ID.
+func TestReportInstanceMetricsSkipsDeposedWithoutResource(t *testing.T) {
+	origSQL := runSQL
+	t.Cleanup(func() { runSQL = origSQL })
+	runSQL = func(string, string) (string, error) { return "50|1|2|0|20|1|1|5|0|1|0|0", nil }
+	posted := captureMetricPosts(t)
+
+	h := newHandler(postgres.NewStore())
+	h.reportInstanceMetrics(&postgres.Instance{
+		ID:   "d656964b37dc4e69",
+		App:  "postgresql-swamp-20980",
+		Role: postgres.RoleDeposed,
+	}, []*ct.Resource{
+		{ID: "c7056b27", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-knoll-42396"}, Apps: []string{"app-one"}},
+	}, time.Date(2026, 10, 11, 17, 39, 0, 0, time.UTC))
+	if len(*posted) != 0 {
+		t.Fatalf("posted=%+v", *posted)
+	}
+}
+
 func TestAllMetricsInstancesDedupByApp(t *testing.T) {
 	store := postgres.NewStore()
 	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop", Tenant: "shop"})

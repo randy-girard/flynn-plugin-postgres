@@ -96,7 +96,8 @@ type metricTarget struct {
 
 // metricTargets is one target per controller resource that refers to inst:
 // the resource's apps plus the instance app, keyed by the resource UUID. An
-// instance with no controller resource posts to its own app and instance ID.
+// instance with no controller resource posts to its own app and instance ID,
+// unless it is deposed: its resource has already moved to the promoted one.
 func (h *handler) metricTargets(inst *postgres.Instance, resources []*ct.Resource) []metricTarget {
 	if inst == nil {
 		return nil
@@ -110,7 +111,7 @@ func (h *handler) metricTargets(inst *postgres.Instance, resources []*ct.Resourc
 		apps := append(append([]string{}, r.Apps...), instApp)
 		out = append(out, metricTarget{resourceID: r.ID, apps: uniqueNonEmpty(apps...)})
 	}
-	if len(out) == 0 {
+	if len(out) == 0 && inst.Role != postgres.RoleDeposed {
 		out = append(out, metricTarget{resourceID: inst.ID, apps: uniqueNonEmpty(instApp)})
 	}
 	return out
