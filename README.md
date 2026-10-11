@@ -75,7 +75,7 @@ is a fallback.
 
 The dashboard pages (overview, metrics, databases, users, backup, follow) are
 served by this plugin. A signed-in app sees only its own instances. The Metrics
-tab charts samples the API posts every 20s
+tab charts samples the API posts once a minute
 (`active_connections`, `db_size_bytes`, cache hit rates, `xact_commit`,
 `replay_lag_seconds`, `slow_query_count`, and related series). The dashboard
 stores every posted series over time so Metrics charts and **Add alert**
@@ -84,16 +84,34 @@ from `pg_stat_statements` (falling back to long-running `pg_stat_activity`
 rows) live on the Slow queries tab. **Add alert** on Metrics (and the app
 Alerts page) can watch those series when this plugin is installed.
 
-The same sample is written as a Flynn log line on the plugin job:
+The API sleeps until each minute boundary, collects every instance, and posts
+one sample per controller resource to each app the resource is attached to
+and to the instance app. `timestamp` is that minute (UTC) and `resource_id` is
+the controller resource UUID. An instance with no controller resource posts to
+its own app with the instance ID. A failed scrape posts only
+`errors=1` and `service_available=0`. Dashboard page views do not post
+samples. Both API replicas may post; the dashboard keeps one sample per minute.
 
-```text
-flynn -a postgres-plugin log | grep flynn-postgres
-```
+### Instance metrics endpoint
 
-Example:
+Every instance release has `FLYNN_METRICS_PORT=9180`. The postgres job serves
+`GET /metrics/log` on that port (9180 when unset). The response is
+`200 text/plain` with one line, collected on request with a 1.5 s timeout.
+Keys that fail to collect are omitted. The port is not a release process port
+and tenant jobs cannot reach it; flynn-host can.
 
 ```text
 flynn-postgres source=postgresql-harbor-12345 addon=res-abc sample#service-available=1 sample#db_size=1024bytes sample#tables=3 sample#active-connections=2 sample#index-cache-hit-rate=0.99000
+```
+
+The job does not print its own periodic sample line. Once a minute, on the
+minute, flynn-host requests that line and writes one `metrics ...` system line
+to the instance app log: the container metrics fields followed by the
+`flynn-postgres` fields above. If the request fails, the line has container
+fields only.
+
+```text
+flynn -a postgresql-harbor-12345 log | grep metrics
 ```
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes

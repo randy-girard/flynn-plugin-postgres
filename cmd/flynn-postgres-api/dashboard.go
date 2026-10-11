@@ -332,7 +332,7 @@ func (h *handler) dashMetrics(w http.ResponseWriter, _ *http.Request, sess *dash
 	diag := h.diagnosticsFor(sess)
 	var b strings.Builder
 	if diag.Source == "" && len(h.instancesFor(sess)) == 0 {
-		b.WriteString(`<div class="card"><p class="muted">No samples yet. The plugin posts series every 20s to the dashboard plugin-metrics webhook. The isolated postgres job writes flynn-postgres sample# lines to this resource app&rsquo;s logs.</p></div>`)
+		b.WriteString(`<div class="card"><p class="muted">No samples yet. The plugin posts series once a minute to the dashboard plugin-metrics webhook. flynn-host appends the flynn-postgres sample# fields to its minute metrics line in this resource app&rsquo;s logs.</p></div>`)
 		writeDash(w, sess, "Metrics", b.String())
 		return
 	}

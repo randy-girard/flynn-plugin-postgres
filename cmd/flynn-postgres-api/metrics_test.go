@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
@@ -109,15 +110,8 @@ func TestCollectPostgresSlowQueriesSkipsMissingExtension(t *testing.T) {
 	}
 }
 
-func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
-	origSQL := runSQL
-	var queries []string
-	t.Cleanup(func() { runSQL = origSQL })
-	runSQL = func(_ string, query string) (string, error) {
-		queries = append(queries, query)
-		return "50|1|2|0|20|1|1|5|0|1|0|0", nil
-	}
-
+func captureMetricPosts(t *testing.T) *[]dashui.MetricEvent {
+	t.Helper()
 	var posted []dashui.MetricEvent
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var ev dashui.MetricEvent
@@ -129,14 +123,44 @@ func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
 	}))
 	t.Cleanup(ts.Close)
 	t.Setenv("DASHBOARD_METRICS_URL", ts.URL)
+	return &posted
+}
 
+func TestNextMetricsMinute(t *testing.T) {
+	now := time.Date(2026, 10, 11, 14, 3, 27, 500, time.FixedZone("x", -4*3600))
+	got := nextMetricsMinute(now)
+	want := time.Date(2026, 10, 11, 18, 4, 0, 0, time.UTC)
+	if !got.Equal(want) || got.Location() != time.UTC {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	onBoundary := time.Date(2026, 10, 11, 18, 4, 0, 0, time.UTC)
+	if got := nextMetricsMinute(onBoundary); !got.Equal(onBoundary.Add(time.Minute)) {
+		t.Fatalf("on boundary got %s", got)
+	}
+}
+
+func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
+	origSQL := runSQL
+	var queries []string
+	t.Cleanup(func() { runSQL = origSQL })
+	runSQL = func(_ string, query string) (string, error) {
+		queries = append(queries, query)
+		return "50|1|2|0|20|1|1|5|0|1|0|0", nil
+	}
+	posted := captureMetricPosts(t)
+
+	at := time.Date(2026, 10, 11, 18, 4, 0, 0, time.UTC)
 	h := newHandler(postgres.NewStore())
 	h.reportInstanceMetrics(&postgres.Instance{
 		ID:          "res-1",
 		App:         "postgresql-harbor-12345",
 		Tenant:      "shop",
 		Attachments: []postgres.Attachment{{App: "shop"}},
-	})
+	}, []*ct.Resource{{
+		ID:         "11111111-2222-3333-4444-555555555555",
+		ExternalID: "res-1",
+		Apps:       []string{"aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"},
+	}}, at)
 	var raise bool
 	for _, q := range queries {
 		lower := strings.ToLower(q)
@@ -150,21 +174,82 @@ func TestReportInstanceMetricsPostsWebhook(t *testing.T) {
 	if raise {
 		t.Fatalf("must not RAISE LOG into the instance server log: %v", queries)
 	}
-	if len(posted) != 2 {
-		t.Fatalf("posted=%+v", posted)
+	if len(*posted) != 3 {
+		t.Fatalf("posted=%+v", *posted)
 	}
 	gotApp := map[string]bool{}
-	for _, ev := range posted {
+	for _, ev := range *posted {
 		gotApp[ev.AppID] = true
 		if ev.Plugin != "postgres" {
-			t.Fatalf("posted=%+v", posted)
+			t.Fatalf("posted=%+v", *posted)
+		}
+		if ev.ResourceID != "11111111-2222-3333-4444-555555555555" {
+			t.Fatalf("resource_id must be the controller resource UUID: %+v", ev)
+		}
+		if !ev.Timestamp.Equal(at) {
+			t.Fatalf("timestamp %s want minute %s", ev.Timestamp, at)
 		}
 		if ev.Series["service_available"] != 1 {
 			t.Fatalf("series=%+v", ev.Series)
 		}
 	}
-	if !gotApp["shop"] || !gotApp["postgresql-harbor-12345"] {
-		t.Fatalf("posted apps=%v", gotApp)
+	for _, want := range []string{"aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "postgresql-harbor-12345"} {
+		if !gotApp[want] {
+			t.Fatalf("posted apps=%v missing %s", gotApp, want)
+		}
+	}
+}
+
+func TestReportInstanceMetricsMatchesResourceByEnvPerResource(t *testing.T) {
+	origSQL := runSQL
+	t.Cleanup(func() { runSQL = origSQL })
+	runSQL = func(string, string) (string, error) { return "", fmt.Errorf("dial refused") }
+	posted := captureMetricPosts(t)
+
+	at := time.Date(2026, 10, 11, 18, 5, 0, 0, time.UTC)
+	h := newHandler(postgres.NewStore())
+	h.reportInstanceMetrics(&postgres.Instance{ID: "res-9", App: "postgresql-harbor-12345"}, []*ct.Resource{
+		{ID: "r-a", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-harbor-12345"}, Apps: []string{"app-a"}},
+		{ID: "r-b", ExternalID: "res-9", Apps: []string{"app-b"}},
+		{ID: "r-other", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-other-00000"}, Apps: []string{"app-c"}},
+	}, at)
+	got := map[string]bool{}
+	for _, ev := range *posted {
+		got[ev.ResourceID+"/"+ev.AppID] = true
+		if len(ev.Series) != 2 || ev.Series["errors"] != 1 || ev.Series["service_available"] != 0 {
+			t.Fatalf("failed scrape must post only errors/service_available: %+v", ev.Series)
+		}
+	}
+	want := []string{"r-a/app-a", "r-a/postgresql-harbor-12345", "r-b/app-b", "r-b/postgresql-harbor-12345"}
+	if len(*posted) != len(want) {
+		t.Fatalf("posted=%v", got)
+	}
+	for _, k := range want {
+		if !got[k] {
+			t.Fatalf("posted=%v missing %s", got, k)
+		}
+	}
+}
+
+func TestReportInstanceMetricsWithoutResourcePostsInstanceApp(t *testing.T) {
+	origSQL := runSQL
+	t.Cleanup(func() { runSQL = origSQL })
+	runSQL = func(string, string) (string, error) { return "50|1|2|0|20|1|1|5|0|1|0|0", nil }
+	posted := captureMetricPosts(t)
+
+	h := newHandler(postgres.NewStore())
+	h.reportInstanceMetrics(&postgres.Instance{
+		ID:          "res-1",
+		App:         "postgresql-harbor-12345",
+		Tenant:      "shop",
+		Attachments: []postgres.Attachment{{App: "shop"}},
+	}, nil, time.Date(2026, 10, 11, 18, 6, 0, 0, time.UTC))
+	if len(*posted) != 1 {
+		t.Fatalf("posted=%+v", *posted)
+	}
+	ev := (*posted)[0]
+	if ev.AppID != "postgresql-harbor-12345" || ev.ResourceID != "res-1" {
+		t.Fatalf("%+v", ev)
 	}
 }
 
@@ -200,6 +285,12 @@ func TestDashboardMetricsAndDiagnostics(t *testing.T) {
 	runSQL = func(string, string) (string, error) {
 		return "10|1|1|0|20|1|1|2|0|1|0|0", nil
 	}
+	posted := captureMetricPosts(t)
+	t.Cleanup(func() {
+		if len(*posted) != 0 {
+			t.Errorf("dashboard page views must not post samples: %+v", *posted)
+		}
+	})
 	store := postgres.NewStore()
 	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
 		t.Fatal(err)

@@ -10,8 +10,6 @@ import (
 	ct "github.com/randy-girard/flynn/controller/types"
 )
 
-const metricsInterval = 20 * time.Second
-
 var postgresMetricSeries = []string{
 	"service_available",
 	"db_size_bytes",
@@ -46,23 +44,31 @@ type addonDiagnostics struct {
 	SlowQueries []slowQuery        `json:"slow_queries"`
 }
 
+// nextMetricsMinute is the UTC minute boundary after now.
+func nextMetricsMinute(now time.Time) time.Time {
+	return now.UTC().Truncate(time.Minute).Add(time.Minute)
+}
+
+// metricsLoop is the only producer of dashboard samples. It sleeps until each
+// minute boundary, then posts every instance stamped with that minute. Both
+// API replicas may post; the dashboard dedupes per minute.
 func (h *handler) metricsLoop() {
-	h.reportAllMetrics()
-	ticker := time.NewTicker(metricsInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		h.reportAllMetrics()
+	for {
+		at := nextMetricsMinute(time.Now())
+		time.Sleep(time.Until(at))
+		h.reportAllMetrics(at)
 	}
 }
 
-func (h *handler) reportAllMetrics() {
+func (h *handler) reportAllMetrics(at time.Time) {
 	h.refreshDashboardMetricsEnv()
-	for _, inst := range h.allMetricsInstances() {
-		h.reportInstanceMetrics(inst)
+	resources := h.allControllerResources()
+	for _, inst := range h.metricsInstances(resources) {
+		h.reportInstanceMetrics(inst, resources, at)
 	}
 }
 
-func (h *handler) reportInstanceMetrics(inst *postgres.Instance) {
+func (h *handler) reportInstanceMetrics(inst *postgres.Instance, resources []*ct.Resource, at time.Time) {
 	if inst == nil {
 		return
 	}
@@ -70,14 +76,68 @@ func (h *handler) reportInstanceMetrics(inst *postgres.Instance) {
 	if diag.Series == nil {
 		diag.Series = map[string]float64{"errors": 1, "service_available": 0}
 	}
-	for _, appID := range h.expandMetricApps(instanceMetricApps(inst)) {
-		dashui.PostMetrics(dashui.MetricEvent{
-			AppID:      appID,
-			ResourceID: inst.ID,
-			Plugin:     "postgres",
-			Series:     diag.Series,
-		})
+	for _, target := range h.metricTargets(inst, resources) {
+		for _, appID := range target.apps {
+			dashui.PostMetrics(dashui.MetricEvent{
+				AppID:      appID,
+				ResourceID: target.resourceID,
+				Plugin:     "postgres",
+				Timestamp:  at.UTC(),
+				Series:     diag.Series,
+			})
+		}
 	}
+}
+
+type metricTarget struct {
+	resourceID string
+	apps       []string
+}
+
+// metricTargets is one target per controller resource that refers to inst:
+// the resource's apps plus the instance app, keyed by the resource UUID. An
+// instance with no controller resource posts to its own app and instance ID.
+func (h *handler) metricTargets(inst *postgres.Instance, resources []*ct.Resource) []metricTarget {
+	if inst == nil {
+		return nil
+	}
+	instApp := h.metricAppID(inst.App)
+	var out []metricTarget
+	for _, r := range resources {
+		if !resourceRefersTo(r, inst) {
+			continue
+		}
+		apps := append(append([]string{}, r.Apps...), instApp)
+		out = append(out, metricTarget{resourceID: r.ID, apps: uniqueNonEmpty(apps...)})
+	}
+	if len(out) == 0 {
+		out = append(out, metricTarget{resourceID: inst.ID, apps: uniqueNonEmpty(instApp)})
+	}
+	return out
+}
+
+func resourceRefersTo(r *ct.Resource, inst *postgres.Instance) bool {
+	if r == nil || inst == nil || strings.TrimSpace(r.ID) == "" {
+		return false
+	}
+	if app := strings.TrimSpace(inst.App); app != "" && strings.TrimSpace(r.Env["FLYNN_POSTGRES"]) == app {
+		return true
+	}
+	id := strings.TrimSpace(inst.ID)
+	return id != "" && (strings.TrimSpace(r.ExternalID) == id || r.ID == id)
+}
+
+// metricAppID resolves the instance app name to its UUID when the controller
+// is reachable.
+func (h *handler) metricAppID(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || h == nil || h.client == nil {
+		return name
+	}
+	if app, err := h.client.GetApp(name); err == nil && app != nil && strings.TrimSpace(app.ID) != "" {
+		return app.ID
+	}
+	return name
 }
 
 func (h *handler) refreshDashboardMetricsEnv() {
@@ -91,34 +151,6 @@ func (h *handler) refreshDashboardMetricsEnv() {
 		}
 		return rel.Env
 	})
-}
-
-func (h *handler) expandMetricApps(ids []string) []string {
-	out := uniqueNonEmpty(ids...)
-	if h == nil || h.client == nil {
-		return out
-	}
-	seen := map[string]bool{}
-	for _, id := range out {
-		seen[id] = true
-	}
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" || seen[s] {
-			return
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	for _, id := range append([]string{}, out...) {
-		app, err := h.client.GetApp(id)
-		if err != nil || app == nil {
-			continue
-		}
-		add(app.ID)
-		add(app.Name)
-	}
-	return out
 }
 
 func uniqueNonEmpty(ids ...string) []string {
@@ -229,6 +261,10 @@ func parseSlowQueries(raw string) ([]slowQuery, error) {
 }
 
 func (h *handler) allMetricsInstances() []*postgres.Instance {
+	return h.metricsInstances(h.allControllerResources())
+}
+
+func (h *handler) metricsInstances(resources []*ct.Resource) []*postgres.Instance {
 	seen := map[string]bool{}
 	var out []*postgres.Instance
 	add := func(inst *postgres.Instance) {
@@ -255,7 +291,7 @@ func (h *handler) allMetricsInstances() []*postgres.Instance {
 			add(inst)
 		}
 	}
-	for _, r := range h.allControllerResources() {
+	for _, r := range resources {
 		inst := instanceFromResource(r, "")
 		if inst == nil {
 			continue
