@@ -228,14 +228,17 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(serve), "runInstanceMetrics") || !strings.Contains(string(serve), "FormatFlynnPostgresLine") {
-		t.Fatal("the isolated postgres job must print flynn-postgres sample lines to its own logs")
+	if !strings.Contains(string(serve), "serveInstanceMetrics") || !strings.Contains(string(serve), "FormatFlynnPostgresLine") {
+		t.Fatal("the isolated postgres job must serve the flynn-postgres sample line on GET /metrics/log for flynn-host")
+	}
+	if strings.Contains(string(serve), "runInstanceMetrics") || strings.Contains(string(serve), "NewTicker") {
+		t.Fatal("the isolated postgres job must not print its own periodic sample line; flynn-host combines it once a minute")
 	}
 	if strings.Contains(string(serve), "Fprintln(os.Stderr, line)") {
-		t.Fatal("sample lines on stderr show as red app[] errors; write them to stdout")
+		t.Fatal("topology lines on stderr show as red app[] errors; write them to stdout")
 	}
 	if !strings.Contains(string(serve), "Fprintln(os.Stdout, line)") {
-		t.Fatal("sample lines must go to stdout so flynn-host can promote them to flynn[postgres.N]")
+		t.Fatal("topology lines must go to stdout so flynn-host can promote them to flynn[postgres.N]")
 	}
 	if strings.Contains(string(serve), "RAISE LOG") {
 		t.Fatal("instance metrics must not RAISE LOG into the postgres server log")

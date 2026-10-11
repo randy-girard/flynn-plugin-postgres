@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,31 +69,52 @@ func servePostgres() error {
 	}
 	shutdown.BeforeExit(func() { hb.Close() })
 
-	go runInstanceMetrics()
+	go serveInstanceMetrics()
 	logInstanceTopology()
 	return <-exited
 }
 
-var instancePsql = localPsql
+// instanceMetricsTimeout bounds collection under flynn-host's 2s scrape timeout.
+const instanceMetricsTimeout = 1500 * time.Millisecond
+
+var instancePsql = localPsqlContext
 var instanceMetricsLog = func(line string) {
 	// stdout so flynn-host can promote the line to StreamTypeSystem
 	// (flynn[postgres.N], white). stderr is painted red as app errors.
 	fmt.Fprintln(os.Stdout, line)
 }
 
-func runInstanceMetrics() {
-	emitInstanceMetricLine()
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		emitInstanceMetricLine()
+// serveInstanceMetrics serves GET /metrics/log on :$FLYNN_METRICS_PORT.
+// flynn-host scrapes it once a minute; tenant jobs cannot reach the port.
+func serveInstanceMetrics() {
+	addr := ":" + postgres.InstanceMetricsPort()
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           instanceMetricsHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintf(os.Stderr, "metrics listener %s: %s\n", addr, err)
 	}
 }
 
-func emitInstanceMetricLine() {
-	series := collectInstanceSeries()
+func instanceMetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET "+postgres.MetricsLogPath, func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), instanceMetricsTimeout)
+		defer cancel()
+		line := instanceMetricLine(ctx)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, line)
+	})
+	return mux
+}
+
+func instanceMetricLine(ctx context.Context) string {
+	series := collectInstanceSeries(ctx)
 	source, addon := postgres.InstanceMetricIDs()
-	instanceMetricsLog(postgres.FormatFlynnPostgresLine(source, addon, series))
+	return postgres.FormatFlynnPostgresLine(source, addon, series)
 }
 
 func logInstanceTopology() {
@@ -116,9 +140,9 @@ func logInstanceTopology() {
 	instanceMetricsLog(postgres.FormatTopologyLine(source, event, msg))
 }
 
-func collectInstanceSeries() map[string]float64 {
+func collectInstanceSeries(ctx context.Context) map[string]float64 {
 	series := map[string]float64{"service_available": 0, "errors": 1}
-	raw, err := instancePsql(postgres.SnapshotSQL)
+	raw, err := instancePsql(ctx, postgres.SnapshotSQL)
 	if err != nil {
 		return series
 	}
@@ -131,13 +155,15 @@ func collectInstanceSeries() map[string]float64 {
 	}
 	series["service_available"] = 1
 	series["errors"] = 0
-	series["slow_query_count"] = float64(countLocalSlowQueries())
+	if n, ok := countLocalSlowQueries(ctx); ok {
+		series["slow_query_count"] = float64(n)
+	}
 	return series
 }
 
-func countLocalSlowQueries() int {
+func countLocalSlowQueries(ctx context.Context) (int, bool) {
 	query := postgres.ActivitySlowSQL
-	if exists, err := instancePsql(postgres.StatStatementsExistsSQL); err == nil {
+	if exists, err := instancePsql(ctx, postgres.StatStatementsExistsSQL); err == nil {
 		v := strings.ToLower(strings.TrimSpace(exists))
 		if i := strings.IndexByte(v, '\n'); i >= 0 {
 			v = strings.TrimSpace(v[:i])
@@ -146,18 +172,22 @@ func countLocalSlowQueries() int {
 			query = postgres.StatStatementsSQL
 		}
 	}
-	raw, err := instancePsql(query)
+	raw, err := instancePsql(ctx, query)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "[]" {
-		return 0
+		return 0, true
 	}
-	return strings.Count(raw, `"query"`)
+	return strings.Count(raw, `"query"`), true
 }
 
 func localPsql(query string) (string, error) {
+	return localPsqlContext(context.Background(), query)
+}
+
+func localPsqlContext(ctx context.Context, query string) (string, error) {
 	bin := os.Getenv("POSTGRES_BIN")
 	if bin == "" || strings.TrimSpace(query) == "" {
 		return "", fmt.Errorf("missing POSTGRES_BIN or query")
@@ -167,7 +197,7 @@ func localPsql(query string) (string, error) {
 	if db == "" {
 		db = "postgres"
 	}
-	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
+	cmd := exec.CommandContext(ctx, "setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
 		psql, "-h", "/tmp", "-d", db, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", query)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

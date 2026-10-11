@@ -7,9 +7,24 @@ import (
 	"strings"
 )
 
-// SnapshotSQL is the instance metrics probe. The isolated postgres job prints
-// the formatted sample to its own stdout so flynn-host can tag it as a system
-// line on the resource app (flynn[postgres.N], same as host job metrics).
+// MetricsPortEnv is the port the isolated postgres job serves GET /metrics/log
+// on. The plugin API stamps it on every instance release; flynn-host scrapes
+// it once a minute and appends the line to its `metrics ...` log line.
+const MetricsPortEnv = "FLYNN_METRICS_PORT"
+
+// DefaultMetricsPort is used when MetricsPortEnv is unset.
+const DefaultMetricsPort = "9180"
+
+// MetricsLogPath is the only route on the instance metrics listener.
+const MetricsLogPath = "/metrics/log"
+
+// InstanceMetricsPort is $FLYNN_METRICS_PORT, or DefaultMetricsPort.
+func InstanceMetricsPort() string {
+	return firstNonEmpty(strings.TrimSpace(os.Getenv(MetricsPortEnv)), DefaultMetricsPort)
+}
+
+// SnapshotSQL is the instance metrics probe. The isolated postgres job runs it
+// when flynn-host requests GET /metrics/log and returns the formatted sample.
 const SnapshotSQL = `SELECT concat_ws('|',
   COALESCE((SELECT SUM(pg_database_size(oid)) FROM pg_database WHERE datallowconn),0),
   COALESCE((SELECT COUNT(*) FROM pg_stat_user_tables),0),

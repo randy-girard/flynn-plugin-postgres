@@ -428,6 +428,79 @@ func TestStartIsolatedInstanceStampsResourceID(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedInstanceStampsMetricsPort(t *testing.T) {
+	for _, fol := range []bool{false, true} {
+		ctrl := &fakeInstanceControl{}
+		inst := &postgres.Instance{App: "postgresql-upland-88340", AppUser: "u", AppPassword: "p"}
+		var leader *postgres.Instance
+		if fol {
+			inst.Role = postgres.RoleFollower
+			leader = &postgres.Instance{App: "postgresql-meadow-11111", AppUser: "u", AppPassword: "p"}
+		}
+		if err := startIsolatedInstance(ctrl, "img-1", inst, leader, nil, func(string, time.Duration) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		rel := ctrl.releases[0]
+		if rel.Env[postgres.MetricsPortEnv] != "9180" {
+			t.Fatalf("follower=%v env %#v", fol, rel.Env)
+		}
+		for _, p := range rel.Processes[postgres.ProcessName].Ports {
+			if p.Port == 9180 {
+				t.Fatalf("metrics port must not be a process port: %#v", rel.Processes)
+			}
+		}
+	}
+}
+
+func TestStampIsolatedRoleAddsMetricsPort(t *testing.T) {
+	ctrl := &fakeInstanceControl{
+		apps: []*ct.App{{ID: "a1", Name: "postgresql-orchid-80127"}},
+		releases: []*ct.Release{{
+			ID:  "old",
+			Env: map[string]string{"FLYNN_POSTGRES": "postgresql-orchid-80127", "POSTGRES_ROLE": "primary"},
+		}},
+		current: map[string]string{"a1": "old"},
+	}
+	if err := stampIsolatedRole(ctrl, &postgres.Instance{App: "postgresql-orchid-80127", Role: postgres.RolePrimary}, nil); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := ctrl.GetAppRelease("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.ID == "old" || rel.Env[postgres.MetricsPortEnv] != "9180" {
+		t.Fatalf("release %s env %#v", rel.ID, rel.Env)
+	}
+}
+
+func TestRefreshIsolatedPluginImageAddsMetricsPort(t *testing.T) {
+	oldEnv := map[string]string{"ENGINE_VERSION": postgres.EngineVersion(), "FLYNN_POSTGRES": "postgresql-basin-73690"}
+	ctrl := &fakeInstanceControl{
+		apps: []*ct.App{{ID: "a1", Name: "postgresql-basin-73690"}},
+		releases: []*ct.Release{{
+			ID:          "old",
+			ArtifactIDs: []string{"img-old"},
+			Env:         oldEnv,
+			Processes:   map[string]ct.ProcessType{postgres.ProcessName: {}},
+		}},
+		current: map[string]string{"a1": "old"},
+	}
+	inst := &postgres.Instance{App: "postgresql-basin-73690", EngineVersion: postgres.EngineVersion()}
+	if err := refreshIsolatedPluginImage(ctrl, "img-new", inst); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := ctrl.GetAppRelease("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.Env[postgres.MetricsPortEnv] != "9180" {
+		t.Fatalf("env %#v", rel.Env)
+	}
+	if _, ok := oldEnv[postgres.MetricsPortEnv]; ok {
+		t.Fatal("must not mutate the previous release env")
+	}
+}
+
 func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	ctrl := &fakeInstanceControl{}
 	leader := &postgres.Instance{

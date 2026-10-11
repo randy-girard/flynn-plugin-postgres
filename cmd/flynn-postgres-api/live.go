@@ -190,6 +190,16 @@ func copyClusterDiscoverdEnv(env map[string]string) {
 	}
 }
 
+// stampInstanceMetricsPort sets FLYNN_METRICS_PORT on an isolated instance
+// release env so flynn-host can scrape GET /metrics/log. Every path that
+// creates an instance release calls it. The port is not a process Port.
+func stampInstanceMetricsPort(env map[string]string) {
+	if env == nil {
+		return
+	}
+	env[postgres.MetricsPortEnv] = postgres.DefaultMetricsPort
+}
+
 // instanceScaleOptions places the postgres process without waiting for job
 // "up". The process type sets Service, so the scheduler keeps the job in
 // starting until discoverd registration. That happens after initdb,
@@ -266,6 +276,7 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		env[postgres.ResourceIDEnv] = inst.ID
 	}
 	copyClusterDiscoverdEnv(env)
+	stampInstanceMetricsPort(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {
 		env["POSTGRES_PRIMARY_URL"] = leader.ConnectionURL()
 		env["POSTGRES_ROLE"] = "follower"
@@ -366,6 +377,7 @@ func stampIsolatedRole(c isolatedReleaseClient, inst *postgres.Instance, leader 
 		env[k] = v
 	}
 	applyPostgresResourceEnv(inst, env, leader)
+	stampInstanceMetricsPort(env)
 	if envEqual(rel.Env, env) {
 		return nil
 	}
@@ -921,7 +933,7 @@ func (h *handler) imageRefreshCandidates() []*postgres.Instance {
 // refreshIsolatedPluginImage moves an existing isolated postgres app onto the
 // current plugin squashfs without a logical engine upgrade. plugin:update
 // --rebuild only restarts postgres-plugin; this is what picks up
-// flynn-postgres sample# logging in already-provisioned databases.
+// the GET /metrics/log endpoint in already-provisioned databases.
 func refreshIsolatedPluginImage(c isolatedImageClient, imageID string, inst *postgres.Instance) error {
 	if c == nil || inst == nil || strings.TrimSpace(imageID) == "" {
 		return nil
@@ -943,6 +955,11 @@ func refreshIsolatedPluginImage(c isolatedImageClient, imageID string, inst *pos
 	next := *rel
 	next.ID = ""
 	next.ArtifactIDs = []string{imageID}
+	next.Env = make(map[string]string, len(rel.Env)+1)
+	for k, v := range rel.Env {
+		next.Env[k] = v
+	}
+	stampInstanceMetricsPort(next.Env)
 	if err := c.CreateRelease(app.ID, &next); err != nil {
 		return err
 	}
