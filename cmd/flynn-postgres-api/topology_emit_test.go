@@ -74,6 +74,93 @@ func TestEmitTopologyPostsFlynnEvent(t *testing.T) {
 	}
 }
 
+func followerForRemovalTest(t *testing.T) (http.Handler, string, string, *[]string) {
+	t.Helper()
+	orig := writeResourceLog
+	t.Cleanup(func() { writeResourceLog = orig })
+	var got []string
+	writeResourceLog = func(_ *handler, appRef, line string) {
+		got = append(got, appRef+"|"+line)
+	}
+	h := newHandler(postgres.NewStore())
+	post := func(path string) map[string]string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"app":"shop"}`)))
+		if rec.Code != 200 {
+			t.Fatalf("%s %d %s", path, rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Env map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Env
+	}
+	leader := post("/databases")["FLYNN_POSTGRES"]
+	follower := post("/databases/" + leader + "/follow")["FLYNN_POSTGRES"]
+	if leader == "" || follower == "" {
+		t.Fatalf("leader %q follower %q", leader, follower)
+	}
+	got = nil
+	return h, leader, follower, &got
+}
+
+func assertFollowerRemovedOnPrimary(t *testing.T, got []string, leader, follower, reason string) {
+	t.Helper()
+	for _, line := range got {
+		if strings.HasPrefix(line, leader+"|") && strings.Contains(line, "event#follower-removed") &&
+			strings.Contains(line, "to="+follower) && strings.Contains(line, reason) {
+			return
+		}
+	}
+	t.Fatalf("primary %s log must record follower %s removal (%s): %v", leader, follower, reason, got)
+}
+
+func TestDeleteFollowerLogsOnPrimary(t *testing.T) {
+	h, leader, follower, got := followerForRemovalTest(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/databases?id="+follower, nil))
+	if rec.Code != 200 {
+		t.Fatalf("delete %d %s", rec.Code, rec.Body.String())
+	}
+	assertFollowerRemovedOnPrimary(t, *got, leader, follower, "reason=deleted")
+}
+
+func TestUnfollowLogsOnPrimary(t *testing.T) {
+	h, leader, follower, got := followerForRemovalTest(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/databases/"+follower+"/unfollow", strings.NewReader("{}")))
+	if rec.Code != 200 {
+		t.Fatalf("unfollow %d %s", rec.Code, rec.Body.String())
+	}
+	assertFollowerRemovedOnPrimary(t, *got, leader, follower, "reason=unfollow")
+}
+
+func TestDeletePrimaryDoesNotLogFollowerRemoved(t *testing.T) {
+	orig := writeResourceLog
+	t.Cleanup(func() { writeResourceLog = orig })
+	var got []string
+	writeResourceLog = func(_ *handler, appRef, line string) {
+		got = append(got, appRef+"|"+line)
+	}
+	store := postgres.NewStore()
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	newHandler(store).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/databases?id="+inst.App, nil))
+	if rec.Code != 200 {
+		t.Fatalf("delete %d %s", rec.Code, rec.Body.String())
+	}
+	for _, line := range got {
+		if strings.Contains(line, "follower-removed") {
+			t.Fatalf("deleting a primary is not a follower removal: %v", got)
+		}
+	}
+}
+
 func TestTopologyMessage(t *testing.T) {
 	got := topologyMessage("postgresql-basin-73690", "postgresql-upland-22935", "reason=auto")
 	if got != "from=postgresql-basin-73690 to=postgresql-upland-22935 reason=auto" {

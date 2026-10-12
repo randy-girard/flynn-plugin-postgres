@@ -74,6 +74,26 @@ func (h *handler) emitTopology(code string, source *postgres.Instance, fromApp, 
 	}
 }
 
+// emitFollowerRemoved logs on the primary that follower fol (a snapshot taken
+// before it was deleted or unfollowed) no longer replicates from it.
+func (h *handler) emitFollowerRemoved(fol *postgres.Instance, extra string) {
+	if h == nil || fol == nil || fol.LeaderID == "" {
+		return
+	}
+	leaderApp := fol.LeaderID
+	var leader *postgres.Instance
+	if h.store != nil {
+		if l, err := h.store.Get(fol.LeaderID); err == nil {
+			leader = l
+			leaderApp = firstNonEmptyLocal(l.App, l.ID)
+		}
+	}
+	if leader == nil {
+		leader = &postgres.Instance{ID: fol.LeaderID, App: leaderApp}
+	}
+	h.emitTopology(postgres.CodeFollowerRemoved, leader, leaderApp, fol.App, extra)
+}
+
 func (h *handler) topologyAppIDs(names []string) []string {
 	seen := map[string]bool{}
 	var out []string

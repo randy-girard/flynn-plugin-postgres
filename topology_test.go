@@ -22,3 +22,13 @@ func TestFormatTopologyLine(t *testing.T) {
 		t.Fatalf("desc %q", desc)
 	}
 }
+
+func TestFollowerRemovedTopology(t *testing.T) {
+	if TopologyEventName(CodeFollowerRemoved) != "follower-removed" || TopologySeverity(CodeFollowerRemoved) != "info" {
+		t.Fatalf("%s %s", TopologyEventName(CodeFollowerRemoved), TopologySeverity(CodeFollowerRemoved))
+	}
+	desc := TopologyDescription(CodeFollowerRemoved, "postgresql-basin-73690", "postgresql-upland-22935", "reason=deleted")
+	if desc != "Follower postgresql-upland-22935 stopped replicating from postgresql-basin-73690 (reason=deleted)" {
+		t.Fatalf("desc %q", desc)
+	}
+}

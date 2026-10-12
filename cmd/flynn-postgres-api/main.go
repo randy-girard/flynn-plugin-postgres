@@ -205,6 +205,9 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		startIsolatedAppDeletion(h.client, inst.App)
 	}
 	h.store.Forget(inst.ID)
+	if inst.Role == postgres.RoleFollower {
+		h.emitFollowerRemoved(inst, "reason=deleted")
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -484,11 +487,13 @@ func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.P
 }
 
 func (h *handler) unfollow(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
+	before, _ := h.store.Get(p.ByName("id"))
 	inst, err := h.store.Unfollow(p.ByName("id"))
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
+	h.emitFollowerRemoved(before, "reason=unfollow")
 	if err := h.stampIsolatedRole(inst); err != nil {
 		writeAPIError(w, err)
 		return

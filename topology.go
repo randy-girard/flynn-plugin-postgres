@@ -17,6 +17,7 @@ const (
 	CodeSwapStarted     = "P15"
 	CodeSwapDone        = "P16"
 	CodeSwapFailed      = "P17"
+	CodeFollowerRemoved = "P18"
 )
 
 // FormatTopologyLine is a Flynn-level resource log line (same flynn-postgres
@@ -53,6 +54,8 @@ func TopologyEventName(code string) string {
 		return "swap-done"
 	case CodeSwapFailed:
 		return "swap-failed"
+	case CodeFollowerRemoved:
+		return "follower-removed"
 	default:
 		return "topology"
 	}
@@ -101,6 +104,8 @@ func TopologyDescription(code, from, to, extra string) string {
 		s = fmt.Sprintf("Image refresh follower-swap complete; %s is primary", firstNonEmpty(to, from, "primary"))
 	case CodeSwapFailed:
 		s = fmt.Sprintf("Image refresh follower-swap failed for %s", firstNonEmpty(from, "primary"))
+	case CodeFollowerRemoved:
+		s = fmt.Sprintf("Follower %s stopped replicating from %s", firstNonEmpty(to, "replica"), firstNonEmpty(from, "primary"))
 	default:
 		s = "Datastore topology change"
 	}
