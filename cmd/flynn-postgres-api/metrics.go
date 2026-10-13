@@ -13,6 +13,7 @@ import (
 var postgresMetricSeries = []string{
 	"service_available",
 	"db_size_bytes",
+	"index_size_bytes",
 	"tables",
 	"active_connections",
 	"waiting_connections",

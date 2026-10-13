@@ -76,7 +76,7 @@ is a fallback.
 The dashboard pages (overview, metrics, databases, users, backup, follow) are
 served by this plugin. A signed-in app sees only its own instances. The Metrics
 tab charts samples the API posts once a minute
-(`active_connections`, `db_size_bytes`, cache hit rates, `xact_commit`,
+(`active_connections`, `db_size_bytes`, `index_size_bytes`, cache hit rates, `xact_commit`,
 `replay_lag_seconds`, `slow_query_count`, and related series). The dashboard
 stores every posted series over time so Metrics charts and **Add alert**
 threshold previews share the same history. Slow queries

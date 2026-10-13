@@ -37,7 +37,8 @@ const SnapshotSQL = `SELECT concat_ws('|',
   COALESCE((SELECT SUM(wal_bytes) FROM pg_stat_wal),0),
   COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN 0 ELSE pg_current_xact_id()::text::bigint END),0),
   COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) ELSE 0 END),0),
-  COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE 0 END),0)
+  COALESCE((SELECT CASE WHEN pg_is_in_recovery() THEN pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) ELSE 0 END),0),
+  COALESCE((SELECT SUM(pg_relation_size(indexrelid)) FROM pg_stat_user_indexes),0)
 );`
 
 const StatStatementsExistsSQL = `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')`
@@ -94,7 +95,7 @@ func ParsePostgresSnapshot(raw string) (map[string]float64, bool) {
 		}
 		nums[i] = n
 	}
-	return map[string]float64{
+	out := map[string]float64{
 		"db_size_bytes":        nums[0],
 		"tables":               nums[1],
 		"active_connections":   nums[2],
@@ -107,7 +108,14 @@ func ParsePostgresSnapshot(raw string) (map[string]float64, bool) {
 		"current_transaction":  nums[9],
 		"replay_lag_seconds":   nums[10],
 		"follower_lag_bytes":   nums[11],
-	}, true
+	}
+	// Index size is a 13th column; older probes return 12.
+	if len(parts) > 12 {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(parts[12]), 64); err == nil {
+			out["index_size_bytes"] = n
+		}
+	}
+	return out, true
 }
 
 func FormatFlynnPostgresLine(source, addon string, series map[string]float64) string {
@@ -130,6 +138,7 @@ func FormatFlynnPostgresLine(source, addon string, series map[string]float64) st
 	}
 	appendSample("service_available", "sample#service-available=%.0f")
 	appendSample("db_size_bytes", "sample#db_size=%.0fbytes")
+	appendSample("index_size_bytes", "sample#index_size=%.0fbytes")
 	appendSample("tables", "sample#tables=%.0f")
 	appendSample("active_connections", "sample#active-connections=%.0f")
 	appendSample("waiting_connections", "sample#waiting-connections=%.0f")

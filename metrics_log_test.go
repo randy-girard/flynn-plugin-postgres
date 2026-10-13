@@ -19,6 +19,21 @@ func TestParsePostgresSnapshot(t *testing.T) {
 	}
 }
 
+func TestParsePostgresSnapshotIndexSize(t *testing.T) {
+	got, ok := ParsePostgresSnapshot("100|1|1|0|200|1|1|1|1|1|0|0|4096\n")
+	if !ok || got["index_size_bytes"] != 4096 {
+		t.Fatalf("ok=%v %+v", ok, got)
+	}
+	got, ok = ParsePostgresSnapshot("100|1|1|0|200|1|1|1|1|1|0|0\n")
+	if _, has := got["index_size_bytes"]; !ok || has {
+		t.Fatalf("12-column probe must omit index size: %+v", got)
+	}
+	line := FormatFlynnPostgresLine("p", "a", map[string]float64{"index_size_bytes": 2048})
+	if !strings.Contains(line, "sample#index_size=2048bytes") {
+		t.Fatal(line)
+	}
+}
+
 func TestFormatFlynnPostgresLine(t *testing.T) {
 	line := FormatFlynnPostgresLine("postgresql-basin-73690", "res-abc", map[string]float64{
 		"service_available":    1,
