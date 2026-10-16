@@ -195,7 +195,7 @@ func TestPromoteIsolatedJobStampsPrimaryAndBounces(t *testing.T) {
 		releases: []*ct.Release{{
 			ID:          "old",
 			ArtifactIDs: []string{"img"},
-			Env:         map[string]string{"FLYNN_POSTGRES": "postgresql-orchid-80127", "POSTGRES_ROLE": "follower", "ENGINE_VERSION": postgres.EngineVersion()},
+			Env:         map[string]string{"FLYNN_POSTGRES": "postgresql-orchid-80127", "FLYNN_POSTGRES_ROLE": "follower", "ENGINE_VERSION": postgres.EngineVersion()},
 			Processes:   map[string]ct.ProcessType{postgres.ProcessName: {}},
 		}},
 		current: map[string]string{"a1": "old"},
@@ -208,8 +208,8 @@ func TestPromoteIsolatedJobStampsPrimaryAndBounces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rel.Env["POSTGRES_ROLE"] != "primary" {
-		t.Fatalf("role=%s", rel.Env["POSTGRES_ROLE"])
+	if rel.Env["FLYNN_POSTGRES_ROLE"] != "primary" {
+		t.Fatalf("role=%s", rel.Env["FLYNN_POSTGRES_ROLE"])
 	}
 	if rel.Env["POSTGRES_SERVICE_ALIAS"] != "" {
 		t.Fatalf("must not alias the old service: %s", rel.Env["POSTGRES_SERVICE_ALIAS"])
@@ -457,7 +457,7 @@ func TestStampIsolatedRoleAddsMetricsPort(t *testing.T) {
 		apps: []*ct.App{{ID: "a1", Name: "postgresql-orchid-80127"}},
 		releases: []*ct.Release{{
 			ID:  "old",
-			Env: map[string]string{"FLYNN_POSTGRES": "postgresql-orchid-80127", "POSTGRES_ROLE": "primary"},
+			Env: map[string]string{"FLYNN_POSTGRES": "postgresql-orchid-80127", "FLYNN_POSTGRES_ROLE": "primary"},
 		}},
 		current: map[string]string{"a1": "old"},
 	}
@@ -521,10 +521,10 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"] != leader.ConnectionURL() {
-		t.Fatalf("POSTGRES_PRIMARY_URL=%q", ctrl.releases[0].Env["POSTGRES_PRIMARY_URL"])
+	if ctrl.releases[0].Env["FLYNN_POSTGRES_PRIMARY_URL"] != leader.ConnectionURL() {
+		t.Fatalf("POSTGRES_PRIMARY_URL=%q", ctrl.releases[0].Env["FLYNN_POSTGRES_PRIMARY_URL"])
 	}
-	if ctrl.releases[0].Env["POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["POSTGRES_LEADER"] != "pg-harbor-cccccc" {
+	if ctrl.releases[0].Env["FLYNN_POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["FLYNN_POSTGRES_LEADER"] != "pg-harbor-cccccc" {
 		t.Fatalf("role env %#v", ctrl.releases[0].Env)
 	}
 }
@@ -558,10 +558,10 @@ func TestStampIsolatedRoleClearsFollowerMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rel.Env["POSTGRES_ROLE"] != "primary" {
+	if rel.Env["FLYNN_POSTGRES_ROLE"] != "primary" {
 		t.Fatalf("role %#v", rel.Env)
 	}
-	if rel.Env["POSTGRES_LEADER"] != "" || rel.Env["POSTGRES_PRIMARY_URL"] != "" {
+	if rel.Env["FLYNN_POSTGRES_LEADER"] != "" || rel.Env["FLYNN_POSTGRES_PRIMARY_URL"] != "" {
 		t.Fatalf("leftover follower markers %#v", rel.Env)
 	}
 	if rel.Env["POSTGRES_USER"] != "app_u" || rel.Env["POSTGRES_PASSWORD"] != "apppw" || rel.Env["POSTGRES_DB"] != "db_shop" {
@@ -622,9 +622,9 @@ func TestLiveFollowerAppNamesFindsReplica(t *testing.T) {
 		releases: map[string]*ct.Release{
 			"p": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-fjord-21944"}},
 			"f": {Env: map[string]string{
-				"FLYNN_POSTGRES":  "postgresql-orchid-80127",
-				"POSTGRES_LEADER": "postgresql-fjord-21944",
-				"POSTGRES_ROLE":   "follower",
+				"FLYNN_POSTGRES":        "postgresql-orchid-80127",
+				"FLYNN_POSTGRES_LEADER": "postgresql-fjord-21944",
+				"FLYNN_POSTGRES_ROLE":   "follower",
 			}},
 		},
 	}
@@ -814,12 +814,12 @@ func TestApplyPostgresResourceEnvStampsLeaderApp(t *testing.T) {
 	}
 	env := map[string]string{}
 	applyPostgresResourceEnv(fol, env, &postgres.Instance{App: "postgresql-concave-22222"})
-	if env["POSTGRES_ROLE"] != "follower" || env["POSTGRES_LEADER"] != "postgresql-concave-22222" || env["FLYNN_POSTGRES"] != "postgresql-willow-11111" {
+	if env["FLYNN_POSTGRES_ROLE"] != "follower" || env["FLYNN_POSTGRES_LEADER"] != "postgresql-concave-22222" || env["FLYNN_POSTGRES"] != "postgresql-willow-11111" {
 		t.Fatalf("%v", env)
 	}
 	env = map[string]string{}
 	applyPostgresResourceEnv(fol, env, nil)
-	if env["POSTGRES_LEADER"] != "postgresql-concave-22222" {
+	if env["FLYNN_POSTGRES_LEADER"] != "postgresql-concave-22222" {
 		t.Fatalf("leader id fallback: %v", env)
 	}
 }
@@ -891,8 +891,8 @@ func TestReapOrphanKeepsUpgradeReplica(t *testing.T) {
 	c := &fakeOrphanReaper{
 		apps: []*ct.App{primary, replica},
 		releases: map[string]*ct.Release{
-			"basin-id":  {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690", "POSTGRES_ROLE": "primary"}},
-			"meadow-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-meadow-99423", "POSTGRES_ROLE": "follower", "POSTGRES_LEADER": "postgresql-basin-73690"}},
+			"basin-id":  {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690", "FLYNN_POSTGRES_ROLE": "primary"}},
+			"meadow-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-meadow-99423", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
 		},
 		resources: []*ct.Resource{
 			{ExternalID: "res-basin", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690"}},
@@ -979,8 +979,8 @@ func TestImageSwapReplicaExists(t *testing.T) {
 			{ID: "meadow-id", Name: "postgresql-meadow-99423"},
 		},
 		releases: map[string]*ct.Release{
-			"upland-id": {ArtifactIDs: []string{"img-old"}, Env: map[string]string{"POSTGRES_LEADER": "postgresql-basin-73690"}},
-			"meadow-id": {ArtifactIDs: []string{"img-new"}, Env: map[string]string{"POSTGRES_LEADER": "postgresql-basin-73690"}},
+			"upland-id": {ArtifactIDs: []string{"img-old"}, Env: map[string]string{"FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
+			"meadow-id": {ArtifactIDs: []string{"img-new"}, Env: map[string]string{"FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
 		},
 	}
 	if !imageSwapReplicaExists(c, "postgresql-basin-73690", "img-new") {

@@ -242,7 +242,7 @@ func livePostgresRole(c interface {
 	if err != nil || rel == nil || rel.Env == nil {
 		return ""
 	}
-	return strings.ToLower(strings.TrimSpace(rel.Env["POSTGRES_ROLE"]))
+	return strings.ToLower(strings.TrimSpace(rel.Env["FLYNN_POSTGRES_ROLE"]))
 }
 
 func imageSwapClaimHeld(c interface {

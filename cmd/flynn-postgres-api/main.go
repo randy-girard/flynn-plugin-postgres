@@ -268,7 +268,7 @@ func liveFollowerAppNames(c followerAppLister, inst *postgres.Instance) ([]strin
 		if err != nil || rel == nil || rel.Env == nil {
 			continue
 		}
-		pointsAt := strings.TrimSpace(rel.Env["POSTGRES_LEADER"])
+		pointsAt := strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"])
 		if pointsAt == "" {
 			continue
 		}
@@ -582,19 +582,19 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 	}
 	delete(env, "POSTGRES_URL")
 	if inst.Role == postgres.RoleFollower {
-		env["POSTGRES_ROLE"] = "follower"
+		env["FLYNN_POSTGRES_ROLE"] = "follower"
 		leaderApp := ""
 		if leader != nil {
 			leaderApp = strings.TrimSpace(leader.App)
 			if u := strings.TrimSpace(leader.ConnectionURL()); u != "" {
-				env["POSTGRES_PRIMARY_URL"] = u
+				env["FLYNN_POSTGRES_PRIMARY_URL"] = u
 			}
 		}
 		if leaderApp == "" && postgres.IsolatedInstanceApp(inst.LeaderID) {
 			leaderApp = strings.TrimSpace(inst.LeaderID)
 		}
 		if leaderApp != "" {
-			env["POSTGRES_LEADER"] = leaderApp
+			env["FLYNN_POSTGRES_LEADER"] = leaderApp
 		}
 		if inst.AutoFailover {
 			env[postgres.EnvAutoFailover] = "true"
@@ -602,24 +602,24 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 		return
 	}
 	if inst.Role == postgres.RoleDeposed {
-		env["POSTGRES_ROLE"] = "deposed"
+		env["FLYNN_POSTGRES_ROLE"] = "deposed"
 		if leader != nil && strings.TrimSpace(leader.App) != "" {
-			env["POSTGRES_LEADER"] = leader.App
+			env["FLYNN_POSTGRES_LEADER"] = leader.App
 		} else if strings.TrimSpace(inst.LeaderID) != "" {
-			env["POSTGRES_LEADER"] = inst.LeaderID
+			env["FLYNN_POSTGRES_LEADER"] = inst.LeaderID
 		}
-		delete(env, "POSTGRES_PRIMARY_URL")
+		delete(env, "FLYNN_POSTGRES_PRIMARY_URL")
 		delete(env, postgres.EnvAutoFailover)
 		return
 	}
-	env["POSTGRES_ROLE"] = "primary"
-	delete(env, "POSTGRES_LEADER")
-	delete(env, "POSTGRES_PRIMARY_URL")
+	env["FLYNN_POSTGRES_ROLE"] = "primary"
+	delete(env, "FLYNN_POSTGRES_LEADER")
+	delete(env, "FLYNN_POSTGRES_PRIMARY_URL")
 	delete(env, postgres.EnvAutoFailover)
 	if inst.ReplicaPending {
-		env["REPLICA_PENDING"] = "true"
+		env["FLYNN_POSTGRES_REPLICA_PENDING"] = "true"
 	} else {
-		delete(env, "REPLICA_PENDING")
+		delete(env, "FLYNN_POSTGRES_REPLICA_PENDING")
 	}
 }
 

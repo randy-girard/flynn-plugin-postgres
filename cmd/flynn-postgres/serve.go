@@ -48,7 +48,7 @@ func servePostgres() error {
 	postgres.LogEngineVersion(os.Stderr)
 	ensurePgStatStatements(bin)
 	ensureWalKeepSize()
-	if _, err := os.Stat("/data/standby.signal"); err != nil && os.Getenv("POSTGRES_PRIMARY_URL") == "" {
+	if _, err := os.Stat("/data/standby.signal"); err != nil && os.Getenv("FLYNN_POSTGRES_PRIMARY_URL") == "" {
 		if err := ensureConnectIsolation(bin); err != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			return err
@@ -119,8 +119,8 @@ func instanceMetricLine(ctx context.Context) string {
 
 func logInstanceTopology() {
 	source, _ := postgres.InstanceMetricIDs()
-	role := strings.ToLower(strings.TrimSpace(os.Getenv("POSTGRES_ROLE")))
-	leader := strings.TrimSpace(os.Getenv("POSTGRES_LEADER"))
+	role := strings.ToLower(strings.TrimSpace(firstSet(os.Getenv("FLYNN_POSTGRES_ROLE"), os.Getenv("POSTGRES_ROLE"))))
+	leader := strings.TrimSpace(firstSet(os.Getenv("FLYNN_POSTGRES_LEADER"), os.Getenv("POSTGRES_LEADER")))
 	event := "primary"
 	msg := "role=primary"
 	switch role {
@@ -271,6 +271,15 @@ func ensureConnectIsolation(postgresBin string) error {
 		return fmt.Errorf("postgres CONNECT isolation: %w", err)
 	}
 	return nil
+}
+
+func firstSet(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func waitLocalPort(addr string, timeout time.Duration) error {

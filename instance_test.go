@@ -249,20 +249,20 @@ func TestInstanceFromEnv(t *testing.T) {
 		t.Fatalf("db %#v", inst.Databases)
 	}
 	fol := InstanceFromEnv("id", "pg-willow-abcdef", map[string]string{
-		"FLYNN_POSTGRES":  "pg-willow-abcdef",
-		"POSTGRES_ROLE":   "follower",
-		"POSTGRES_LEADER": "pg-orchid-xkhthp",
-		"POSTGRES_USER":   "app_live",
+		"FLYNN_POSTGRES":        "pg-willow-abcdef",
+		"FLYNN_POSTGRES_ROLE":   "follower",
+		"FLYNN_POSTGRES_LEADER": "pg-orchid-xkhthp",
+		"POSTGRES_USER":         "app_live",
 	})
 	if fol == nil || fol.Role != RoleFollower || fol.LeaderID != "pg-orchid-xkhthp" {
 		t.Fatalf("follower %+v", fol)
 	}
 	unfollowed := InstanceFromEnv("id", "pg-willow-abcdef", map[string]string{
-		"FLYNN_POSTGRES":       "pg-willow-abcdef",
-		"POSTGRES_ROLE":        "primary",
-		"POSTGRES_LEADER":      "pg-orchid-xkhthp",
-		"POSTGRES_PRIMARY_URL": "postgres://leader/db",
-		"POSTGRES_USER":        "app_live",
+		"FLYNN_POSTGRES":             "pg-willow-abcdef",
+		"FLYNN_POSTGRES_ROLE":        "primary",
+		"FLYNN_POSTGRES_LEADER":      "pg-orchid-xkhthp",
+		"FLYNN_POSTGRES_PRIMARY_URL": "postgres://leader/db",
+		"POSTGRES_USER":              "app_live",
 	})
 	if unfollowed == nil || unfollowed.Role != RolePrimary || unfollowed.LeaderID != "" || unfollowed.ReadOnly {
 		t.Fatalf("unfollowed leftover markers %+v", unfollowed)

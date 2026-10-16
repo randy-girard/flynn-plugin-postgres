@@ -57,7 +57,7 @@ func assertPostgresAppEnvCommon(t *testing.T, env, resource string) {
 	for _, k := range []string{
 		"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE",
 		"POSTGRES_URL", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST",
-		"FLYNN_POSTGRES", "POSTGRES_ROLE",
+		"FLYNN_POSTGRES", "FLYNN_POSTGRES_ROLE",
 	} {
 		if envHasKey(env, k) {
 			t.Fatalf("app must not set %s:\n%s", k, env)

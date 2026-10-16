@@ -45,13 +45,13 @@ func TestAdoptLiveFollowersKeepsFollowerAppWhenFlynnPostgresPointsAtLeader(t *te
 		},
 		rels: map[string]*ct.Release{
 			"basin-id": {Env: map[string]string{
-				"FLYNN_POSTGRES": "postgresql-basin-73690",
-				"POSTGRES_ROLE":  "primary",
+				"FLYNN_POSTGRES":      "postgresql-basin-73690",
+				"FLYNN_POSTGRES_ROLE": "primary",
 			}},
 			"valley-id": {Env: map[string]string{
-				"FLYNN_POSTGRES":  "postgresql-basin-73690",
-				"POSTGRES_ROLE":   "follower",
-				"POSTGRES_LEADER": "postgresql-basin-73690",
+				"FLYNN_POSTGRES":        "postgresql-basin-73690",
+				"FLYNN_POSTGRES_ROLE":   "follower",
+				"FLYNN_POSTGRES_LEADER": "postgresql-basin-73690",
 			}},
 		},
 	}
@@ -131,7 +131,7 @@ func TestSkipFollowerReplaceLeaderDeposed(t *testing.T) {
 
 func TestLivePostgresRoleReadsRelease(t *testing.T) {
 	c := &fakeListReleaser{rels: map[string]*ct.Release{
-		"postgresql-prairie-69929": {Env: map[string]string{"POSTGRES_ROLE": "primary"}},
+		"postgresql-prairie-69929": {Env: map[string]string{"FLYNN_POSTGRES_ROLE": "primary"}},
 	}}
 	if got := livePostgresRole(c, "postgresql-prairie-69929"); got != "primary" {
 		t.Fatalf("role %q", got)

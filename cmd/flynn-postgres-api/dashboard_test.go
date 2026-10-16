@@ -175,19 +175,19 @@ func TestDashReplicationListsControllerFollower(t *testing.T) {
 				ID:         "res-leader",
 				ProviderID: "prov-pg",
 				Env: map[string]string{
-					"FLYNN_POSTGRES": "pg-orchid-xkhthp",
-					"PGDATABASE":     "db_a803c7ba",
-					"POSTGRES_ROLE":  "primary",
+					"FLYNN_POSTGRES":      "pg-orchid-xkhthp",
+					"PGDATABASE":          "db_a803c7ba",
+					"FLYNN_POSTGRES_ROLE": "primary",
 				},
 			},
 			{
 				ID:         "res-fol",
 				ProviderID: "prov-pg",
 				Env: map[string]string{
-					"FLYNN_POSTGRES":  "pg-willow-abcdef",
-					"PGDATABASE":      "db_a803c7ba",
-					"POSTGRES_ROLE":   "follower",
-					"POSTGRES_LEADER": "pg-orchid-xkhthp",
+					"FLYNN_POSTGRES":        "pg-willow-abcdef",
+					"PGDATABASE":            "db_a803c7ba",
+					"FLYNN_POSTGRES_ROLE":   "follower",
+					"FLYNN_POSTGRES_LEADER": "pg-orchid-xkhthp",
 				},
 			},
 		}, nil
@@ -330,8 +330,8 @@ func TestDashFollowResolvesControllerResourceID(t *testing.T) {
 			ID:         "controller-res-uuid",
 			ProviderID: "postgres",
 			Env: map[string]string{
-				"FLYNN_POSTGRES": leader.App,
-				"POSTGRES_ROLE":  "primary",
+				"FLYNN_POSTGRES":      leader.App,
+				"FLYNN_POSTGRES_ROLE": "primary",
 			},
 		}}, nil
 	}
@@ -828,21 +828,21 @@ func TestDashListUsersOnceAcrossFollowers(t *testing.T) {
 				ID:         "res-leader",
 				ProviderID: "postgres",
 				Env: map[string]string{
-					"FLYNN_POSTGRES": "pg-orchid-xkhthp",
-					"PGDATABASE":     "appdb",
-					"PGUSER":         "app_leader",
-					"POSTGRES_ROLE":  "primary",
+					"FLYNN_POSTGRES":      "pg-orchid-xkhthp",
+					"PGDATABASE":          "appdb",
+					"PGUSER":              "app_leader",
+					"FLYNN_POSTGRES_ROLE": "primary",
 				},
 			},
 			{
 				ID:         "res-fol",
 				ProviderID: "postgres",
 				Env: map[string]string{
-					"FLYNN_POSTGRES":  "pg-willow-abcdef",
-					"PGDATABASE":      "appdb",
-					"PGUSER":          "app_follower_login",
-					"POSTGRES_ROLE":   "follower",
-					"POSTGRES_LEADER": "pg-orchid-xkhthp",
+					"FLYNN_POSTGRES":        "pg-willow-abcdef",
+					"PGDATABASE":            "appdb",
+					"PGUSER":                "app_follower_login",
+					"FLYNN_POSTGRES_ROLE":   "follower",
+					"FLYNN_POSTGRES_LEADER": "pg-orchid-xkhthp",
 				},
 			},
 		}, nil

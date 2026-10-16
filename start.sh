@@ -22,7 +22,7 @@ if [[ ! -s /data/PG_VERSION ]]; then
     # --checkpoint=fast: spread (the default) waits for the next scheduled
     # checkpoint, which on an idle/empty primary can be checkpoint_timeout
     # (5 minutes) because nothing fills WAL.
-    as_postgres "${PG_BIN}/pg_basebackup" -d "${POSTGRES_PRIMARY_URL}" -D /data -Fp -Xs -R --checkpoint=fast --no-password
+    as_postgres "${PG_BIN}/pg_basebackup" -d "${FLYNN_POSTGRES_PRIMARY_URL}" -D /data -Fp -Xs -R --checkpoint=fast --no-password
     chown -R postgres:postgres /data
   else
     as_postgres "${PG_BIN}/initdb" -D /data --auth-local=trust --auth-host=md5
@@ -74,7 +74,7 @@ grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max
 
 # Follower-swap image refresh stamps POSTGRES_ROLE=primary and bounces this
 # job. pg_basebackup -R left standby.signal, which would keep us read-only.
-if [[ "${POSTGRES_ROLE:-}" == "primary" ]]; then
+if [[ "${FLYNN_POSTGRES_ROLE:-${POSTGRES_ROLE:-}}" == "primary" ]]; then
   rm -f /data/standby.signal /data/recovery.signal
 fi
 

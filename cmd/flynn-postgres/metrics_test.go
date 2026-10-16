@@ -142,8 +142,8 @@ func TestInstanceMetricsPortDefault(t *testing.T) {
 
 func TestLogInstanceTopologyWritesFlynnLine(t *testing.T) {
 	t.Setenv("FLYNN_POSTGRES", "postgresql-upland-22935")
-	t.Setenv("POSTGRES_ROLE", "follower")
-	t.Setenv("POSTGRES_LEADER", "postgresql-basin-73690")
+	t.Setenv("FLYNN_POSTGRES_ROLE", "follower")
+	t.Setenv("FLYNN_POSTGRES_LEADER", "postgresql-basin-73690")
 	origLog := instanceMetricsLog
 	t.Cleanup(func() { instanceMetricsLog = origLog })
 	var got string

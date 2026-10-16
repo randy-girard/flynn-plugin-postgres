@@ -51,7 +51,7 @@ var (
 	ErrAutoFailoverFollow = errors.New("auto-failover requires a follower (--follow)")
 )
 
-const EnvAutoFailover = "AUTO_FAILOVER"
+const EnvAutoFailover = "FLYNN_POSTGRES_AUTO_FAILOVER"
 
 // User is a role that exists only in one instance's state.
 type User struct {
@@ -1099,6 +1099,7 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	if env == nil {
 		return nil
 	}
+	promoteAttachmentEnv(env)
 	if strings.TrimSpace(env["FLYNN_POSTGRES"]) == "" && strings.TrimSpace(env["POSTGRES_URL"]) == "" && strings.TrimSpace(env["DATABASE_URL"]) == "" && strings.TrimSpace(env["POSTGRES_USER"]) == "" && strings.TrimSpace(env["PGUSER"]) == "" {
 		return nil
 	}
@@ -1157,7 +1158,7 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	if db != "" {
 		inst.Databases = []Database{{Name: db}}
 	}
-	role := strings.TrimSpace(env["POSTGRES_ROLE"])
+	role := strings.TrimSpace(env["FLYNN_POSTGRES_ROLE"])
 	if strings.EqualFold(role, "primary") || strings.EqualFold(role, "standalone") {
 		inst.Role = RolePrimary
 		inst.ReadOnly = false
@@ -1165,18 +1166,38 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	} else if strings.EqualFold(role, "deposed") {
 		inst.Role = RoleDeposed
 		inst.ReadOnly = true
-		inst.LeaderID = firstNonEmpty(env["POSTGRES_LEADER"], inst.LeaderID)
-	} else if strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_LEADER"]) != "" {
+		inst.LeaderID = firstNonEmpty(env["FLYNN_POSTGRES_LEADER"], inst.LeaderID)
+	} else if strings.TrimSpace(env["FLYNN_POSTGRES_PRIMARY_URL"]) != "" || strings.EqualFold(role, "follower") || strings.TrimSpace(env["FLYNN_POSTGRES_LEADER"]) != "" {
 		inst.Role = RoleFollower
 		inst.ReadOnly = true
-		inst.LeaderID = firstNonEmpty(env["POSTGRES_LEADER"], inst.LeaderID)
+		inst.LeaderID = firstNonEmpty(env["FLYNN_POSTGRES_LEADER"], inst.LeaderID)
 		inst.AutoFailover = envBool(env[EnvAutoFailover])
 	}
-	inst.ReplicaPending = envBool(env["REPLICA_PENDING"])
+	inst.ReplicaPending = envBool(env["FLYNN_POSTGRES_REPLICA_PENDING"])
 	if inst.Role == RolePrimary {
 		inst.AutoFailover = false
 	}
 	return inst
+}
+
+// promoteAttachmentEnv copies pre-prefix keys (POSTGRES_ROLE) onto
+// FLYNN_POSTGRES_ROLE so a release written before the rename still loads.
+func promoteAttachmentEnv(env map[string]string) {
+	if env == nil {
+		return
+	}
+	pairs := [][2]string{
+		{"FLYNN_POSTGRES_ROLE", "POSTGRES_ROLE"},
+		{"FLYNN_POSTGRES_LEADER", "POSTGRES_LEADER"},
+		{"FLYNN_POSTGRES_PRIMARY_URL", "POSTGRES_PRIMARY_URL"},
+		{"FLYNN_POSTGRES_REPLICA_PENDING", "REPLICA_PENDING"},
+		{"FLYNN_POSTGRES_AUTO_FAILOVER", "AUTO_FAILOVER"},
+	}
+	for _, p := range pairs {
+		if strings.TrimSpace(env[p[0]]) == "" && strings.TrimSpace(env[p[1]]) != "" {
+			env[p[0]] = env[p[1]]
+		}
+	}
 }
 
 func envBool(v string) bool {

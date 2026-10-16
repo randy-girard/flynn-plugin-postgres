@@ -278,19 +278,19 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	copyClusterDiscoverdEnv(env)
 	stampInstanceMetricsPort(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {
-		env["POSTGRES_PRIMARY_URL"] = leader.ConnectionURL()
-		env["POSTGRES_ROLE"] = "follower"
+		env["FLYNN_POSTGRES_PRIMARY_URL"] = leader.ConnectionURL()
+		env["FLYNN_POSTGRES_ROLE"] = "follower"
 		if leader.App != "" {
-			env["POSTGRES_LEADER"] = leader.App
+			env["FLYNN_POSTGRES_LEADER"] = leader.App
 		}
 	} else {
-		env["POSTGRES_ROLE"] = "primary"
+		env["FLYNN_POSTGRES_ROLE"] = "primary"
 	}
 	if inst.AutoFailover {
 		env[postgres.EnvAutoFailover] = "true"
 	}
 	if inst.ReplicaPending {
-		env["REPLICA_PENDING"] = "true"
+		env["FLYNN_POSTGRES_REPLICA_PENDING"] = "true"
 	}
 	release := &ct.Release{
 		ArtifactIDs: []string{imageID},
@@ -532,7 +532,7 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 		}
 		if keep[app.Name] || keep[app.ID] || keep[rel.Env[postgres.ResourceIDEnv]] || keep[rel.Env["FLYNN_POSTGRES"]] {
 			keep[app.Name] = true
-			if leader := strings.TrimSpace(rel.Env["POSTGRES_LEADER"]); leader != "" {
+			if leader := strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"]); leader != "" {
 				keep[leader] = true
 			}
 		}
@@ -553,7 +553,7 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 			if rel == nil || rel.Env == nil {
 				continue
 			}
-			leader := strings.TrimSpace(rel.Env["POSTGRES_LEADER"])
+			leader := strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"])
 			if leader != "" && keep[leader] {
 				keep[app.Name] = true
 				keep[app.ID] = true
@@ -767,7 +767,7 @@ func imageSwapReplicaExists(c appListReleaser, leaderApp, imageID string) bool {
 		if relErr != nil || rel == nil || rel.Env == nil {
 			continue
 		}
-		if strings.TrimSpace(rel.Env["POSTGRES_LEADER"]) != leaderApp {
+		if strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"]) != leaderApp {
 			continue
 		}
 		if len(rel.ArtifactIDs) > 0 && strings.TrimSpace(rel.ArtifactIDs[0]) == imageID {

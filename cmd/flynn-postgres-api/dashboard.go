@@ -251,8 +251,8 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 	inst.Attachments = []postgres.Attachment{{
 		App: app,
 	}}
-	leader := strings.TrimSpace(env["POSTGRES_LEADER"])
-	role := strings.TrimSpace(env["POSTGRES_ROLE"])
+	leader := strings.TrimSpace(env["FLYNN_POSTGRES_LEADER"])
+	role := strings.TrimSpace(env["FLYNN_POSTGRES_ROLE"])
 	if strings.EqualFold(role, "primary") || strings.EqualFold(role, "standalone") {
 		inst.Role = postgres.RolePrimary
 		inst.ReadOnly = false
@@ -263,7 +263,7 @@ func instanceFromResource(r *ct.Resource, app string) *postgres.Instance {
 		if leader != "" {
 			inst.LeaderID = leader
 		}
-	} else if strings.EqualFold(role, "follower") || strings.TrimSpace(env["POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
+	} else if strings.EqualFold(role, "follower") || strings.TrimSpace(env["FLYNN_POSTGRES_PRIMARY_URL"]) != "" || leader != "" {
 		inst.Role = postgres.RoleFollower
 		inst.ReadOnly = true
 		if leader != "" {

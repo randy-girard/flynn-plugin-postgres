@@ -221,7 +221,7 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "exec /bin/flynn-postgres serve") {
 		t.Fatal("the postgres process must stay up under the discoverd supervisor")
 	}
-	if !strings.Contains(src, "POSTGRES_ROLE") || !strings.Contains(src, "standby.signal") {
+	if !strings.Contains(src, "FLYNN_POSTGRES_ROLE") || !strings.Contains(src, "standby.signal") {
 		t.Fatal("start.sh must drop standby.signal when POSTGRES_ROLE=primary so follower-swap can promote")
 	}
 	serve, err := os.ReadFile("cmd/flynn-postgres/serve.go")
@@ -255,7 +255,7 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "-d template1") {
 		t.Fatal("bootstrap must install pg_stat_statements in template1 for later CREATE DATABASE")
 	}
-	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "POSTGRES_PRIMARY_URL") {
+	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "FLYNN_POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
 	}
 	if !strings.Contains(src, "--checkpoint=fast") {

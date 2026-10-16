@@ -9,7 +9,7 @@ func TestRewriteAttachmentEnvSwapsHostAndApp(t *testing.T) {
 		"FLYNN_POSTGRES":             prev.App,
 		"DATABASE_URL":               "postgres://u:p@leader.postgresql-basin-73690.discoverd:5432/db?sslmode=require",
 		"FLYNN_POSTGRESQL_AMBER_URL": "postgres://u:p@leader.postgresql-basin-73690.discoverd:5432/db?sslmode=require",
-		"POSTGRES_ROLE":              "primary",
+		"FLYNN_POSTGRES_ROLE":        "primary",
 	}
 	RewriteAttachmentEnv(env, prev, next)
 	if env["FLYNN_POSTGRES"] != next.App {

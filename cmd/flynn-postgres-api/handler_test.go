@@ -46,7 +46,7 @@ func TestHTTPProvisionDoesNotTargetAppliance(t *testing.T) {
 	if out.Env["POSTGRES_URL"] != "" {
 		t.Fatalf("POSTGRES_URL must not be stored: %#v", out.Env)
 	}
-	if out.Env["POSTGRES_ROLE"] != "primary" {
+	if out.Env["FLYNN_POSTGRES_ROLE"] != "primary" {
 		t.Fatalf("role %#v", out.Env)
 	}
 	if out.Env["ANALYTICS_URL"] == "" {
@@ -127,7 +127,7 @@ func TestHTTPProvisionFollowStampsRole(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err != nil {
 		t.Fatal(err)
 	}
-	if fol.Env["POSTGRES_ROLE"] != "follower" || fol.Env["POSTGRES_LEADER"] != name {
+	if fol.Env["FLYNN_POSTGRES_ROLE"] != "follower" || fol.Env["FLYNN_POSTGRES_LEADER"] != name {
 		t.Fatalf("follower env %#v", fol.Env)
 	}
 	if fol.Env["FLYNN_POSTGRES"] == "" || fol.Env["FLYNN_POSTGRES"] == name {
@@ -184,7 +184,7 @@ func TestHTTPFollowRouteAttachesReplica(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &fol); err != nil {
 		t.Fatal(err)
 	}
-	if fol.Env["POSTGRES_ROLE"] != "follower" || fol.Env["POSTGRES_LEADER"] != name {
+	if fol.Env["FLYNN_POSTGRES_ROLE"] != "follower" || fol.Env["FLYNN_POSTGRES_LEADER"] != name {
 		t.Fatalf("follower env %#v", fol.Env)
 	}
 	if fol.Env["FLYNN_POSTGRES"] == "" || fol.Env["FLYNN_POSTGRES"] == name {
