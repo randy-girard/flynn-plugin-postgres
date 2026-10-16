@@ -89,10 +89,17 @@ if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
     exit 1
   fi
   as_postgres "${PG_BIN}/pg_ctl" -D /data -w start
+  # Older images finished bootstrap without .flynn-bootstrapped. CREATE ROLE
+  # and CREATE DATABASE then fail, the marker is never written, and the job
+  # crash-loops. Skip the ones that already exist.
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres <<SQL
-CREATE ROLE ${user} LOGIN PASSWORD '${pass}' CONNECTION LIMIT 20 NOSUPERUSER CREATEDB CREATEROLE REPLICATION;
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L CONNECTION LIMIT 20 NOSUPERUSER CREATEDB CREATEROLE REPLICATION;', '${user}', '${pass}')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${user}')
+\gexec
 GRANT pg_monitor TO ${user};
-CREATE DATABASE ${db} OWNER ${user};
+SELECT format('CREATE DATABASE %I OWNER %I', '${db}', '${user}')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = '${db}')
+\gexec
 REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 REVOKE CONNECT ON DATABASE ${db} FROM PUBLIC;

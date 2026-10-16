@@ -252,6 +252,12 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements") {
 		t.Fatal("bootstrap must create pg_stat_statements for slow-query metrics")
 	}
+	if strings.Contains(src, "CREATE ROLE ${user} LOGIN") || strings.Contains(src, "CREATE DATABASE ${db} OWNER") {
+		t.Fatal("bootstrap must skip CREATE ROLE and CREATE DATABASE when an older image already created them")
+	}
+	if !strings.Contains(src, "pg_roles") || !strings.Contains(src, "pg_database") || !strings.Contains(src, ".flynn-bootstrapped") {
+		t.Fatal("bootstrap must notice an existing role and database, then record .flynn-bootstrapped")
+	}
 	if !strings.Contains(src, "-d template1") {
 		t.Fatal("bootstrap must install pg_stat_statements in template1 for later CREATE DATABASE")
 	}
