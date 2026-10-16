@@ -259,7 +259,17 @@ func parseSlowQueries(raw string) ([]slowQuery, error) {
 	if out == nil {
 		out = []slowQuery{}
 	}
-	return out, nil
+	kept := out[:0]
+	for _, q := range out {
+		if postgres.IsCatalogSlowQuery(q.Query) {
+			continue
+		}
+		kept = append(kept, q)
+	}
+	if kept == nil {
+		kept = []slowQuery{}
+	}
+	return kept, nil
 }
 
 func (h *handler) allMetricsInstances() []*postgres.Instance {

@@ -3,6 +3,7 @@ package postgres
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -43,15 +44,25 @@ const SnapshotSQL = `SELECT concat_ws('|',
 
 const StatStatementsExistsSQL = `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')`
 
+// StatStatementsSQL is the slow-query list. Bootstrap runs as the postgres
+// superuser before the tenant exists. Statements that read pg_* relations
+// or information_schema are catalog traffic and stay off the Slow queries tab.
 const StatStatementsSQL = `SELECT COALESCE(json_agg(t), '[]'::json) FROM (
-  SELECT left(regexp_replace(query, E'[\\n\\r]+', ' ', 'g'), 240) AS query,
-         calls,
-         mean_exec_time AS mean_ms,
-         total_exec_time AS total_ms,
-         max_exec_time AS max_ms
-  FROM pg_stat_statements
-  WHERE query NOT ILIKE '%pg_stat_statements%'
-  ORDER BY mean_exec_time DESC
+  SELECT left(regexp_replace(s.query, E'[\\n\\r]+', ' ', 'g'), 240) AS query,
+         s.calls,
+         s.mean_exec_time AS mean_ms,
+         s.total_exec_time AS total_ms,
+         s.max_exec_time AS max_ms
+  FROM pg_stat_statements s
+  LEFT JOIN pg_catalog.pg_roles r ON r.oid = s.userid
+  LEFT JOIN pg_catalog.pg_database d ON d.oid = s.dbid
+  WHERE s.query !~* '(^|[^[:alnum:]_])pg_[[:alnum:]_]+'
+    AND s.query NOT ILIKE '%information_schema%'
+    AND COALESCE(r.rolname, '') <> 'postgres'
+    AND COALESCE(d.datname, '') NOT IN ('postgres', 'template0', 'template1')
+    AND s.query !~* '^[[:space:]]*(CREATE|ALTER)[[:space:]]+(ROLE|USER|DATABASE|EXTENSION)\M'
+    AND s.query !~* '^[[:space:]]*(GRANT|REVOKE)\M'
+  ORDER BY s.mean_exec_time DESC
   LIMIT 15
 ) t`
 
@@ -65,7 +76,12 @@ const ActivitySlowSQL = `SELECT COALESCE(json_agg(t), '[]'::json) FROM (
   WHERE state = 'active'
     AND pid <> pg_backend_pid()
     AND query_start < now() - interval '500 milliseconds'
-    AND query NOT ILIKE '%pg_stat%'
+    AND query !~* '(^|[^[:alnum:]_])pg_[[:alnum:]_]+'
+    AND query NOT ILIKE '%information_schema%'
+    AND usename IS DISTINCT FROM 'postgres'
+    AND datname NOT IN ('postgres', 'template0', 'template1')
+    AND query !~* '^[[:space:]]*(CREATE|ALTER)[[:space:]]+(ROLE|USER|DATABASE|EXTENSION)\M'
+    AND query !~* '^[[:space:]]*(GRANT|REVOKE)\M'
   ORDER BY query_start
   LIMIT 15
 ) t`
@@ -76,6 +92,17 @@ func InstanceMetricIDs() (source, addon string) {
 	source = firstNonEmpty(os.Getenv("FLYNN_POSTGRES"), os.Getenv("FLYNN_APP_NAME"), os.Getenv("POSTGRES_DB"), "postgres")
 	addon = firstNonEmpty(os.Getenv(ResourceIDEnv), source)
 	return source, addon
+}
+
+// catalogSlowQuery matches pg_* relations and information_schema. PostgreSQL
+// \m is not a word boundary in this build, so the class form is what the
+// slow-query SQL uses too.
+var catalogSlowQuery = regexp.MustCompile(`(?i)(^|[^[:alnum:]_])pg_[[:alnum:]_]+|information_schema`)
+
+// IsCatalogSlowQuery reports a statement that reads catalog tables. Those
+// rows stay in pg_stat_statements after provisioning and metrics probes.
+func IsCatalogSlowQuery(query string) bool {
+	return catalogSlowQuery.MatchString(query)
 }
 
 func ParsePostgresSnapshot(raw string) (map[string]float64, bool) {

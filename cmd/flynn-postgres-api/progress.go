@@ -68,17 +68,18 @@ func (h *handler) progressReport(sess *dashui.Session, instance string) progress
 		}
 	}
 	if primary != nil {
-		out.Upgrade = h.store.LatestUpgrade(instanceRef(primary))
-	}
-	if out.Upgrade == nil {
-		for _, task := range h.store.ListTasks() {
-			if task != nil && task.Kind == postgres.TaskKindUpgrade && task.Status != postgres.TaskDone && task.Status != postgres.TaskFailed {
-				out.Upgrade = task
-				break
-			}
-		}
+		out.Upgrade = openUpgrade(h.store.LatestUpgrade(instanceRef(primary)))
 	}
 	return out
+}
+
+// openUpgrade is the in-progress upgrade for this instance. A task for a
+// different database must not light up every resource page.
+func openUpgrade(task *postgres.Task) *postgres.Task {
+	if task == nil || task.Status == postgres.TaskDone || task.Status == postgres.TaskFailed {
+		return nil
+	}
+	return task
 }
 
 func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.ReplicaProgress, error) {

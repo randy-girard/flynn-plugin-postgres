@@ -69,7 +69,9 @@ if grep -q "^shared_preload_libraries" "${conf}"; then
 else
   echo "shared_preload_libraries = 'timescaledb,pg_stat_statements'" >> "${conf}"
 fi
-grep -q "^pg_stat_statements.track" "${conf}" || echo "pg_stat_statements.track = all" >> "${conf}"
+# none until bootstrap finishes. The block below turns tracking on and
+# resets the view so CREATE ROLE / CREATE DATABASE never become slow queries.
+grep -q "^pg_stat_statements.track" "${conf}" || echo "pg_stat_statements.track = none" >> "${conf}"
 grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max_background_workers = 8" >> "${conf}"
 
 # Follower-swap image refresh stamps POSTGRES_ROLE=primary and bounces this
@@ -104,6 +106,10 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
+  # Tenant queries start here. Clear anything the bootstrap session recorded.
+  sed -i "s/^pg_stat_statements.track.*/pg_stat_statements.track = all/" "${conf}"
+  as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres -c "SELECT pg_stat_statements_reset();"
+  as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d "${db}" -c "SELECT pg_stat_statements_reset();"
   as_postgres "${PG_BIN}/pg_ctl" -D /data -m fast -w stop
   touch /data/.flynn-bootstrapped
   chown postgres:postgres /data/.flynn-bootstrapped

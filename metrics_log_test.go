@@ -105,6 +105,36 @@ func TestInstanceMetricIDsFallback(t *testing.T) {
 	}
 }
 
+func TestIsCatalogSlowQuery(t *testing.T) {
+	for _, q := range []string{
+		"SELECT EXISTS(SELECT $1 FROM pg_extension WHERE extname = $2)",
+		"SELECT COUNT(*) FROM pg_stat_activity WHERE state = $1",
+		"SELECT SUM(pg_database_size(oid)) FROM pg_database",
+		"SELECT * FROM information_schema.tables",
+	} {
+		if !IsCatalogSlowQuery(q) {
+			t.Fatalf("catalog query must be hidden: %s", q)
+		}
+	}
+	if IsCatalogSlowQuery("SELECT * FROM orders WHERE id = $1") {
+		t.Fatal("tenant query must stay")
+	}
+	if IsCatalogSlowQuery("SELECT * FROM my_pg_log") {
+		t.Fatal("a user table that merely contains pg_ must stay")
+	}
+}
+
+func TestSlowQuerySQLSkipsCatalogTables(t *testing.T) {
+	for _, sql := range []string{StatStatementsSQL, ActivitySlowSQL} {
+		if !strings.Contains(sql, `(^|[^[:alnum:]_])pg_[[:alnum:]_]+`) || !strings.Contains(sql, "information_schema") {
+			t.Fatalf("catalog tables must be excluded:\n%s", sql)
+		}
+		if strings.Contains(sql, `\m`) {
+			t.Fatal(`\m does not match pg_* on this Postgres`)
+		}
+	}
+}
+
 func TestSnapshotSQLSkipsXactIdOnReplica(t *testing.T) {
 	if !strings.Contains(SnapshotSQL, "pg_is_in_recovery()") || !strings.Contains(SnapshotSQL, "pg_current_xact_id()") {
 		t.Fatal("replica metrics must not call pg_current_xact_id() during recovery")

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
+	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
 )
 
 func TestParseBasebackupRow(t *testing.T) {
@@ -235,5 +236,31 @@ func TestReplicaCopyProgressLeaderUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(got.Message, "unreachable") || !strings.Contains(got.Message, "postgresql-valley-30620") {
 		t.Fatalf("message %q", got.Message)
+	}
+}
+
+func TestProgressReportOmitsAnotherDatabasesUpgrade(t *testing.T) {
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop", Tenant: "shop"}); err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := store.Provision(postgres.ProvisionRequest{App: "other", Tenant: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	if _, err := store.StartUpgrade(other.ID, postgres.UpgradeOptions{
+		AfterFollow: func(*postgres.Instance) error {
+			<-block
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{store: store}
+	report := h.progressReport(&dashui.Session{AppID: "shop", AppName: "shop"}, "")
+	if report.Upgrade != nil {
+		t.Fatalf("another database's upgrade leaked onto this page: %+v", report.Upgrade)
 	}
 }

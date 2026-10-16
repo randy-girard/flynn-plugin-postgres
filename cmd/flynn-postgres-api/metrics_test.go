@@ -23,6 +23,17 @@ func TestReportInstanceMetricsDoesNotRaiseIntoServerLog(t *testing.T) {
 	}
 }
 
+func TestParseSlowQueriesDropsCatalogStatements(t *testing.T) {
+	raw := `[{"query":"SELECT EXISTS(SELECT $1 FROM pg_extension WHERE extname = $2)","calls":9,"mean_ms":40,"total_ms":360,"max_ms":80},{"query":"SELECT * FROM orders WHERE id = $1","calls":3,"mean_ms":12,"total_ms":36,"max_ms":20}]`
+	got, err := parseSlowQueries(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Query != "SELECT * FROM orders WHERE id = $1" {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestParseSlowQueries(t *testing.T) {
 	raw := `[{"query":"SELECT 1","calls":12,"mean_ms":140.2,"total_ms":1680,"max_ms":400}]`
 	got, err := parseSlowQueries(raw)
