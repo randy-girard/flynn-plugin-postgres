@@ -714,6 +714,15 @@ func (h *handler) refreshIsolatedImages() {
 			continue
 		}
 		if !h.followerStreaming(inst) {
+			// A crash-looping replica is not streaming, so recreate waits until
+			// it times out and the stale image never gets replaced. Bounce
+			// onto the current image first; start.sh restores standby.signal.
+			if rel, err := h.client.GetAppRelease(inst.App); err == nil && imageRefreshAction(inst, rel, h.imageID) == "inplace" {
+				if err := refreshIsolatedPluginImage(h.client, h.imageID, inst); err != nil && h.log != nil {
+					h.log.Error("refresh isolated image", "app", inst.App, "err", err)
+				}
+				continue
+			}
 			primary, err := h.store.Get(inst.LeaderID)
 			if err == nil && primary != nil {
 				if err := h.recreateFollower(inst, primary); err != nil && h.log != nil {

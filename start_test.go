@@ -255,6 +255,17 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if strings.Contains(src, "CREATE ROLE ${user} LOGIN") || strings.Contains(src, "CREATE DATABASE ${db} OWNER") {
 		t.Fatal("bootstrap must skip CREATE ROLE and CREATE DATABASE when an older image already created them")
 	}
+	follow := strings.Index(src, `elif [[ "${role}" == "follower" ]]`)
+	boot := strings.Index(src, ".flynn-bootstrapped")
+	if follow < 0 || boot < follow {
+		t.Fatal("a follower must restore standby.signal before primary bootstrap")
+	}
+	if !strings.Contains(src[follow:boot], "touch /data/standby.signal") {
+		t.Fatal("followers must restore standby.signal after a primary-stamped bounce")
+	}
+	if !strings.Contains(src[follow:boot+80], `role}" != "follower"`) {
+		t.Fatal("primary bootstrap must not run when the job is a follower")
+	}
 	if !strings.Contains(src, "pg_roles") || !strings.Contains(src, "pg_database") || !strings.Contains(src, ".flynn-bootstrapped") {
 		t.Fatal("bootstrap must notice an existing role and database, then record .flynn-bootstrapped")
 	}

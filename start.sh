@@ -76,11 +76,17 @@ grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max
 
 # Follower-swap image refresh stamps POSTGRES_ROLE=primary and bounces this
 # job. pg_basebackup -R left standby.signal, which would keep us read-only.
-if [[ "${FLYNN_POSTGRES_ROLE:-${POSTGRES_ROLE:-}}" == "primary" ]]; then
+# If that job is put back to follower, the signal is already gone and bootstrap
+# would treat the copied data directory as a new primary.
+role="${FLYNN_POSTGRES_ROLE:-${POSTGRES_ROLE:-}}"
+if [[ "${role}" == "primary" ]]; then
   rm -f /data/standby.signal /data/recovery.signal
+elif [[ "${role}" == "follower" ]]; then
+  touch /data/standby.signal
+  chown postgres:postgres /data/standby.signal
 fi
 
-if [[ ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
+if [[ "${role}" != "follower" && ! -f /data/standby.signal && ! -f /data/.flynn-bootstrapped ]]; then
   user="${POSTGRES_USER:?POSTGRES_USER is required}"
   pass="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
   db="${POSTGRES_DB:?POSTGRES_DB is required}"
