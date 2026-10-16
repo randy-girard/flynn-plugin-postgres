@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"testing"
@@ -112,5 +114,18 @@ func TestIsolatedInstanceApp(t *testing.T) {
 		if IsolatedInstanceApp(name) {
 			t.Fatalf("%s must not be treated as an isolated instance", name)
 		}
+	}
+}
+
+// attachmentColors is duplicated in the engine plugins and in
+// flynn/pkg/resname. The digest freezes the list so a copy cannot drift
+// silently; when a color is added or removed, update the digest in all seven
+// places at once.
+const attachmentColorsDigest = "b0218b7a13cd7c31089282b23cf4bc6f4039194e44563fbd419844ea04f1a6d3"
+
+func TestAttachmentColorsFrozen(t *testing.T) {
+	sum := sha256.Sum256([]byte(strings.Join(attachmentColors, ",")))
+	if got := hex.EncodeToString(sum[:]); got != attachmentColorsDigest {
+		t.Fatalf("attachment palette changed (%d colors): digest %s != %s; update this digest in flynn/pkg/resname and every engine plugin", len(attachmentColors), got, attachmentColorsDigest)
 	}
 }
