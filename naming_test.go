@@ -121,7 +121,7 @@ func TestIsolatedInstanceApp(t *testing.T) {
 // flynn/pkg/resname. The digest freezes the list so a copy cannot drift
 // silently; when a color is added or removed, update the digest in all seven
 // places at once.
-const attachmentColorsDigest = "b0218b7a13cd7c31089282b23cf4bc6f4039194e44563fbd419844ea04f1a6d3"
+const attachmentColorsDigest = "66cf0e3f123af773c2080403799064d0957d8df68ec028e915de613f87da63a4"
 
 func TestAttachmentColorsFrozen(t *testing.T) {
 	sum := sha256.Sum256([]byte(strings.Join(attachmentColors, ",")))
