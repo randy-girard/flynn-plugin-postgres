@@ -92,8 +92,13 @@ func (h *handler) startFailoverWatch() {
 	}
 	go func() {
 		downSince := map[string]time.Time{}
+		var lastReap time.Time
 		for {
 			h.reconcileAutoFailover(downSince)
+			if time.Since(lastReap) >= time.Minute {
+				h.reapOrphanInstances()
+				lastReap = time.Now()
+			}
 			time.Sleep(autoFailoverTick)
 		}
 	}()
@@ -171,6 +176,10 @@ func (h *handler) ensureAutoFailoverReplica(primary *postgres.Instance) error {
 	if err != nil || primary == nil {
 		return err
 	}
+	// A second API worker has an empty store after plugin:update or a host
+	// restart. Adopt the follower apps that already exist before provisioning
+	// another one.
+	h.adoptLiveFollowers(primary)
 	if h.upgradeInProgress(primary.ID) || h.upgradeInProgress(primary.App) {
 		return nil
 	}

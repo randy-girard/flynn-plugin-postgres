@@ -907,6 +907,32 @@ func TestReapOrphanKeepsUpgradeReplica(t *testing.T) {
 	}
 }
 
+func TestReapOrphanDropsExtraFollowersOfKeptPrimary(t *testing.T) {
+	olderAt := time.Date(2026, 10, 16, 22, 0, 0, 0, time.UTC)
+	newerAt := olderAt.Add(time.Hour)
+	primary := &ct.App{ID: "basin-id", Name: "postgresql-basin-73690"}
+	older := &ct.App{ID: "older-id", Name: "postgresql-yarrow-52241", CreatedAt: &olderAt}
+	newer := &ct.App{ID: "newer-id", Name: "postgresql-summit-25158", CreatedAt: &newerAt}
+	c := &fakeOrphanReaper{
+		apps: []*ct.App{primary, older, newer},
+		releases: map[string]*ct.Release{
+			"basin-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690", "FLYNN_POSTGRES_ROLE": "primary"}},
+			"older-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-yarrow-52241", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
+			"newer-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-summit-25158", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
+		},
+		resources: []*ct.Resource{
+			{ExternalID: "res-basin", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690"}},
+		},
+	}
+	deleted, err := reapOrphanPostgresApps(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != "postgresql-yarrow-52241" {
+		t.Fatalf("deleted %v", deleted)
+	}
+}
+
 type fakeAppMeta struct {
 	apps []*ct.App
 }

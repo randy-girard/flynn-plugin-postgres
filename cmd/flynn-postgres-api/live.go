@@ -501,6 +501,57 @@ func resourceKeepsInstance(res *ct.Resource, keep map[string]bool) {
 	add(res.Env[postgres.ResourceIDEnv])
 }
 
+// keepNewestFollower marks one unreferenced follower of each kept primary.
+// CreatedAt wins; a missing timestamp loses to a timestamped app, and equal
+// timestamps break ties by name so two workers do not keep the whole set.
+func keepNewestFollower(apps []*ct.App, releases map[string]*ct.Release, keep map[string]bool, isolated func(string) bool, leaderEnv string) {
+	type cand struct {
+		app     *ct.App
+		created time.Time
+	}
+	groups := map[string][]cand{}
+	for _, app := range apps {
+		if app == nil || !isolated(app.Name) || keep[app.Name] || keep[app.ID] {
+			continue
+		}
+		rel := releases[app.ID]
+		if rel == nil || rel.Env == nil {
+			continue
+		}
+		leader := strings.TrimSpace(rel.Env[leaderEnv])
+		if leader == "" || !keep[leader] {
+			continue
+		}
+		var created time.Time
+		if app.CreatedAt != nil {
+			created = app.CreatedAt.UTC()
+		}
+		groups[leader] = append(groups[leader], cand{app, created})
+	}
+	newer := func(a, b cand) bool {
+		switch {
+		case !a.created.IsZero() && b.created.IsZero():
+			return true
+		case a.created.IsZero() && !b.created.IsZero():
+			return false
+		case !a.created.Equal(b.created):
+			return a.created.After(b.created)
+		default:
+			return a.app.Name > b.app.Name
+		}
+	}
+	for _, group := range groups {
+		best := 0
+		for i := 1; i < len(group); i++ {
+			if newer(group[i], group[best]) {
+				best = i
+			}
+		}
+		keep[group[best].app.Name] = true
+		keep[group[best].app.ID] = true
+	}
+}
+
 func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 	if c == nil {
 		return nil, nil
@@ -537,33 +588,10 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 			}
 		}
 	}
-	// Image-refresh upgrades provision a follower that is not a Resource yet.
-	// Two postgres-plugin web workers both boot after plugin:update; one must
-	// not delete the other's in-progress replica as an orphan.
-	for {
-		added := false
-		for _, app := range apps {
-			if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
-				continue
-			}
-			if keep[app.Name] || keep[app.ID] {
-				continue
-			}
-			rel := releases[app.ID]
-			if rel == nil || rel.Env == nil {
-				continue
-			}
-			leader := strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"])
-			if leader != "" && keep[leader] {
-				keep[app.Name] = true
-				keep[app.ID] = true
-				added = true
-			}
-		}
-		if !added {
-			break
-		}
-	}
+	// An image refresh or a broken-follower replace creates one replica that is
+	// not a Resource yet. Keeping every follower of that primary left each
+	// failed replace running forever. Keep the newest unreferenced follower.
+	keepNewestFollower(apps, releases, keep, postgres.IsolatedInstanceApp, "FLYNN_POSTGRES_LEADER")
 	var deleted []string
 	for _, app := range apps {
 		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
