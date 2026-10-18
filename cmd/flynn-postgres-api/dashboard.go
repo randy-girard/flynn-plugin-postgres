@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/julienschmidt/httprouter"
@@ -960,7 +961,7 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 			b.WriteString(h.dashAddFollowerPanel(followable))
 		}
 	}
-	b.WriteString(dashProgressScript())
+	b.WriteString(dashProgressScript(sess.AppID))
 	writeDash(w, sess, "Followers", b.String())
 }
 
@@ -1468,32 +1469,63 @@ func dashAddFollowerFields(primaries []*postgres.Instance) string {
 	return b.String()
 }
 
-func dashProgressScript() string {
+func dashProgressScript(appID string) string {
+	topic := "app:" + strings.TrimSpace(appID) + "/progress"
 	return `<script>
 (function(){
+  var timer = 0;
+  function copying(data){
+    var up = data && data.upgrade;
+    if (up && up.status && up.status !== 'done' && up.status !== 'failed') return true;
+    var items = (data && data.followers) || [];
+    for (var i = 0; i < items.length; i++) {
+      var p = items[i];
+      if (!p || p.ready || p.available) continue;
+      var phase = String(p.phase || '').toLowerCase();
+      if (phase === 'basebackup' || phase === 'fullresync' || phase === 'streaming') return true;
+    }
+    return false;
+  }
+  function arm(on){
+    if (timer) { clearInterval(timer); timer = 0; }
+    if (on) timer = setInterval(tick, 1000);
+  }
   async function tick(){
+    var on = null;
     try {
       const r = await fetch('api/progress', {headers:{Accept:'application/json'}, credentials:'same-origin'});
-      if(!r.ok) return;
-      const data = await r.json();
-      const items = data.followers || [];
-      document.querySelectorAll('tr[data-instance]').forEach(row => {
-        const inst = row.getAttribute('data-instance');
-        const cell = row.querySelector('.replica-status');
-        if(!cell || !inst) return;
-        const p = items.find(x => (x.follower||'').toLowerCase() === inst.toLowerCase());
-        if(!p) return;
-        if(p.ready){
-          cell.innerHTML = '<span class="muted">'+(p.message||'ready')+'</span>';
-          return;
-        }
-        const msg = p.message || (p.percent+'%');
-        cell.innerHTML = '<div class="replica-progress"><progress max="100" value="'+(p.percent||0)+'" aria-label="'+msg.replace(/"/g,'')+'"></progress><span class="replica-progress-label">'+msg.replace(/</g,'')+'</span></div>';
-      });
+      if(r.ok){
+        const data = await r.json();
+        const items = data.followers || [];
+        document.querySelectorAll('tr[data-instance]').forEach(row => {
+          const inst = row.getAttribute('data-instance');
+          const cell = row.querySelector('.replica-status');
+          if(!cell || !inst) return;
+          const p = items.find(x => (x.follower||'').toLowerCase() === inst.toLowerCase());
+          if(!p) return;
+          if(p.ready){
+            cell.innerHTML = '<span class="muted">'+(p.message||'ready')+'</span>';
+            return;
+          }
+          const msg = p.message || (p.percent+'%');
+          cell.innerHTML = '<div class="replica-progress"><progress max="100" value="'+(p.percent||0)+'" aria-label="'+msg.replace(/"/g,'')+'"></progress><span class="replica-progress-label">'+msg.replace(/</g,'')+'</span></div>';
+        });
+        on = copying(data);
+      }
     } catch(e) {}
+    if (on !== null) arm(on);
   }
   tick();
-  setInterval(tick, 1000);
+  var topic = ` + strconv.Quote(topic) + `;
+  function fallback(){ if (!timer) timer = setInterval(tick, 1000); }
+  var s = document.createElement('script');
+  s.src = '/api/live.js';
+  s.onload = function(){
+    if (window.FlynnLive && window.FlynnLive.watch) window.FlynnLive.watch(topic, tick, 0);
+    else fallback();
+  };
+  s.onerror = fallback;
+  document.head.appendChild(s);
 })();
 </script>`
 }

@@ -209,3 +209,20 @@ func TestResolveMetricsEnvCopiesDashboardSecret(t *testing.T) {
 		t.Fatalf("secret %q", os.Getenv("DASHBOARD_METRICS_SECRET"))
 	}
 }
+
+func TestWriteHTMLLoadsLiveClient(t *testing.T) {
+	rec := httptest.NewRecorder()
+	WriteHTML(rec, &Session{AppID: "demo"}, "Overview", `<div class="card">hello</div>`)
+	page := rec.Body.String()
+	if !strings.Contains(page, "/api/live.js") || !strings.Contains(page, "FlynnLive.watch") {
+		t.Fatalf("live client missing")
+	}
+	if strings.Contains(page, "tenant:") {
+		t.Fatal("tenant in live boot")
+	}
+	rec = httptest.NewRecorder()
+	WriteHTML(rec, &Session{AppID: `abc");alert(1)`}, "Overview", `<div></div>`)
+	if strings.Contains(rec.Body.String(), "FlynnLive.watch") {
+		t.Fatal("rejected app id still subscribed")
+	}
+}
