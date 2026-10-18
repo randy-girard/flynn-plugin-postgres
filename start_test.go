@@ -252,6 +252,11 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements") {
 		t.Fatal("bootstrap must create pg_stat_statements for slow-query metrics")
 	}
+	reset := strings.Index(src, "SELECT pg_stat_statements_reset()")
+	note := strings.Index(src, "Resetting stats there")
+	if reset < 0 || note < 0 || note > reset || !strings.Contains(src[note:reset], "CREATE EXTENSION IF NOT EXISTS pg_stat_statements") {
+		t.Fatal("bootstrap must create pg_stat_statements in the postgres database before resetting it")
+	}
 	if strings.Contains(src, "CREATE ROLE ${user} LOGIN") || strings.Contains(src, "CREATE DATABASE ${db} OWNER") {
 		t.Fatal("bootstrap must skip CREATE ROLE and CREATE DATABASE when an older image already created them")
 	}

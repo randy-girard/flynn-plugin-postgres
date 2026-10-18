@@ -119,6 +119,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 SQL
+  # The bootstrap session runs in the postgres database. Resetting stats there
+  # before the extension exists makes ON_ERROR_STOP abort init, the marker is
+  # never written, and the job crash-loops.
+  as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+SQL
   # Tenant queries start here. Clear anything the bootstrap session recorded.
   sed -i "s/^pg_stat_statements.track.*/pg_stat_statements.track = all/" "${conf}"
   as_postgres "${PG_BIN}/psql" -h /tmp -v ON_ERROR_STOP=1 -d postgres -c "SELECT pg_stat_statements_reset();"
