@@ -886,8 +886,9 @@ func TestReapOrphanPostgresApps(t *testing.T) {
 }
 
 func TestReapOrphanKeepsUpgradeReplica(t *testing.T) {
+	now := time.Now().UTC()
 	primary := &ct.App{ID: "basin-id", Name: "postgresql-basin-73690"}
-	replica := &ct.App{ID: "meadow-id", Name: "postgresql-meadow-99423"}
+	replica := &ct.App{ID: "meadow-id", Name: "postgresql-meadow-99423", CreatedAt: &now}
 	c := &fakeOrphanReaper{
 		apps: []*ct.App{primary, replica},
 		releases: map[string]*ct.Release{
@@ -908,8 +909,8 @@ func TestReapOrphanKeepsUpgradeReplica(t *testing.T) {
 }
 
 func TestReapOrphanDropsExtraFollowersOfKeptPrimary(t *testing.T) {
-	olderAt := time.Date(2026, 10, 16, 22, 0, 0, 0, time.UTC)
-	newerAt := olderAt.Add(time.Hour)
+	newerAt := time.Now().UTC()
+	olderAt := newerAt.Add(-2 * time.Hour)
 	primary := &ct.App{ID: "basin-id", Name: "postgresql-basin-73690"}
 	older := &ct.App{ID: "older-id", Name: "postgresql-yarrow-52241", CreatedAt: &olderAt}
 	newer := &ct.App{ID: "newer-id", Name: "postgresql-summit-25158", CreatedAt: &newerAt}
@@ -929,6 +930,29 @@ func TestReapOrphanDropsExtraFollowersOfKeptPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(deleted) != 1 || deleted[0] != "postgresql-yarrow-52241" {
+		t.Fatalf("deleted %v", deleted)
+	}
+}
+
+func TestReapOrphanDropsFinishedFollower(t *testing.T) {
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	primary := &ct.App{ID: "basin-id", Name: "postgresql-basin-73690"}
+	replica := &ct.App{ID: "meadow-id", Name: "postgresql-meadow-99423", CreatedAt: &old}
+	c := &fakeOrphanReaper{
+		apps: []*ct.App{primary, replica},
+		releases: map[string]*ct.Release{
+			"basin-id":  {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690", "FLYNN_POSTGRES_ROLE": "primary"}},
+			"meadow-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-meadow-99423", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-basin-73690"}},
+		},
+		resources: []*ct.Resource{
+			{ExternalID: "res-basin", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-basin-73690"}},
+		},
+	}
+	deleted, err := reapOrphanPostgresApps(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 1 || deleted[0] != "postgresql-meadow-99423" {
 		t.Fatalf("deleted %v", deleted)
 	}
 }

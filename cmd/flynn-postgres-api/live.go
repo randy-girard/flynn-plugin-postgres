@@ -501,9 +501,14 @@ func resourceKeepsInstance(res *ct.Resource, keep map[string]bool) {
 	add(res.Env[postgres.ResourceIDEnv])
 }
 
-// keepNewestFollower marks one unreferenced follower of each kept primary.
-// CreatedAt wins; a missing timestamp loses to a timestamped app, and equal
-// timestamps break ties by name so two workers do not keep the whole set.
+// orphanFollowerGrace is how long an unreferenced follower may exist while
+// an image refresh or follower replace is still copying. After that the
+// replica is finished leftover and the reaper deletes it.
+const orphanFollowerGrace = postgres.DefaultUpgradeTimeout
+
+// keepNewestFollower marks one unreferenced follower of each kept primary
+// while that copy is still inside orphanFollowerGrace. CreatedAt wins; a
+// missing timestamp is not in progress. Equal timestamps break ties by name.
 func keepNewestFollower(apps []*ct.App, releases map[string]*ct.Release, keep map[string]bool, isolated func(string) bool, leaderEnv string) {
 	type cand struct {
 		app     *ct.App
@@ -547,6 +552,10 @@ func keepNewestFollower(apps []*ct.App, releases map[string]*ct.Release, keep ma
 				best = i
 			}
 		}
+		created := group[best].created
+		if created.IsZero() || time.Since(created) > orphanFollowerGrace {
+			continue
+		}
 		keep[group[best].app.Name] = true
 		keep[group[best].app.ID] = true
 	}
@@ -589,8 +598,8 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 		}
 	}
 	// An image refresh or a broken-follower replace creates one replica that is
-	// not a Resource yet. Keeping every follower of that primary left each
-	// failed replace running forever. Keep the newest unreferenced follower.
+	// not a Resource yet. Keep it only while that copy is still in progress.
+	// A finished leftover is deleted, including one left behind by a failed run.
 	keepNewestFollower(apps, releases, keep, postgres.IsolatedInstanceApp, "FLYNN_POSTGRES_LEADER")
 	var deleted []string
 	for _, app := range apps {

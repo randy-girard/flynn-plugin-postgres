@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -302,5 +303,33 @@ func TestUpgradeReplacesAdoptedLiveFollower(t *testing.T) {
 	}
 	if !got.New.AutoFailover {
 		t.Fatal("replacement must keep auto-failover")
+	}
+}
+
+func TestUpgradeDropsReplicaWhenStartFails(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created, dropped string
+	_, err = s.Upgrade(context.Background(), leader.ID, UpgradeOptions{
+		AfterFollow: func(fol *Instance) error {
+			created = fol.ID
+			return errors.New("start failed")
+		},
+		AfterDrop: func(old *Instance) error {
+			dropped = old.ID
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("upgrade err: %v", err)
+	}
+	if created == "" || dropped != created {
+		t.Fatalf("created %q dropped %q", created, dropped)
+	}
+	if _, err := s.Get(created); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("replica still in store: %v", err)
 	}
 }

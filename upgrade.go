@@ -337,15 +337,18 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 	s.markUpgrade(leaderID, TaskWaiting, "", fol.ID)
 	if opts.AfterFollow != nil {
 		if err := opts.AfterFollow(fol); err != nil {
+			s.dropUpgradeFollower(fol, opts)
 			return nil, err
 		}
 	}
 	if err := s.Wait(ctx, fol.ID); err != nil {
+		s.dropUpgradeFollower(fol, opts)
 		return nil, err
 	}
 	s.markUpgrade(leaderID, TaskPromoting, "", fol.ID)
 	promo, err := s.Promote(fol.ID)
 	if err != nil {
+		s.dropUpgradeFollower(fol, opts)
 		return nil, err
 	}
 	newPrimary := promo.Promoted
@@ -400,10 +403,12 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		}
 		if opts.AfterFollow != nil {
 			if err := opts.AfterFollow(nf); err != nil {
+				s.dropUpgradeFollower(nf, opts)
 				return nil, err
 			}
 		}
 		if err := s.Wait(ctx, nf.ID); err != nil {
+			s.dropUpgradeFollower(nf, opts)
 			return nil, err
 		}
 		if opts.AfterReplace != nil {
@@ -430,6 +435,18 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 	}
 	s.markUpgrade(leaderID, TaskDone, "", fol.ID)
 	return res, nil
+}
+
+// dropUpgradeFollower removes a replica this upgrade created and did not
+// promote or attach. The app must not stay behind as a system app.
+func (s *Store) dropUpgradeFollower(fol *Instance, opts UpgradeOptions) {
+	if fol == nil {
+		return
+	}
+	if opts.AfterDrop != nil {
+		_ = opts.AfterDrop(fol)
+	}
+	s.Forget(fol.ID)
 }
 
 func (s *Store) markUpgrade(leaderID, status, errMsg, followerID string) {
