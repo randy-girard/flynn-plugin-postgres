@@ -601,6 +601,10 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 	// not a Resource yet. Keep it only while that copy is still in progress.
 	// A finished leftover is deleted, including one left behind by a failed run.
 	keepNewestFollower(apps, releases, keep, postgres.IsolatedInstanceApp, "FLYNN_POSTGRES_LEADER")
+	// An empty resource list is not proof that every database is unused.
+	if len(resources) == 0 && len(releases) > 0 {
+		return nil, errors.New("no resources listed while postgres instance apps exist")
+	}
 	var deleted []string
 	for _, app := range apps {
 		if app == nil || !postgres.IsolatedInstanceApp(app.Name) {
@@ -616,12 +620,28 @@ func reapOrphanPostgresApps(c orphanReaper) ([]string, error) {
 		if rel != nil && rel.Env != nil && (keep[rel.Env["FLYNN_POSTGRES"]] || keep[rel.Env[postgres.ResourceIDEnv]]) {
 			continue
 		}
+		// A primary holds the data. Only a finished follower may be reaped.
+		if !orphanFollowerRelease(rel) {
+			continue
+		}
+		if who, refErr := ReferencingApp(c, app.Name); refErr != nil {
+			return deleted, refErr
+		} else if who != "" {
+			continue
+		}
 		if _, err := c.DeleteApp(app.ID); err != nil && !missingApp(err) {
 			return deleted, err
 		}
 		deleted = append(deleted, app.Name)
 	}
 	return deleted, nil
+}
+
+func orphanFollowerRelease(rel *ct.Release) bool {
+	if rel == nil || rel.Env == nil {
+		return false
+	}
+	return rel.Env["FLYNN_POSTGRES_ROLE"] == string(postgres.RoleFollower) || strings.TrimSpace(rel.Env["FLYNN_POSTGRES_LEADER"]) != ""
 }
 
 func (h *handler) reapOrphanInstances() {

@@ -37,6 +37,12 @@ func (h *handler) afterDrop() func(*postgres.Instance) error {
 		if h == nil || !h.live() || old == nil || strings.TrimSpace(old.App) == "" {
 			return nil
 		}
+		if err := RefuseIfReferenced(h.client, old.App); err != nil {
+			if h.log != nil {
+				h.log.Error("upgrade after-drop kept data", "app", old.App, "err", err)
+			}
+			return err
+		}
 		_, err := h.client.DeleteApp(old.App)
 		if h.log != nil {
 			if err != nil {

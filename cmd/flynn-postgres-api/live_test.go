@@ -866,7 +866,7 @@ func TestReapOrphanPostgresApps(t *testing.T) {
 	c := &fakeOrphanReaper{
 		apps: []*ct.App{orphan, kept, plugin, platform},
 		releases: map[string]*ct.Release{
-			"orphan-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-upland-88340"}},
+			"orphan-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-upland-88340", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-gone-11111"}},
 			"kept-id":   {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-quartz-76554"}},
 		},
 		resources: []*ct.Resource{
@@ -882,6 +882,30 @@ func TestReapOrphanPostgresApps(t *testing.T) {
 	}
 	if len(c.deleted) != 1 || c.deleted[0] != "orphan-id" {
 		t.Fatalf("delete calls %v", c.deleted)
+	}
+}
+
+func TestReapKeepsPrimaryAndTenantData(t *testing.T) {
+	primary := &ct.App{ID: "canyon-id", Name: "postgresql-canyon-28550"}
+	follower := &ct.App{ID: "pine-id", Name: "postgresql-pine-93275"}
+	tenant := &ct.App{ID: "app-one", Name: "app-one"}
+	c := &fakeOrphanReaper{
+		apps: []*ct.App{primary, follower, tenant},
+		releases: map[string]*ct.Release{
+			"canyon-id": {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-canyon-28550", "FLYNN_POSTGRES_ROLE": "primary"}},
+			"pine-id":   {Env: map[string]string{"FLYNN_POSTGRES": "postgresql-pine-93275", "FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": "postgresql-gone-11111"}},
+			"app-one":   {Env: map[string]string{"DATABASE_URL": "postgres://u:p@leader.postgresql-pine-93275.discoverd:5432/db"}},
+		},
+		resources: []*ct.Resource{
+			{ExternalID: "other", Env: map[string]string{"FLYNN_POSTGRES": "postgresql-other-1"}},
+		},
+	}
+	deleted, err := reapOrphanPostgresApps(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted) != 0 || len(c.deleted) != 0 {
+		t.Fatalf("primary and a database a tenant still uses must stay, deleted %v calls %v", deleted, c.deleted)
 	}
 }
 
