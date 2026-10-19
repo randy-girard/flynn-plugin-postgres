@@ -9,6 +9,7 @@ import (
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	ct "github.com/randy-girard/flynn/controller/types"
+	"github.com/randy-girard/flynn/pkg/dbruntime"
 	"github.com/randy-girard/flynn/pkg/httphelper"
 )
 
@@ -238,6 +239,7 @@ func (h *handler) startInstance(inst *postgres.Instance) error {
 	if err != nil {
 		return err
 	}
+	tags = dbruntime.MergeProcessTags(h.runtimePlacementTags(inst), tags)
 	err = startIsolatedInstance(h.client, h.imageID, inst, leader, tags, waitInstanceReady)
 	if err == nil && inst != nil && inst.Role == postgres.RoleFollower {
 		leaderApp := ""
@@ -292,17 +294,19 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if inst.ReplicaPending {
 		env["FLYNN_POSTGRES_REPLICA_PENDING"] = "true"
 	}
+	proc := ct.ProcessType{
+		Args:    []string{"/bin/start-flynn-postgres", "postgres"},
+		Service: service,
+		Ports:   []ct.Port{{Port: 5432, Proto: "tcp"}},
+		Volumes: []ct.VolumeReq{{Path: postgres.VolumePath}},
+	}
+	applyRuntimeResources(c, dbruntime.EnginePostgres, inst.Runtime, &proc)
 	release := &ct.Release{
 		ArtifactIDs: []string{imageID},
 		Meta:        map[string]string{},
 		Env:         env,
 		Processes: map[string]ct.ProcessType{
-			postgres.ProcessName: {
-				Args:    []string{"/bin/start-flynn-postgres", "postgres"},
-				Service: service,
-				Ports:   []ct.Port{{Port: 5432, Proto: "tcp"}},
-				Volumes: []ct.VolumeReq{{Path: postgres.VolumePath}},
-			},
+			postgres.ProcessName: proc,
 		},
 	}
 	app := &ct.App{
@@ -658,6 +662,37 @@ func (h *handler) reapOrphanInstances() {
 			h.log.Info("reaped orphan postgres instance apps", "count", len(deleted), "apps", strings.Join(deleted, ","))
 		}
 	}
+}
+
+func applyRuntimeResources(c any, engine, name string, proc *ct.ProcessType) {
+	if proc == nil {
+		return
+	}
+	type cataloguer interface {
+		ListDBRuntimes() (*dbruntime.Catalog, error)
+	}
+	g, ok := c.(cataloguer)
+	if !ok {
+		return
+	}
+	cat, err := g.ListDBRuntimes()
+	if err != nil || cat == nil {
+		return
+	}
+	if r := dbruntime.ProcessResources(cat, engine, name); r != nil {
+		proc.Resources = r
+	}
+}
+
+func (h *handler) runtimePlacementTags(inst *postgres.Instance) map[string]map[string]string {
+	if h == nil || h.client == nil || inst == nil {
+		return nil
+	}
+	cat, err := h.client.ListDBRuntimes()
+	if err != nil {
+		return nil
+	}
+	return dbruntime.CatalogProcessTags(cat, dbruntime.EnginePostgres, inst.Runtime, postgres.ProcessName)
 }
 
 func (h *handler) autoFailoverPlacementTags(inst, leader *postgres.Instance) (map[string]map[string]string, error) {
