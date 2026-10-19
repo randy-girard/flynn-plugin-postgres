@@ -2,18 +2,18 @@
 
 [![coverage](.github/badges/coverage.svg)](https://github.com/randy-girard/flynn-plugin-postgres/actions/workflows/ci.yml)
 
-Tenant Postgres for Flynn. Each `flynn resource:add postgres` creates one
+Tenant Postgres for Flynn. Each `flynn addons:create postgres` creates one
 isolated instance: its own Flynn app, its own volume, and exactly one Postgres
-node. It does not start a sirenia pair. `flynn resource:add postgres` returns
+node. It does not start a sirenia pair. `flynn addons:create postgres` returns
 after the job is scheduled. The instance finishes `initdb` and registers in
 discoverd in the background; check with `flynn pg:wait` or the dashboard.
-`flynn resource:remove` detaches immediately; the isolated instance is
+`flynn addons:destroy` detaches immediately; the isolated instance is
 destroyed in the background.
 
 This is not the platform appliance. That appliance stays on
 `postgres-api.discoverd` with provider name `platform-postgres` and is only for
 system apps. This plugin registers provider `postgres` at
-`postgres-plugin.discoverd`. `flynn resource:add postgres` hits the plugin.
+`postgres-plugin.discoverd`. `flynn addons:create postgres` hits the plugin.
 Tenant env never receives the appliance superuser password.
 
 ## Install
@@ -26,10 +26,10 @@ sudo flynn-host plugin:install https://github.com/randy-girard/flynn-plugin-post
 ## Usage
 
 ```text
-flynn resource:add postgres
-flynn resource:add postgres --as ANALYTICS
-flynn resource:add postgres --follow <resource>
-flynn resource:add postgres --follow <resource> --runtime perf-l
+flynn addons:create postgres
+flynn addons:create postgres --as ANALYTICS
+flynn addons:create postgres --follow <resource>
+flynn addons:create postgres --follow <resource> --runtime perf-l
 ```
 
 `--as ANALYTICS` sets `ANALYTICS_URL`. A new provision also sets

@@ -955,7 +955,7 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	if rows == 0 {
 		b.WriteString(`<tr><td colspan="7" class="muted">This database has no instances yet.</td></tr>`)
 	}
-	b.WriteString(`</table></div><p class="muted">Same as <code>flynn resource:add postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>. Copy progress updates live on this page and on <code>flynn pg:wait</code>.</p>`)
+	b.WriteString(`</table></div><p class="muted">Same as <code>flynn addons:create postgres --follow &lt;instance&gt;</code> (always streaming) and <code>flynn pg:upgrade</code>. Copy progress updates live on this page and on <code>flynn pg:wait</code>.</p>`)
 	if dashNewPanel(r) {
 		if followable := h.dashFollowablePrimaries(insts); len(followable) > 0 {
 			b.WriteString(h.dashAddFollowerPanel(followable))
@@ -1023,7 +1023,7 @@ func (h *handler) dashSettings(w http.ResponseWriter, r *http.Request, sess *das
 			fmt.Fprintf(&b, `<tr><td colspan="4" class="muted">Remove or unfollow %s before deleting this primary.</td></tr>`, html.EscapeString(strings.Join(blocked, ", ")))
 		}
 	}
-	b.WriteString(`</table><p class="muted">Same as <code>flynn resource:remove &lt;instance&gt;</code>.</p></div>`)
+	b.WriteString(`</table><p class="muted">Same as <code>flynn addons:destroy &lt;instance&gt;</code>.</p></div>`)
 	writeDash(w, sess, "Settings", b.String())
 }
 
@@ -1745,7 +1745,7 @@ func overviewHTML(insts []*postgres.Instance) string {
 			}
 			fmt.Fprintf(&b, `<tr><td><code>%s</code></td><td><code>%s</code></td></tr>`, html.EscapeString(att.App), html.EscapeString(label))
 		}
-		b.WriteString(`</table><p class="muted">Same as <code>flynn pg:info</code>. Detach with <code>flynn resource:detach postgres</code> from that app, or from the dashboard overview.</p></div>`)
+		b.WriteString(`</table><p class="muted">Same as <code>flynn pg:info</code>. Detach with <code>flynn addons:detach &lt;attachment&gt;</code> from that app, or from the dashboard overview.</p></div>`)
 	}
 	return b.String()
 }

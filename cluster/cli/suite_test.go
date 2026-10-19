@@ -57,7 +57,7 @@ func TestPostgresCLI(t *testing.T) {
 
 	t.Run("provision", func(t *testing.T) {
 		h.use(t)
-		out := h.appMust(cmdProvision, "resource:add", "postgres")
+		out := h.appMust(cmdProvision, "addons:create", "postgres")
 		if !strings.Contains(strings.ToLower(out), "created resource") {
 			t.Fatalf("expected created resource, got:\n%s", out)
 		}
@@ -216,14 +216,14 @@ func TestPostgresCLI(t *testing.T) {
 			t.Fatalf("follower missing streamed row %s: %s", probeFollow, got)
 		}
 		primary := h.primary()
-		_, errOut, err := h.appCmd(cmdDestroy, "resource:remove", primary)
+		_, errOut, err := h.appCmd(cmdDestroy, "addons:destroy", primary)
 		if err == nil {
-			t.Fatalf("expected resource:remove %s to fail while %s is a follower", primary, follower)
+			t.Fatalf("expected addons:destroy %s to fail while %s is a follower", primary, follower)
 		}
 		if !strings.Contains(strings.ToLower(errOut+" "+err.Error()), "follower") {
 			t.Fatalf("expected followers error removing %s, got %v\n%s", primary, err, errOut)
 		}
-		h.appMust(cmdDestroy, "resource:remove", follower)
+		h.appMust(cmdDestroy, "addons:destroy", follower)
 		h.waitInstanceGone(follower)
 		if left := h.followers(); len(left) != 0 {
 			t.Fatalf("followers still present after remove: %v", left)
@@ -279,7 +279,7 @@ func TestPostgresCLI(t *testing.T) {
 		}
 		h.peer = name
 		primary := h.primary()
-		out = h.must(cmdQuick, "-a", name, "resource:attach", "postgres", primary)
+		out = h.must(cmdQuick, "-a", name, "addons:attach", primary)
 		if !strings.Contains(strings.ToLower(out), "attached") {
 			t.Fatalf("expected attached resource, got:\n%s", out)
 		}
@@ -297,7 +297,7 @@ func TestPostgresCLI(t *testing.T) {
 		if !strings.Contains(peerGot, probeN) {
 			t.Fatalf("peer %s must read the owner instance (want %s):\n%s", name, probeN, peerGot)
 		}
-		_, errOut, err = h.cmd(cmdQuick, "-a", name, "resource:remove", primary)
+		_, errOut, err = h.cmd(cmdQuick, "-a", name, "addons:destroy", primary)
 		if err == nil {
 			t.Fatalf("attached app must not delete %s", primary)
 		}
@@ -305,7 +305,9 @@ func TestPostgresCLI(t *testing.T) {
 		if !strings.Contains(combined, "does not own") && !strings.Contains(combined, "detach") {
 			t.Fatalf("expected ownership error removing %s from %s, got %v\n%s", primary, name, err, errOut)
 		}
-		h.must(cmdQuick, "-a", name, "resource:detach", "postgres", primary)
+		color := postgresColorURLKeys(env)[0]
+		color = strings.TrimSuffix(strings.TrimPrefix(color, "FLYNN_POSTGRESQL_"), "_URL")
+		h.must(cmdQuick, "-a", name, "addons:detach", color)
 		env = h.must(cmdQuick, "-a", name, "env")
 		if len(postgresColorURLKeys(env)) != 0 || envHasKey(env, "DATABASE_URL") || envHasKey(env, scopedDatabaseURLKey(primary)) {
 			t.Fatalf("detach must remove attachment env:\n%s", env)
@@ -321,7 +323,7 @@ func TestPostgresCLI(t *testing.T) {
 	t.Run("detach-and-destroy", func(t *testing.T) {
 		h.use(t)
 		primary := h.primary()
-		h.appMust(cmdDestroy, "resource:remove", primary)
+		h.appMust(cmdDestroy, "addons:destroy", primary)
 		env := h.appMust(cmdQuick, "env")
 		if len(postgresColorURLKeys(env)) != 0 || envHasKey(env, "DATABASE_URL") || envHasKey(env, scopedDatabaseURLKey(primary)) {
 			t.Fatalf("delete must remove attachment env:\n%s", env)

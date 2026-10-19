@@ -406,13 +406,13 @@ func (h *harness) destroyBestEffort() {
 		}
 	}
 	for _, name := range followers {
-		_, errOut, err := h.cmd(cmdDestroy, "-a", app, "resource:remove", name)
+		_, errOut, err := h.cmd(cmdDestroy, "-a", app, "addons:destroy", name)
 		if err != nil {
 			h.t.Logf("cleanup remove follower %s: %v %s", name, err, errOut)
 		}
 	}
 	for _, name := range primaries {
-		_, errOut, err := h.cmd(cmdDestroy, "-a", app, "resource:remove", name)
+		_, errOut, err := h.cmd(cmdDestroy, "-a", app, "addons:destroy", name)
 		if err != nil {
 			h.t.Logf("cleanup remove primary %s: %v %s", name, err, errOut)
 		}
