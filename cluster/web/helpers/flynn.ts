@@ -6,20 +6,29 @@ export type PgRow = { name: string; role: 'primary' | 'follower' }
 
 export function flynn(args: string[], opts?: { timeoutMs?: number; allowFail?: boolean }): string {
   const timeout = opts?.timeoutMs ?? flynnCmd
-  const r = spawnSync(flynnBin(), args, {
-    encoding: 'utf8',
-    timeout,
-    env: process.env,
-  })
-  const stdout = (r.stdout || '').trim()
-  const stderr = (r.stderr || '').trim()
-  if (r.error) {
-    throw new Error(`flynn ${args.join(' ')}: ${r.error.message}\n${stdout}\n${stderr}`)
+  const attempts = opts?.allowFail ? 1 : 4
+  let last = ''
+  for (let i = 0; i < attempts; i++) {
+    const r = spawnSync(flynnBin(), args, {
+      encoding: 'utf8',
+      timeout,
+      env: process.env,
+    })
+    const stdout = (r.stdout || '').trim()
+    const stderr = (r.stderr || '').trim()
+    if (!r.error && (opts?.allowFail || r.status === 0)) {
+      return stdout
+    }
+    last = r.error
+      ? `flynn ${args.join(' ')}: ${r.error.message}\n${stdout}\n${stderr}`
+      : `flynn ${args.join(' ')} failed (${r.status}):\n${stdout}\n${stderr}`
+    const retryable = Boolean(r.error && /ETIMEDOUT|killed/i.test(r.error.message))
+    if (!retryable || i === attempts - 1) {
+      if (opts?.allowFail) return stdout
+      throw new Error(last)
+    }
   }
-  if (!opts?.allowFail && r.status !== 0) {
-    throw new Error(`flynn ${args.join(' ')} failed (${r.status}):\n${stdout}\n${stderr}`)
-  }
-  return stdout
+  throw new Error(last)
 }
 
 export function flynnApp(app: string, args: string[], opts?: { timeoutMs?: number; allowFail?: boolean }): string {
@@ -58,13 +67,17 @@ export function sleep(ms: number): Promise<void> {
 }
 
 export async function waitForPsql(app: string, resource = '', timeoutMs = provision): Promise<void> {
+  const targetWait = resource || defaultPsqlResource(app)
+  if (targetWait) {
+    flynn(['-a', app, 'pg:wait', targetWait], { timeoutMs: Math.min(timeoutMs, 60_000), allowFail: true })
+  }
   const deadline = Date.now() + timeoutMs
   let last = ''
   while (Date.now() < deadline) {
     const target = resource || defaultPsqlResource(app)
     const args = target
-      ? ['-a', app, 'pg', 'psql', target, '--', '-Atc', 'SELECT 1']
-      : ['-a', app, 'pg', 'psql', '--', '-Atc', 'SELECT 1']
+      ? ['-a', app, 'pg:psql', target, '--', '-Atc', 'SELECT 1']
+      : ['-a', app, 'pg:psql', '--', '-Atc', 'SELECT 1']
     try {
       const out = flynn(args, { timeoutMs: flynnCmd })
       if (out.includes('1')) return
@@ -121,6 +134,9 @@ export function assertPostgresAppEnv(env: string, resource: string): void {
   if (keys.length !== 1) {
     throw new Error(`provision must set exactly one color URL:\n${env}`)
   }
+  if (!envHasKey(env, 'FLYNN_POSTGRES_ROLE') || !env.includes('FLYNN_POSTGRES_ROLE=primary')) {
+    throw new Error(`provision must set FLYNN_POSTGRES_ROLE=primary:\n${env}`)
+  }
   assertPostgresAppEnvCommon(env, resource)
 }
 
@@ -174,7 +190,7 @@ export async function waitUntilPostgresInstanceGone(app: string, name: string, t
   while (Date.now() < deadline) {
     const rows = parsePgRows(flynnApp(app, ['pg'], { allowFail: true }))
     if (rows.some((r) => r.name === name)) {
-      flynnApp(app, ['resource:remove', name], { timeoutMs: destroy, allowFail: true })
+      flynnApp(app, ['addons:destroy', name], { timeoutMs: destroy, allowFail: true })
     } else if (!flynnAppListed(name)) {
       return
     } else {
@@ -197,7 +213,7 @@ export function destroyAppBestEffort(app: string): void {
   const followers = rows.filter((r) => r.role === 'follower').map((r) => r.name)
   const primaries = rows.filter((r) => r.role !== 'follower').map((r) => r.name)
   for (const name of [...followers, ...primaries]) {
-    flynnApp(app, ['resource:remove', name], { timeoutMs: destroy, allowFail: true })
+    flynnApp(app, ['addons:destroy', name], { timeoutMs: destroy, allowFail: true })
   }
   flynnApp(app, ['apps:destroy', '-y'], { timeoutMs: destroy, allowFail: true })
 }
@@ -205,8 +221,8 @@ export function destroyAppBestEffort(app: string): void {
 export function pgPsql(app: string, extra: string[], resource = '', opts?: { allowFail?: boolean }): string {
   const target = resource || defaultPsqlResource(app)
   const args = target
-    ? ['pg', 'psql', target, '--', ...extra]
-    : ['pg', 'psql', '--', ...extra]
+    ? ['pg:psql', target, '--', ...extra]
+    : ['pg:psql', '--', ...extra]
   return flynnApp(app, args, { allowFail: opts?.allowFail })
 }
 

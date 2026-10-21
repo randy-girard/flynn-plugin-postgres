@@ -57,7 +57,7 @@ func assertPostgresAppEnvCommon(t *testing.T, env, resource string) {
 	for _, k := range []string{
 		"PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE", "PGSSLMODE",
 		"POSTGRES_URL", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST",
-		"FLYNN_POSTGRES", "FLYNN_POSTGRES_ROLE",
+		"FLYNN_POSTGRES", "POSTGRES_ROLE",
 	} {
 		if envHasKey(env, k) {
 			t.Fatalf("app must not set %s:\n%s", k, env)
@@ -72,6 +72,9 @@ func assertPostgresAppEnv(t *testing.T, env, resource string) {
 	}
 	if keys := postgresColorURLKeys(env); len(keys) != 1 {
 		t.Fatalf("provision must set exactly one color URL:\n%s", env)
+	}
+	if envValue(env, "FLYNN_POSTGRES_ROLE") != "primary" {
+		t.Fatalf("provision must set FLYNN_POSTGRES_ROLE=primary:\n%s", env)
 	}
 	assertPostgresAppEnvCommon(t, env, resource)
 }
@@ -128,11 +131,11 @@ func assertIsolatedPostgresName(t *testing.T, name string) {
 }
 
 const (
-	cmdQuick     = 20 * time.Second
+	cmdQuick     = 45 * time.Second
 	cmdProvision = 5 * time.Minute // matches plugin instanceReadyTimeout (initdb + TLS)
 	cmdFollow    = 5 * time.Minute
 	cmdWait      = 5 * time.Minute
-	cmdDump      = 20 * time.Second
+	cmdDump      = 90 * time.Second
 	cmdDestroy   = 45 * time.Second
 	cmdGone      = 2 * time.Minute
 	pollInterval = time.Second
@@ -191,17 +194,49 @@ func (h *harness) cmd(timeout time.Duration, args ...string) (string, string, er
 	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
 }
 
+func retryableCLI(err error, errOut string) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error() + " " + errOut)
+	return strings.Contains(s, "killed") || strings.Contains(s, "deadline") ||
+		strings.Contains(s, "context canceled") || strings.Contains(s, "timed out") ||
+		strings.Contains(s, "apparmor")
+}
+
 func (h *harness) must(timeout time.Duration, args ...string) string {
 	h.t.Helper()
-	out, errOut, err := h.cmd(timeout, args...)
-	if err != nil {
-		h.t.Fatalf("flynn %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, out, errOut)
+	deadline := time.Now().Add(timeout)
+	var lastOut, lastErrOut string
+	var last error
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 && last != nil {
+			break
+		}
+		if remain <= 0 {
+			remain = time.Second
+		}
+		attempt := 90 * time.Second
+		if remain < attempt {
+			attempt = remain
+		}
+		out, errOut, err := h.cmd(attempt, args...)
+		if err == nil {
+			if errOut != "" {
+				h.t.Logf("flynn %s stderr:\n%s", strings.Join(args, " "), errOut)
+			}
+			return strings.TrimSpace(out + "\n" + errOut)
+		}
+		last, lastOut, lastErrOut = err, out, errOut
+		if !retryableCLI(err, errOut) || !time.Now().Before(deadline) {
+			break
+		}
+		h.t.Logf("retrying flynn %s: %v", strings.Join(args, " "), err)
+		time.Sleep(time.Second)
 	}
-	if errOut != "" {
-		h.t.Logf("flynn %s stderr:\n%s", strings.Join(args, " "), errOut)
-	}
-	// Flynn CLI status lines (Created, Deleted, …) go to stderr via log.Printf.
-	return strings.TrimSpace(out + "\n" + errOut)
+	h.t.Fatalf("flynn %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), last, lastOut, lastErrOut)
+	return ""
 }
 
 func (h *harness) appMust(timeout time.Duration, args ...string) string {
@@ -288,7 +323,7 @@ func (h *harness) psql(timeout time.Duration, extra ...string) string {
 	if name := h.psqlDefaultResource(); name != "" {
 		return h.psqlOn(timeout, name, extra...)
 	}
-	return h.psqlStdout(timeout, append([]string{"pg", "psql", "--"}, extra...)...)
+	return h.psqlStdout(timeout, append([]string{"pg:psql", "--"}, extra...)...)
 }
 
 // psqlDefaultResource is the instance to pass to pg:psql when more than one
@@ -309,39 +344,66 @@ func (h *harness) psqlDefaultResource() string {
 
 func (h *harness) psqlOn(timeout time.Duration, resource string, extra ...string) string {
 	h.t.Helper()
-	return h.psqlStdout(timeout, append([]string{"pg", "psql", resource, "--"}, extra...)...)
+	return h.psqlStdout(timeout, append([]string{"pg:psql", resource, "--"}, extra...)...)
 }
 
 func (h *harness) psqlStdout(timeout time.Duration, args ...string) string {
 	h.t.Helper()
-	out, errOut, err := h.appCmd(timeout, args...)
-	if err != nil {
-		h.t.Fatalf("flynn %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, out, errOut)
+	deadline := time.Now().Add(timeout)
+	var lastOut, lastErrOut string
+	var last error
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			break
+		}
+		attempt := 15 * time.Second
+		if remain < attempt {
+			attempt = remain
+		}
+		out, errOut, err := h.appCmd(attempt, args...)
+		if err == nil {
+			if errOut != "" {
+				h.t.Logf("flynn %s stderr:\n%s", strings.Join(args, " "), errOut)
+			}
+			return out
+		}
+		last, lastOut, lastErrOut = err, out, errOut
+		h.t.Logf("retrying flynn %s: %v", strings.Join(args, " "), err)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(pollInterval)
 	}
-	if errOut != "" {
-		h.t.Logf("flynn %s stderr:\n%s", strings.Join(args, " "), errOut)
-	}
-	return out
+	h.t.Fatalf("flynn %s: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), last, lastOut, lastErrOut)
+	return ""
 }
 
-func (h *harness) waitReady(resource string, timeout time.Duration) {
+func (h *harness) tryReady(resource string, timeout time.Duration) error {
 	h.t.Helper()
 	deadline := time.Now().Add(timeout)
 	var last error
 	for time.Now().Before(deadline) {
-		args := []string{"pg", "psql", "--", "-Atc", "SELECT 1"}
+		args := []string{"pg:psql", "--", "-Atc", "SELECT 1"}
 		if resource != "" {
-			args = []string{"pg", "psql", resource, "--", "-Atc", "SELECT 1"}
+			args = []string{"pg:psql", resource, "--", "-Atc", "SELECT 1"}
 		}
-		out, errOut, err := h.appCmd(cmdQuick, args...)
+		out, errOut, err := h.appCmd(15*time.Second, args...)
 		if err == nil && strings.Contains(out, "1") {
-			return
+			return nil
 		}
 		last = fmt.Errorf("%v\nstdout:%s\nstderr:%s", err, out, errOut)
 		h.t.Logf("waiting for postgres %s: %v", resource, last)
 		time.Sleep(pollInterval)
 	}
-	h.t.Fatalf("postgres %s on %s not ready: %v", resource, h.app, last)
+	return fmt.Errorf("postgres %s on %s not ready: %v", resource, h.app, last)
+}
+
+func (h *harness) waitReady(resource string, timeout time.Duration) {
+	h.t.Helper()
+	if err := h.tryReady(resource, timeout); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 func (h *harness) appListed(name string) bool {

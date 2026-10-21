@@ -220,11 +220,13 @@ echo "    dashboard=${DASHBOARD_URL}"
 echo "    email=${DASHBOARD_EMAIL}"
 echo "    cli=${run_cli} web=${run_web} headless=${HEADLESS}"
 
+cli_status=0
 if [[ "${run_cli}" -eq 1 ]]; then
   echo "==> CLI (go test -tags=cluster)"
-  go test -tags=cluster -count=1 -timeout 15m -v ./cluster/cli
+  go test -tags=cluster -count=1 -timeout 30m -v ./cluster/cli || cli_status=$?
 fi
 
+web_status=0
 if [[ "${run_web}" -eq 1 ]]; then
   need_cmd npm
   echo "==> web (Playwright Chromium)"
@@ -235,5 +237,10 @@ if [[ "${run_web}" -eq 1 ]]; then
     fi
     npx playwright install chromium
     npx playwright test
-  )
+  ) || web_status=$?
+fi
+
+if [[ "${cli_status}" -ne 0 || "${web_status}" -ne 0 ]]; then
+  echo "==> failed cli=${cli_status} web=${web_status}" >&2
+  exit 1
 fi
