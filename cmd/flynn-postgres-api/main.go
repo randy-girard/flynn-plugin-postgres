@@ -110,6 +110,7 @@ func newHandler(store *postgres.Store) *handler {
 	h.router.GET("/tasks", h.listTasks)
 	h.router.GET("/tasks/:id", h.getTask)
 	h.router.POST("/cluster/upgrades", h.clusterUpgrades)
+	h.router.POST("/cluster/maintenance", h.maintain)
 	h.router.GET("/cluster/upgrades", h.listTasks)
 	h.router.GET("/version", h.version)
 	h.mountDashboard()

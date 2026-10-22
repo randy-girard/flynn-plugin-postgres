@@ -745,12 +745,19 @@ func imageRefreshAction(inst *postgres.Instance, rel *ct.Release, imageID string
 }
 
 func (h *handler) refreshIsolatedImages() {
+	h.refreshIsolatedImagesOnly(nil)
+}
+
+func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 	if h == nil || !h.live() {
 		return
 	}
 	swapping := map[string]bool{}
 	for _, inst := range h.imageRefreshCandidates() {
 		if inst == nil || inst.Role == postgres.RoleFollower {
+			continue
+		}
+		if !maintenanceSelected(only, inst.App, inst.ID) {
 			continue
 		}
 		rel, err := h.client.GetAppRelease(inst.App)
@@ -797,6 +804,9 @@ func (h *handler) refreshIsolatedImages() {
 	}
 	for _, inst := range h.imageRefreshCandidates() {
 		if inst == nil || swapping[inst.ID] || swapping[inst.App] || swapping[inst.LeaderID] {
+			continue
+		}
+		if !maintenanceSelected(only, inst.App, inst.ID) {
 			continue
 		}
 		if inst.Role != postgres.RoleFollower {

@@ -60,6 +60,12 @@ func (h *handler) afterReplace() func(old, nf *postgres.Instance) error {
 		if h == nil || !h.live() {
 			return nil
 		}
+		if _, err := h.adoptInstanceName(old, nf); err != nil {
+			if h.log != nil {
+				h.log.Error("upgrade adopt resource name", "from", oldApp(old), "to", oldApp(nf), "err", err)
+			}
+			return err
+		}
 		if err := h.cutoverAttachedApps(old, nf); err != nil {
 			if h.log != nil {
 				h.log.Error("upgrade after-replace cutover", "from", oldApp(old), "to", oldApp(nf), "err", err)
@@ -108,6 +114,14 @@ func (h *handler) afterPromote() func(*postgres.PromoteResult) error {
 			fromApp = res.PreviousLeader.App
 		}
 		h.emitTopology(postgres.CodeReplicaReady, res.Promoted, fromApp, toApp, "")
+		if res.PreviousLeader != nil {
+			if _, err := h.adoptInstanceName(res.PreviousLeader, res.Promoted); err != nil {
+				if h.log != nil {
+					h.log.Error("upgrade adopt resource name", "from", fromApp, "to", res.Promoted.App, "err", err)
+				}
+				return err
+			}
+		}
 		if err := h.promoteIsolatedJob(res.Promoted); err != nil {
 			if h.log != nil {
 				h.log.Error("upgrade after-promote stamp", "app", res.Promoted.App, "err", err)
@@ -182,6 +196,12 @@ func (h *handler) autoStartClusterUpgrades() {
 	}
 	go func() {
 		h.reapOrphanInstances()
+		if !maintenanceAuto() {
+			if h.log != nil {
+				h.log.Info("cluster upgrades", "skipped", "set MAINTENANCE_AUTO=true to upgrade instances when the plugin starts")
+			}
+			return
+		}
 		h.refreshIsolatedImages()
 		started, skipped := h.beginClusterUpgrades()
 		if h.log != nil {
@@ -191,12 +211,22 @@ func (h *handler) autoStartClusterUpgrades() {
 }
 
 func (h *handler) beginClusterUpgrades() (started []*postgres.Task, skipped []string) {
+	return h.beginClusterUpgradesOnly(nil)
+}
+
+func (h *handler) beginClusterUpgradesOnly(only map[string]struct{}) (started []*postgres.Task, skipped []string) {
 	if h == nil {
 		return nil, nil
 	}
+	seen := map[string]struct{}{}
 	for _, inst := range h.upgradeCandidates() {
+		if !maintenanceSelected(only, inst.App, inst.ID) {
+			continue
+		}
+		seen[inst.App] = struct{}{}
+		seen[inst.ID] = struct{}{}
 		if h.alreadyCurrent(inst) {
-			skipped = append(skipped, inst.App)
+			skipped = append(skipped, inst.App+": already current")
 			continue
 		}
 		task, err := h.startUpgrade(inst.ID, h.upgradeOptions(postgres.ModeLogical, inst.Runtime))
@@ -212,7 +242,7 @@ func (h *handler) beginClusterUpgrades() (started []*postgres.Task, skipped []st
 		}
 		started = append(started, task)
 	}
-	return started, skipped
+	return started, append(skipped, maintenanceMissing(only, seen)...)
 }
 
 // isolatedUpgradeCandidate is a primary postgres instance app. Tenant Flynn

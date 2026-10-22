@@ -29,6 +29,8 @@ func runPluginTask(args []string) error {
 			return fmt.Errorf("usage: flynn-postgres-api task info <resource>")
 		}
 		return runInfoTask(strings.TrimSpace(args[1]))
+	case "maintenance":
+		return runMaintenanceTask(args[1:])
 	case "upgrade":
 		target := ""
 		if len(args) > 1 {
@@ -237,6 +239,58 @@ func runInstanceActionTask(action, resource string) error {
 		return fmt.Errorf("%s %s: %s", action, resp.Status, strings.TrimSpace(string(raw)))
 	}
 	fmt.Printf("%s %s\n", action, resource)
+	return nil
+}
+
+func runMaintenanceTask(args []string) error {
+	all := false
+	var names []string
+	for _, arg := range args {
+		switch strings.TrimSpace(arg) {
+		case "", "--all", "all":
+			if strings.TrimSpace(arg) != "" {
+				all = true
+			}
+		default:
+			names = append(names, strings.TrimSpace(arg))
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"all":       all,
+		"instances": strings.Join(names, ","),
+	})
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(pluginAPIBase()+"/cluster/maintenance", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("maintenance %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	var out struct {
+		Tasks   []postgres.Task `json:"tasks"`
+		Skipped []string        `json:"skipped"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return fmt.Errorf("maintenance decode: %w", err)
+	}
+	if len(out.Tasks) == 0 && len(out.Skipped) == 0 {
+		fmt.Println("no instances needed maintenance")
+		return nil
+	}
+	for _, task := range out.Tasks {
+		fmt.Printf("maintenance task %s for %s (%s)\n", task.ID, task.Target, task.Status)
+	}
+	for _, skip := range out.Skipped {
+		fmt.Printf("skipped\t%s\n", skip)
+	}
+	if len(out.Tasks) == 1 && out.Tasks[0].ID != "" {
+		return waitForTask(out.Tasks[0].ID)
+	}
 	return nil
 }
 
