@@ -280,6 +280,14 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "FLYNN_POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
 	}
+	backup := strings.Index(src, "pg_basebackup")
+	window := src[:backup]
+	if len(window) > 600 {
+		window = window[len(window)-600:]
+	}
+	if !strings.Contains(window, "FLYNN_POSTGRES_PRIMARY_URL") {
+		t.Fatal("pg_basebackup must run when FLYNN_POSTGRES_PRIMARY_URL is set; gating on POSTGRES_PRIMARY_URL initdb's the follower, which enters standby with no primary_conninfo and the image swap waits forever")
+	}
 	if !strings.Contains(src, "--checkpoint=fast") {
 		t.Fatal("pg_basebackup must force a fast checkpoint; spread waits up to checkpoint_timeout on idle primaries")
 	}
@@ -405,6 +413,17 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	if !strings.Contains(src, `"flynn-datastore": "true"`) {
 		t.Fatal("isolated instances must advertise flynn-datastore so user jobs can resolve leader.<name>.discoverd")
 	}
+	if !strings.Contains(src, "LeaderType: discoverd.LeaderTypeManual") || !strings.Contains(src, ".SetLeader(inst.ID)") {
+		t.Fatal("primaries must claim the manual discoverd leader so leader.<name>.discoverd resolves after a reboot")
+	}
+	if strings.Index(src, "SetLeader(") < strings.Index(src, "RegisterInstance(") {
+		t.Fatal("SetLeader must follow RegisterInstance so the instance id exists")
+	}
+	regDepth := braceDepthAt(src, strings.Index(src, "RegisterInstance("))
+	claimDepth := braceDepthAt(src, strings.Index(src, ".SetLeader("))
+	if regDepth != claimDepth {
+		t.Fatal("every instance must claim leader.<FLYNN_POSTGRES>.discoverd, including a follower; a follower registers its own service, and without that claim image-swap cannot read its replay LSN")
+	}
 	if strings.Contains(src, "POSTGRES_SERVICE_ALIAS") {
 		t.Fatal("do not alias the old discoverd name; attached apps deploy onto the new primary URL")
 	}
@@ -436,6 +455,25 @@ func TestDeprovisionDoesNotWaitForAppDeletion(t *testing.T) {
 	if !strings.Contains(src, "startIsolatedAppDeletion(") {
 		t.Fatal("resource:remove must return before DeleteApp waits for teardown")
 	}
+}
+
+func braceDepthAt(src string, idx int) int {
+	depth := 0
+	if idx < 0 {
+		return -1
+	}
+	if idx > len(src) {
+		idx = len(src)
+	}
+	for i := 0; i < idx; i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+	}
+	return depth
 }
 
 func TestCIPushCoverageBadgeRetriesRejectedPush(t *testing.T) {

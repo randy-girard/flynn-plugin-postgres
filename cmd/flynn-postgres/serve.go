@@ -55,23 +55,44 @@ func servePostgres() error {
 		}
 	}
 	disc := postgres.NewDiscoverdClient()
-	if err := disc.AddService(service, nil); err != nil && !httphelper.IsObjectExistsError(err) {
+	// Isolated databases are LeaderTypeManual. Oldest election never runs, so
+	// leader.<service>.discoverd stays empty after a reboot until this process
+	// claims its own service. A service that already elects its own leader
+	// rejects SetLeader.
+	if err := disc.AddService(service, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}); err != nil && !httphelper.IsObjectExistsError(err) {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return postgres.WrapDiscoverdAuth(err)
 	}
-	hb, err := disc.RegisterInstance(service, &discoverd.Instance{
+	inst := &discoverd.Instance{
 		Addr: ":5432",
 		Meta: map[string]string{"flynn-datastore": "true"},
-	})
+	}
+	hb, err := disc.RegisterInstance(service, inst)
 	if err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return postgres.WrapDiscoverdAuth(err)
 	}
 	shutdown.BeforeExit(func() { hb.Close() })
+	// FLYNN_POSTGRES is this job's own service. A follower must claim it too:
+	// image-swap reads replay from leader.<follower>.discoverd. That claim
+	// does not point leader.<primary>.discoverd at the replica.
+	if err := ignoreLeaderElectionError(disc.Service(service).SetLeader(inst.ID)); err != nil {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		return postgres.WrapDiscoverdAuth(err)
+	}
 
 	go serveInstanceMetrics()
 	logInstanceTopology()
 	return <-exited
+}
+
+// ignoreLeaderElectionError drops SetLeader failures from services that elect
+// their own leader. A manual service has no leader until the primary claims it.
+func ignoreLeaderElectionError(err error) error {
+	if err == nil || strings.Contains(err.Error(), "not manual") {
+		return nil
+	}
+	return err
 }
 
 // instanceMetricsTimeout bounds collection under flynn-host's 2s scrape timeout.

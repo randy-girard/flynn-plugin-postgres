@@ -17,12 +17,16 @@ as_postgres() {
 }
 
 install -d -o postgres -g postgres -m 0700 /data
+# The API sets FLYNN_POSTGRES_PRIMARY_URL. POSTGRES_PRIMARY_URL is the older
+# name. Gating on only the old name initdb's a follower, then standby.signal
+# has no primary_conninfo and the replica polls pg_wal forever.
+primary_url="${FLYNN_POSTGRES_PRIMARY_URL:-${POSTGRES_PRIMARY_URL:-}}"
 if [[ ! -s /data/PG_VERSION ]]; then
-  if [[ -n "${POSTGRES_PRIMARY_URL:-}" ]]; then
+  if [[ -n "${primary_url}" ]]; then
     # --checkpoint=fast: spread (the default) waits for the next scheduled
     # checkpoint, which on an idle/empty primary can be checkpoint_timeout
     # (5 minutes) because nothing fills WAL.
-    as_postgres "${PG_BIN}/pg_basebackup" -d "${FLYNN_POSTGRES_PRIMARY_URL}" -D /data -Fp -Xs -R --checkpoint=fast --no-password
+    as_postgres "${PG_BIN}/pg_basebackup" -d "${primary_url}" -D /data -Fp -Xs -R --checkpoint=fast --no-password
     chown -R postgres:postgres /data
   else
     as_postgres "${PG_BIN}/initdb" -D /data --auth-local=trust --auth-host=md5
