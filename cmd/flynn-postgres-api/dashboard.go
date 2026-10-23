@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -1137,6 +1138,7 @@ func (h *handler) deleteInstanceResource(sess *dashui.Session, inst *postgres.In
 			return err
 		}
 	}
+	h.deleteIsolatedReplica(inst)
 	h.forgetInstance(inst)
 	return nil
 }
@@ -1171,7 +1173,7 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		switch action {
 		case "follow":
 			return "", fmt.Errorf("choose a primary to follow")
-		case "promote", "unfollow", "wait":
+		case "promote", "unfollow", "remove", "wait":
 			return "", fmt.Errorf("choose a follower")
 		default:
 			return "", fmt.Errorf("choose a primary to upgrade")
@@ -1212,6 +1214,11 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		}
 		h.syncResourceEnv(sess, inst)
 		return "Replication stopped. This instance is a standalone writable copy.", nil
+	case "remove":
+		if err := h.removeFollower(id); err != nil {
+			return "", err
+		}
+		return "Follower removed. Replication stopped and the replica was deleted.", nil
 	case "wait":
 		ctx, cancel := timeoutCtx(r)
 		defer cancel()
@@ -1408,7 +1415,80 @@ func followerActionForms(ref string, autoFailover bool) string {
 	return `<div class="row" style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">` +
 		`<form method="post" style="margin:0"><input type="hidden" name="action" value="promote"><input type="hidden" name="instance" value="` + esc + `"><button class="primary" type="submit" onclick="return confirm('` + html.EscapeString(confirm) + `')">Promote</button></form>` +
 		`<form method="post" style="margin:0"><input type="hidden" name="action" value="unfollow"><input type="hidden" name="instance" value="` + esc + `"><button class="danger" type="submit" onclick="return confirm('Stop replication and leave a standalone writable copy?')">Unfollow</button></form>` +
+		`<form method="post" style="margin:0"><input type="hidden" name="action" value="remove"><input type="hidden" name="instance" value="` + esc + `"><button class="danger" type="submit" onclick="return confirm('Remove this follower? Replication stops and the replica is deleted.')">Remove</button></form>` +
 		`</div>`
+}
+
+func (h *handler) removeFollower(id string) error {
+	id = strings.TrimSpace(id)
+	if h == nil || h.store == nil || id == "" {
+		return fmt.Errorf("choose a follower")
+	}
+	inst, err := h.store.Get(id)
+	if err != nil && !errors.Is(err, postgres.ErrNotFound) {
+		return err
+	}
+	if inst != nil {
+		if !replicaCanBeRemoved(string(inst.Role)) {
+			return fmt.Errorf("only a follower can be removed this way")
+		}
+		if err := postgres.CanDeleteResource(inst, h.followerApps(inst)); err != nil {
+			return err
+		}
+		h.deleteIsolatedReplica(inst)
+		h.store.Forget(inst.ID)
+		h.emitFollowerRemoved(inst, "reason=deleted")
+		return nil
+	}
+	if h.client == nil || !postgres.IsolatedInstanceApp(id) {
+		return postgres.ErrNotFound
+	}
+	rel, relErr := h.client.GetAppRelease(id)
+	if relErr != nil || rel == nil || !envIsRemovableReplica(rel.Env, []string{"FLYNN_POSTGRES_ROLE", "POSTGRES_ROLE"}, "FLYNN_POSTGRES_LEADER") {
+		if relErr != nil || rel == nil {
+			return postgres.ErrNotFound
+		}
+		return fmt.Errorf("only a follower can be removed this way")
+	}
+	startIsolatedAppDeletion(h.client, id)
+	return nil
+}
+
+func (h *handler) deleteIsolatedReplica(inst *postgres.Instance) {
+	if h == nil || h.client == nil || inst == nil {
+		return
+	}
+	name := strings.TrimSpace(inst.App)
+	if name == "" {
+		name = strings.TrimSpace(inst.ID)
+	}
+	if name == "" {
+		return
+	}
+	startIsolatedAppDeletion(h.client, name)
+}
+
+func replicaCanBeRemoved(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "follower", "deposed":
+		return true
+	default:
+		return false
+	}
+}
+
+func envIsRemovableReplica(env map[string]string, roleKeys []string, leaderKey string) bool {
+	if len(env) == 0 {
+		return false
+	}
+	for _, key := range roleKeys {
+		role := strings.ToLower(strings.TrimSpace(env[key]))
+		if role == "" {
+			continue
+		}
+		return role == "follower" || role == "deposed"
+	}
+	return strings.TrimSpace(env[leaderKey]) != ""
 }
 
 func (h *handler) dashFollowablePrimaries(insts []*postgres.Instance) []*postgres.Instance {

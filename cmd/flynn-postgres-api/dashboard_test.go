@@ -510,6 +510,58 @@ func TestDashReplicationUnfollow(t *testing.T) {
 	}
 }
 
+func TestDashReplicationRemoveFollowerWithoutUnfollow(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fol, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fol.Role != postgres.RoleFollower {
+		t.Fatalf("role %s", fol.Role)
+	}
+	h := newHandler(store)
+	form := strings.NewReader("action=remove&instance=" + leader.App)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "Follower removed") {
+		t.Fatalf("removed a primary: %s", rec.Body.String())
+	}
+	if _, err := store.Get(leader.ID); err != nil {
+		t.Fatalf("primary removed: %v", err)
+	}
+	if _, err := store.Get(fol.ID); err != nil {
+		t.Fatalf("follower removed with the primary: %v", err)
+	}
+
+	form = strings.NewReader("action=remove&instance=" + fol.App)
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Follower removed") {
+		t.Fatalf("remove %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.Get(fol.ID); !errors.Is(err, postgres.ErrNotFound) {
+		t.Fatalf("follower still present: %v", err)
+	}
+	if names := store.FollowerApps(leader.ID); len(names) != 0 {
+		t.Fatalf("leader still lists followers: %v", names)
+	}
+	got, err := store.Get(leader.ID)
+	if err != nil || got.Role != postgres.RolePrimary {
+		t.Fatalf("leader %+v %v", got, err)
+	}
+}
+
 func TestDashCreateLogicalDatabase(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	store := postgres.NewStore()
