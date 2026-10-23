@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/inconshreveable/log15"
 	"github.com/julienschmidt/httprouter"
@@ -74,6 +75,8 @@ type handler struct {
 	router           *httprouter.Router
 	client           controller.Client
 	imageID          string
+	imageResolved    string
+	imageResolve     sync.Once
 	log              log15.Logger
 	listResources    func(app string) ([]*ct.Resource, error)
 	listAllResources func() ([]*ct.Resource, error)

@@ -120,7 +120,85 @@ func loadLivePostgresByResourceID(c appReleaseClient, idOrApp string) *postgres.
 }
 
 func (h *handler) live() bool {
-	return h != nil && h.client != nil && h.imageID != ""
+	return h != nil && h.client != nil && h.rolloutImageID() != ""
+}
+
+// artifactRefIsURI is the string `flynn release:show` prints (`type+uri`).
+// The controller stores that string's artifact_id column as a uuid, so using
+// the display form as ArtifactIDs fails the image roll.
+func artifactRefIsURI(id string) bool {
+	id = strings.TrimSpace(id)
+	return strings.Contains(id, "://") || strings.Contains(id, "+http")
+}
+
+func controllerArtifactID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" || artifactRefIsURI(id) {
+		return ""
+	}
+	return id
+}
+
+// resolvePluginImageID returns the artifact id to roll onto isolated
+// databases. An explicit controller id wins. A release:show URI or an empty
+// POSTGRES_IMAGE_ID uses the artifact the plugin process itself is running.
+func resolvePluginImageID(imageID, pluginArtifact string) string {
+	if id := controllerArtifactID(imageID); id != "" {
+		return id
+	}
+	return controllerArtifactID(pluginArtifact)
+}
+
+func (h *handler) rolloutImageID() string {
+	if h == nil {
+		return ""
+	}
+	if id := controllerArtifactID(h.imageID); id != "" {
+		return id
+	}
+	h.imageResolve.Do(func() {
+		h.imageResolved = pluginReleaseArtifact(h.client)
+	})
+	return h.imageResolved
+}
+
+func pluginReleaseArtifact(c appReleaseClient) string {
+	if c == nil {
+		return ""
+	}
+	refs := make([]string, 0, 3)
+	for _, key := range []string{"FLYNN_APP_ID", "FLYNN_APP_NAME"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			refs = append(refs, v)
+		}
+	}
+	refs = append(refs, "postgres-plugin")
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		rel, err := c.GetAppRelease(ref)
+		if err != nil || rel == nil || len(rel.ArtifactIDs) == 0 {
+			continue
+		}
+		if id := controllerArtifactID(rel.ArtifactIDs[0]); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// applyImageSwapResult bounces the existing database when a follower swap
+// fails. The swap is what picks up a new squashfs without downtime; if it
+// never promotes, the primary stays on the previous image and will not claim
+// its discoverd leader after the next reboot.
+func applyImageSwapResult(status string, inplace func() error) error {
+	if status != postgres.TaskFailed || inplace == nil {
+		return nil
+	}
+	return inplace()
 }
 
 // instanceControl is the controller subset startInstance needs. Tests fake it.
@@ -240,7 +318,7 @@ func (h *handler) startInstance(inst *postgres.Instance) error {
 		return err
 	}
 	tags = dbruntime.MergeProcessTags(h.runtimePlacementTags(inst), tags)
-	err = startIsolatedInstance(h.client, h.imageID, inst, leader, tags, waitInstanceReady)
+	err = startIsolatedInstance(h.client, h.rolloutImageID(), inst, leader, tags, waitInstanceReady)
 	if err == nil && inst != nil && inst.Role == postgres.RoleFollower {
 		leaderApp := ""
 		if leader != nil {
@@ -255,6 +333,10 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if c == nil {
 		return fmt.Errorf("missing controller")
 	}
+	if controllerArtifactID(imageID) == "" {
+		return fmt.Errorf("plugin image id must be a controller artifact id, not a release:show URI")
+	}
+	imageID = controllerArtifactID(imageID)
 	if inst == nil {
 		return fmt.Errorf("missing instance")
 	}
@@ -761,10 +843,10 @@ func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 			continue
 		}
 		rel, err := h.client.GetAppRelease(inst.App)
-		if err != nil || imageRefreshAction(inst, rel, h.imageID) != "swap" {
+		if err != nil || imageRefreshAction(inst, rel, h.rolloutImageID()) != "swap" {
 			continue
 		}
-		if imageSwapReplicaExists(h.client, inst.App, h.imageID) {
+		if imageSwapReplicaExists(h.client, inst.App, h.rolloutImageID()) {
 			markImageSwap(swapping, inst)
 			if h.log != nil {
 				h.log.Info("image refresh follower-swap already in progress", "app", inst.App)
@@ -778,7 +860,7 @@ func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 			}
 			continue
 		}
-		if imageSwapReplicaExists(h.client, inst.App, h.imageID) {
+		if imageSwapReplicaExists(h.client, inst.App, h.rolloutImageID()) {
 			markImageSwap(swapping, inst)
 			if h.log != nil {
 				h.log.Info("image refresh follower-swap already in progress", "app", inst.App)
@@ -798,7 +880,7 @@ func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 		if h.log != nil {
 			h.log.Error("image refresh follower-swap", "app", inst.App, "err", err)
 		}
-		if err := refreshIsolatedPluginImage(h.client, h.imageID, inst); err != nil && h.log != nil {
+		if err := refreshIsolatedPluginImage(h.client, h.rolloutImageID(), inst); err != nil && h.log != nil {
 			h.log.Error("refresh isolated image", "app", inst.App, "err", err)
 		}
 	}
@@ -819,8 +901,8 @@ func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 			// A crash-looping replica is not streaming, so recreate waits until
 			// it times out and the stale image never gets replaced. Bounce
 			// onto the current image first; start.sh restores standby.signal.
-			if rel, err := h.client.GetAppRelease(inst.App); err == nil && imageRefreshAction(inst, rel, h.imageID) == "inplace" {
-				if err := refreshIsolatedPluginImage(h.client, h.imageID, inst); err != nil && h.log != nil {
+			if rel, err := h.client.GetAppRelease(inst.App); err == nil && imageRefreshAction(inst, rel, h.rolloutImageID()) == "inplace" {
+				if err := refreshIsolatedPluginImage(h.client, h.rolloutImageID(), inst); err != nil && h.log != nil {
 					h.log.Error("refresh isolated image", "app", inst.App, "err", err)
 				}
 				continue
@@ -833,7 +915,7 @@ func (h *handler) refreshIsolatedImagesOnly(only map[string]struct{}) {
 			}
 			continue
 		}
-		if err := refreshIsolatedPluginImage(h.client, h.imageID, inst); err != nil && h.log != nil {
+		if err := refreshIsolatedPluginImage(h.client, h.rolloutImageID(), inst); err != nil && h.log != nil {
 			h.log.Error("refresh isolated image", "app", inst.App, "err", err)
 		}
 	}
@@ -990,6 +1072,15 @@ func (h *handler) watchUpgradeTask(app, taskID string) {
 						if task.Error != "" {
 							extra += " err=" + task.Error
 						}
+						inst := src
+						if inst == nil {
+							inst = &postgres.Instance{App: app, EngineVersion: postgres.EngineVersion()}
+						}
+						if err := applyImageSwapResult(task.Status, func() error {
+							return refreshIsolatedPluginImage(h.client, h.rolloutImageID(), inst)
+						}); err != nil && h.log != nil {
+							h.log.Error("image refresh inplace after failed swap", "app", app, "err", err)
+						}
 					}
 					h.emitTopology(code, src, app, promoted, extra)
 				}
@@ -1049,6 +1140,10 @@ func refreshIsolatedPluginImage(c isolatedImageClient, imageID string, inst *pos
 	if c == nil || inst == nil || strings.TrimSpace(imageID) == "" {
 		return nil
 	}
+	if controllerArtifactID(imageID) == "" {
+		return fmt.Errorf("plugin image id must be a controller artifact id, not a release:show URI")
+	}
+	imageID = controllerArtifactID(imageID)
 	if !postgres.IsolatedInstanceApp(inst.App) {
 		return fmt.Errorf("postgres plugin must not rewrite tenant app %q", inst.App)
 	}

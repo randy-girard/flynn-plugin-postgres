@@ -127,6 +127,85 @@ func TestRefreshIsolatedPluginImageUpdatesArtifact(t *testing.T) {
 	}
 }
 
+func TestRefreshIsolatedPluginImageRejectsReleaseShowURI(t *testing.T) {
+	uri := "flynn+http://blobstore.discoverd/plugins/postgres/images/972497a0b74751235134cacdc5e9b2bf791d91294f1a93d954bf790acd776b27.json"
+	ctrl := &fakeInstanceControl{
+		apps: []*ct.App{{ID: "a1", Name: "postgresql-basin-73690"}},
+		releases: []*ct.Release{{
+			ID:          "old",
+			ArtifactIDs: []string{"11111111-1111-1111-1111-111111111111"},
+			Env:         map[string]string{"ENGINE_VERSION": postgres.EngineVersion()},
+			Processes:   map[string]ct.ProcessType{postgres.ProcessName: {}},
+		}},
+		current: map[string]string{"a1": "old"},
+	}
+	err := refreshIsolatedPluginImage(ctrl, uri, &postgres.Instance{App: "postgresql-basin-73690", EngineVersion: postgres.EngineVersion()})
+	if err == nil || !strings.Contains(err.Error(), "artifact") {
+		t.Fatalf("release:show URI must not be stored as an artifact id, got %v", err)
+	}
+	for _, r := range ctrl.releases {
+		for _, id := range r.ArtifactIDs {
+			if strings.Contains(id, "://") || strings.Contains(id, "+http") {
+				t.Fatalf("CreateRelease received %s", id)
+			}
+		}
+	}
+	if len(ctrl.scaled) != 0 {
+		t.Fatalf("must not restart with a URI artifact: %#v", ctrl.scaled)
+	}
+}
+
+func TestStartIsolatedInstanceRejectsReleaseShowURI(t *testing.T) {
+	uri := "flynn+http://blobstore.discoverd/plugins/postgres/images/972497a0b74751235134cacdc5e9b2bf791d91294f1a93d954bf790acd776b27.json"
+	ctrl := &fakeInstanceControl{}
+	err := startIsolatedInstance(ctrl, uri, &postgres.Instance{App: "postgresql-basin-73690", Role: postgres.RolePrimary}, nil, nil, func(string, time.Duration) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "artifact") {
+		t.Fatalf("release:show URI must not be stored as an artifact id, got %v", err)
+	}
+	for _, r := range ctrl.releases {
+		for _, id := range r.ArtifactIDs {
+			if strings.Contains(id, "://") || strings.Contains(id, "+http") {
+				t.Fatalf("CreateRelease received %s", id)
+			}
+		}
+	}
+}
+
+func TestResolvePluginImageIDUsesRunningPluginArtifact(t *testing.T) {
+	uri := "flynn+http://blobstore.discoverd/plugins/postgres/images/972497a0b74751235134cacdc5e9b2bf791d91294f1a93d954bf790acd776b27.json"
+	pluginArt := "22222222-2222-2222-2222-222222222222"
+	if got := resolvePluginImageID(uri, pluginArt); got != pluginArt {
+		t.Fatalf("URI env must fall back to the running plugin artifact, got %q", got)
+	}
+	pinned := "33333333-3333-3333-3333-333333333333"
+	if got := resolvePluginImageID(pinned, pluginArt); got != pinned {
+		t.Fatalf("explicit artifact id must win, got %q", got)
+	}
+	if got := resolvePluginImageID("", pluginArt); got != pluginArt {
+		t.Fatalf("empty POSTGRES_IMAGE_ID must use the running plugin artifact, got %q", got)
+	}
+	if got := resolvePluginImageID(uri, uri); got != "" {
+		t.Fatalf("a URI is not an artifact id, got %q", got)
+	}
+}
+
+func TestFailedImageSwapFallsBackToInplace(t *testing.T) {
+	called := false
+	if err := applyImageSwapResult(postgres.TaskFailed, func() error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("failed follower swap must bounce the existing database, called=%v err=%v", called, err)
+	}
+	called = false
+	if err := applyImageSwapResult(postgres.TaskDone, func() error {
+		called = true
+		return nil
+	}); err != nil || called {
+		t.Fatalf("finished swap must not bounce, called=%v err=%v", called, err)
+	}
+}
+
 func TestRefreshIsolatedPluginImageSkipsMatchingImage(t *testing.T) {
 	ctrl := &fakeInstanceControl{
 		apps: []*ct.App{{ID: "a1", Name: "postgresql-basin-73690"}},
@@ -523,6 +602,9 @@ func TestStartIsolatedFollowerSetsPrimaryURL(t *testing.T) {
 	}
 	if ctrl.releases[0].Env["FLYNN_POSTGRES_PRIMARY_URL"] != leader.ConnectionURL() {
 		t.Fatalf("POSTGRES_PRIMARY_URL=%q", ctrl.releases[0].Env["FLYNN_POSTGRES_PRIMARY_URL"])
+	}
+	if ctrl.releases[0].Env["FLYNN_POSTGRES"] != "pg-harbor-dddddd" {
+		t.Fatalf("follower must register its own service, got %q", ctrl.releases[0].Env["FLYNN_POSTGRES"])
 	}
 	if ctrl.releases[0].Env["FLYNN_POSTGRES_ROLE"] != "follower" || ctrl.releases[0].Env["FLYNN_POSTGRES_LEADER"] != "pg-harbor-cccccc" {
 		t.Fatalf("role env %#v", ctrl.releases[0].Env)
