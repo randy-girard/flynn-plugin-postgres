@@ -43,7 +43,8 @@
     "CONTROLLER_KEY",
     "DISCOVERD_AUTH_KEY",
     "SINGLETON",
-    "CLUSTER_DOMAIN"
+    "CLUSTER_DOMAIN",
+    "DASHBOARD_SSO_JWKS_URL"
   ],
   "image_env": {
     "POSTGRES_IMAGE_ID": "self",

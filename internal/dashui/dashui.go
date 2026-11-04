@@ -173,10 +173,12 @@ func parseJWT(raw string) (*Session, error) {
 	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
 		return nil, fmt.Errorf("SSO token expired")
 	}
-	if jwksURL := strings.TrimSpace(os.Getenv("DASHBOARD_SSO_JWKS_URL")); jwksURL != "" {
-		if err := verifyES256(jwksURL, parts[0]+"."+parts[1], parts[2]); err != nil {
-			return nil, err
-		}
+	jwksURL := strings.TrimSpace(os.Getenv("DASHBOARD_SSO_JWKS_URL"))
+	if jwksURL == "" {
+		return nil, fmt.Errorf("SSO JWKS is not configured")
+	}
+	if err := verifyES256(jwksURL, parts[0]+"."+parts[1], parts[2]); err != nil {
+		return nil, err
 	}
 	return &Session{
 		UserID:      claims.Sub,

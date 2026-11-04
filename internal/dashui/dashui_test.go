@@ -39,12 +39,8 @@ func TestFromRequestJWTWithoutJWKS(t *testing.T) {
 	tok := "eyJhbGciOiJFUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	sess, err := FromRequest(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sess.AppID != "demo" || sess.Email != "a@b.c" {
-		t.Fatalf("%+v", sess)
+	if _, err := FromRequest(req); err == nil {
+		t.Fatal("unsigned SSO JWT must be rejected when JWKS is not configured")
 	}
 }
 
