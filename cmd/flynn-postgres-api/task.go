@@ -79,7 +79,7 @@ func runFollowTask(leader, app string, autoFailover bool) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(pluginAPIBase()+"/databases/"+leader+"/follow", "application/json", strings.NewReader(string(body)))
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+leader+"/follow", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func runCreateDBTask(resource, name string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(pluginAPIBase()+"/databases/"+resource+"/databases", "application/json", strings.NewReader(string(body)))
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/databases", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,7 @@ func runInfoTask(resource string) error {
 	if resource == "" {
 		return fmt.Errorf("info requires a postgres resource name")
 	}
-	resp, err := http.Get(pluginAPIBase() + "/databases/" + resource)
+	resp, err := pluginAPIRequest(http.MethodGet, pluginAPIBase()+"/databases/"+resource, "", nil)
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func runWaitTask(resource string) error {
 }
 
 func fetchProgress(resource string) (postgres.ReplicaProgress, error) {
-	resp, err := http.Get(pluginAPIBase() + "/databases/" + resource + "/progress")
+	resp, err := pluginAPIRequest(http.MethodGet, pluginAPIBase()+"/databases/"+resource+"/progress", "", nil)
 	if err != nil {
 		return postgres.ReplicaProgress{}, err
 	}
@@ -229,7 +229,7 @@ func runInstanceActionTask(action, resource string) error {
 	if resource == "" {
 		return fmt.Errorf("%s requires a postgres resource name", action)
 	}
-	resp, err := http.Post(pluginAPIBase()+"/databases/"+resource+"/"+action, "application/json", strings.NewReader("{}"))
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/"+action, "application/json", strings.NewReader("{}"))
 	if err != nil {
 		return err
 	}
@@ -262,7 +262,7 @@ func runMaintenanceTask(args []string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(pluginAPIBase()+"/cluster/maintenance", "application/json", strings.NewReader(string(body)))
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/cluster/maintenance", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ func runUpgradeTask(target string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(pluginAPIBase()+"/databases/"+target+"/upgrade", "application/json", strings.NewReader(string(body)))
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+target+"/upgrade", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return err
 	}
@@ -320,7 +320,7 @@ func waitForTask(id string) error {
 	deadline := time.Now().Add(postgres.DefaultUpgradeTimeout)
 	var last string
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(pluginAPIBase() + "/tasks/" + id)
+		resp, err := pluginAPIRequest(http.MethodGet, pluginAPIBase()+"/tasks/"+id, "", nil)
 		if err != nil {
 			return err
 		}

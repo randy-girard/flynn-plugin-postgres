@@ -121,6 +121,9 @@ func newHandler(store *postgres.Store) *handler {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if rejectUnauthenticatedAPI(w, r) {
+		return
+	}
 	h.router.ServeHTTP(w, r)
 }
 
