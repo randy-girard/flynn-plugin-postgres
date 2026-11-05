@@ -665,6 +665,9 @@ func NotifyLive(plugin, appID, kind, id string) {
 	plugin = strings.TrimSpace(plugin)
 	appID = strings.TrimSpace(appID)
 	kind = strings.TrimSpace(kind)
+	if strings.ContainsAny(appID, ":/") {
+		return
+	}
 	if secret == "" || plugin == "" || appID == "" || kind == "" {
 		return
 	}

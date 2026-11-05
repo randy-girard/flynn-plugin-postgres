@@ -322,6 +322,7 @@ func (h *handler) addUser(w http.ResponseWriter, r *http.Request, p httprouter.P
 		writeAPIError(w, err)
 		return
 	}
+	h.notifyInstance(p.ByName("id"), "resources", body.Name)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -346,6 +347,7 @@ func (h *handler) addDatabase(w http.ResponseWriter, r *http.Request, p httprout
 		writeAPIError(w, err)
 		return
 	}
+	h.notifyInstance(p.ByName("id"), "resources", body.Name)
 	w.WriteHeader(http.StatusOK)
 }
 

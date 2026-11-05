@@ -48,6 +48,38 @@ func attachmentApps(items []postgres.Attachment) []string {
 	return out
 }
 
+// notifyInstance tells every app attached to a resource that its dashboard
+// changed. A tenant name is not an app id and is not published.
+func (h *handler) notifyInstance(instanceID, kind, id string, extra ...string) {
+	var apps []string
+	apps = append(apps, extra...)
+	if h != nil && h.store != nil {
+		if inst, err := h.store.Get(instanceID); err == nil && inst != nil {
+			apps = append(apps, attachmentApps(inst.Attachments)...)
+		}
+	}
+	for _, appID := range liveAppIDs(apps...) {
+		dashui.NotifyLive("postgres", appID, kind, id)
+	}
+}
+
+func liveAppIDs(ids ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || strings.Contains(strings.ToLower(id), "tenant:") || strings.Contains(id, "/") {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 func copyProgressApps(tenant, app string, extra []string) []string {
 	raw := append([]string{tenant, app}, extra...)
 	seen := map[string]bool{}

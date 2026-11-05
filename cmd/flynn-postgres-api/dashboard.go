@@ -780,6 +780,11 @@ func (h *handler) dashDropUser(w http.ResponseWriter, r *http.Request, sess *das
 		writeAPIError(w, err)
 		return
 	}
+	extra := ""
+	if sess != nil {
+		extra = sess.AppID
+	}
+	h.notifyInstance(id, "resources", name, extra)
 	if wantsJSON(r) {
 		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": "Dropped user " + name})
 		return
@@ -801,6 +806,11 @@ func (h *handler) createUserFromRequest(r *http.Request, sess *dashui.Session) (
 	if err := h.createUserOnInstance(id, name, password, database); err != nil {
 		return "", err
 	}
+	extra := ""
+	if sess != nil {
+		extra = sess.AppID
+	}
+	h.notifyInstance(id, "resources", name, extra)
 	return "Created user " + name, nil
 }
 
@@ -1683,6 +1693,11 @@ func (h *handler) createDatabaseFromRequest(r *http.Request, sess *dashui.Sessio
 	if err := h.createLogicalDatabase(id, name); err != nil {
 		return "", err
 	}
+	extra := ""
+	if sess != nil {
+		extra = sess.AppID
+	}
+	h.notifyInstance(id, "resources", name, extra)
 	return "Created database " + name, nil
 }
 
