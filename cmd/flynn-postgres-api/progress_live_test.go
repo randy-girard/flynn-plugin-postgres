@@ -14,7 +14,10 @@ func TestDashProgressScriptUsesLiveClient(t *testing.T) {
 		t.Fatal("progress page should use the shared live client")
 	}
 	if !strings.Contains(script, "FlynnLive.watch(topic, tick, 0)") {
-		t.Fatal("idle progress page must not poll; the timer starts only while a copy is running")
+		t.Fatal("progress page must follow the live socket")
+	}
+	if strings.Contains(script, "setInterval") {
+		t.Fatal("progress page must not poll; copy updates arrive on the live socket")
 	}
 	if strings.Contains(script, "tenant:") {
 		t.Fatal("progress topic must not be a tenant name")
