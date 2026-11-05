@@ -313,7 +313,7 @@ func DevHandler(next http.Handler) http.Handler {
 }
 
 // liveScopes are the dashboard topics this page follows.
-// An invalidation reloads the page. The interval stays 0 so a quiet page does not poll.
+// An invalidation reloads the page. The page does not poll.
 var liveScopes = []string{"resources", "scale"}
 
 func liveAppID(id string) bool {
@@ -364,7 +364,7 @@ func liveBoot(sess *Session) string {
   var s = document.createElement("script");
   s.src = "/api/live.js";
   s.onload = function(){
-    if (window.FlynnLive && window.FlynnLive.watch) window.FlynnLive.watch(topics, refresh, 0);
+    if (window.FlynnLive && window.FlynnLive.watch) window.FlynnLive.watch(topics, refresh);
   };
   document.head.appendChild(s);
 })();
@@ -639,6 +639,56 @@ func webhookSecret() string {
 		}
 	}
 	return ""
+}
+
+func liveEndpoint() string {
+	raw := strings.TrimSpace(os.Getenv("DASHBOARD_METRICS_URL"))
+	endpoint := "http://dashboard.discoverd/webhooks/live"
+	if raw == "" {
+		return endpoint
+	}
+	if i := strings.Index(raw, "/webhooks/"); i >= 0 {
+		return raw[:i] + "/webhooks/live"
+	}
+	return strings.TrimRight(raw, "/") + "/webhooks/live"
+}
+
+// LiveConfigured reports whether this process can publish dashboard topics.
+func LiveConfigured() bool {
+	return webhookSecret() != ""
+}
+
+// NotifyLive tells the dashboard that an app topic changed. The dashboard
+// chooses the topic from plugin, app, and kind. An empty secret does nothing.
+func NotifyLive(plugin, appID, kind, id string) {
+	secret := webhookSecret()
+	plugin = strings.TrimSpace(plugin)
+	appID = strings.TrimSpace(appID)
+	kind = strings.TrimSpace(kind)
+	if secret == "" || plugin == "" || appID == "" || kind == "" {
+		return
+	}
+	body, err := json.Marshal(map[string]string{
+		"app_id": appID,
+		"plugin": plugin,
+		"kind":   kind,
+		"id":     strings.TrimSpace(id),
+	})
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, liveEndpoint(), strings.NewReader(string(body)))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Flynn-Webhook-Secret", secret)
+	res, err := metricsHTTPClient.Do(req)
+	if err != nil {
+		return
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
 }
 
 // PostMetrics best-effort posts a sample to the dashboard plugin-metrics webhook.

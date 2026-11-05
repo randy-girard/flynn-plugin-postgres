@@ -13,7 +13,7 @@ func TestDashProgressScriptUsesLiveClient(t *testing.T) {
 	if !strings.Contains(script, "FlynnLive") || !strings.Contains(script, "/api/live.js") {
 		t.Fatal("progress page should use the shared live client")
 	}
-	if !strings.Contains(script, "FlynnLive.watch(topic, tick, 0)") {
+	if !strings.Contains(script, "FlynnLive.watch(topic, tick)") || strings.Contains(script, "FlynnLive.watch(topic, tick,") {
 		t.Fatal("progress page must follow the live socket")
 	}
 	if strings.Contains(script, "setInterval") {

@@ -213,6 +213,9 @@ func TestWriteHTMLLoadsLiveClient(t *testing.T) {
 	if !strings.Contains(page, "/api/live.js") || !strings.Contains(page, "FlynnLive.watch") {
 		t.Fatalf("live client missing")
 	}
+	if strings.Contains(page, "setInterval") || strings.Contains(page, "watch(topics, refresh,") {
+		t.Fatal("live page must not poll")
+	}
 	if strings.Contains(page, "tenant:") {
 		t.Fatal("tenant in live boot")
 	}

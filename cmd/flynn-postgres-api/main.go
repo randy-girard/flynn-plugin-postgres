@@ -176,6 +176,9 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 	}
 	applyPostgresResourceEnv(inst, env, leader)
 	stripTenantPostgresCredentials(env)
+	if strings.TrimSpace(body.Follow) != "" {
+		h.watchCopyProgress(inst)
+	}
 	httphelper.JSON(w, 200, map[string]any{
 		"id":   inst.ID,
 		"env":  env,

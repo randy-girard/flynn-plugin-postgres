@@ -1580,7 +1580,7 @@ func dashProgressScript(appID string) string {
   var s = document.createElement('script');
   s.src = '/api/live.js';
   s.onload = function(){
-    if (window.FlynnLive && window.FlynnLive.watch) window.FlynnLive.watch(topic, tick, 0);
+    if (window.FlynnLive && window.FlynnLive.watch) window.FlynnLive.watch(topic, tick);
   };
   document.head.appendChild(s);
 })();
