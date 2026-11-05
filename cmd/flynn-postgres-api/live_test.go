@@ -466,6 +466,8 @@ func TestWaitInstanceReadyRequiresDiscoverdAuthKey(t *testing.T) {
 }
 
 func TestStartIsolatedInstanceCopiesDiscoverdAuthKey(t *testing.T) {
+	t.Setenv("CONTROLLER_KEY", "cluster-secret")
+	t.Setenv("ACCESS_TOKEN_SIGNING_KEY", "signing-secret")
 	t.Setenv("DISCOVERD_AUTH_KEY", "disc-secret")
 	t.Setenv("DISCOVERD", "http://192.0.2.200:1111")
 	ctrl := &fakeInstanceControl{}
@@ -487,6 +489,12 @@ func TestStartIsolatedInstanceCopiesDiscoverdAuthKey(t *testing.T) {
 	}
 	if env["DISCOVERD"] != "http://192.0.2.200:1111" {
 		t.Fatalf("DISCOVERD=%q", env["DISCOVERD"])
+	}
+	if _, ok := env["CONTROLLER_KEY"]; ok {
+		t.Fatal("postgres instance must not receive CONTROLLER_KEY")
+	}
+	if _, ok := env["ACCESS_TOKEN_SIGNING_KEY"]; ok {
+		t.Fatal("postgres instance must not receive ACCESS_TOKEN_SIGNING_KEY")
 	}
 }
 
