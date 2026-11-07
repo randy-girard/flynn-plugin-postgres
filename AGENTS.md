@@ -15,3 +15,7 @@ Postgres packages.
 ```text
 GOFLAGS='-mod=mod' go test ./...
 ```
+
+## Environment
+
+Cluster, test, and CI steps are the `flynn-environment` skill in the sibling Flynn checkout: `../flynn/.cursor/skills/flynn-environment/SKILL.md`. Read it before booting VMs, running e2e, or pushing. This file stays the repo-specific contract.
