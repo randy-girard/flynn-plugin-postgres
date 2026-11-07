@@ -1,0 +1,16 @@
+---
+description: Behavior changes start with a failing test, then the fix, then a green run
+alwaysApply: true
+---
+
+# Test first, then fix, then green
+
+Follow [AGENTS.md](../../AGENTS.md).
+
+When changing behavior or fixing a bug:
+
+1. Add a test that fails because the behavior is missing or wrong. Run it and keep that failure.
+2. Change the code until that test passes.
+3. Run the repo's unit tests and leave them green before the work is done.
+
+Do not start with the production change and add a test that only passes against the finished code.
