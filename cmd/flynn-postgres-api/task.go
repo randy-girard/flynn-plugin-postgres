@@ -61,6 +61,8 @@ func runPluginTask(args []string) error {
 			return fmt.Errorf("usage: flynn-postgres-api task wait <resource>")
 		}
 		return runWaitTask(strings.TrimSpace(args[1]))
+	case "dump", "backups", "restore":
+		return runBackupTask(args)
 	case "promote", "unfollow":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: flynn-postgres-api task %s <resource>", args[0])
@@ -69,6 +71,116 @@ func runPluginTask(args []string) error {
 	default:
 		return fmt.Errorf("unknown task %q", args[0])
 	}
+}
+
+func rejectBackupFileFlags(args []string) error {
+	for _, a := range args {
+		if a == "-f" || a == "--file" || a == "-q" || a == "--quiet" || strings.HasPrefix(a, "--file=") || strings.HasPrefix(a, "-f=") {
+			return fmt.Errorf("pg dump and restore do not take %s; dumps are stored in the blobstore", a)
+		}
+	}
+	return nil
+}
+
+func runBackupTask(args []string) error {
+	if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+		return fmt.Errorf("usage: flynn-postgres-api task dump|backups|restore <resource> [timestamp]")
+	}
+	if err := rejectBackupFileFlags(args); err != nil {
+		return err
+	}
+	resource := strings.TrimSpace(args[1])
+	switch args[0] {
+	case "dump":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: flynn-postgres-api task dump <resource>")
+		}
+		var out struct {
+			Timestamp string `json:"timestamp"`
+			Error     string `json:"error"`
+		}
+		raw, code, err := pluginAPIJSON(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/backups", strings.NewReader(`{}`))
+		if err != nil {
+			return err
+		}
+		_ = json.Unmarshal(raw, &out)
+		if code != http.StatusOK {
+			if out.Error == "" {
+				out.Error = strings.TrimSpace(string(raw))
+			}
+			return fmt.Errorf("dump: %s", out.Error)
+		}
+		fmt.Println(out.Timestamp)
+		return nil
+	case "backups":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: flynn-postgres-api task backups <resource>")
+		}
+		raw, code, err := pluginAPIJSON(http.MethodGet, pluginAPIBase()+"/databases/"+resource+"/backups", nil)
+		if err != nil {
+			return err
+		}
+		if code != http.StatusOK {
+			return fmt.Errorf("backups: %s", strings.TrimSpace(string(raw)))
+		}
+		var view struct {
+			Backups []struct {
+				Timestamp string   `json:"timestamp"`
+				Databases []string `json:"databases"`
+			} `json:"backups"`
+		}
+		if err := json.Unmarshal(raw, &view); err != nil {
+			return err
+		}
+		for _, row := range view.Backups {
+			fmt.Printf("%s %s\n", row.Timestamp, strings.Join(row.Databases, ","))
+		}
+		return nil
+	case "restore":
+		if len(args) > 3 {
+			return fmt.Errorf("usage: flynn-postgres-api task restore <resource> [timestamp]")
+		}
+		body := "{}"
+		if len(args) == 3 {
+			raw, err := json.Marshal(map[string]string{"timestamp": args[2]})
+			if err != nil {
+				return err
+			}
+			body = string(raw)
+		}
+		raw, code, err := pluginAPIJSON(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/backups/restore", strings.NewReader(body))
+		if err != nil {
+			return err
+		}
+		if code != http.StatusOK {
+			var out struct {
+				Error string `json:"error"`
+			}
+			_ = json.Unmarshal(raw, &out)
+			if out.Error == "" {
+				out.Error = strings.TrimSpace(string(raw))
+			}
+			return fmt.Errorf("restore: %s", out.Error)
+		}
+		fmt.Println("restore complete")
+		return nil
+	default:
+		return fmt.Errorf("unknown backup task %q", args[0])
+	}
+}
+
+func pluginAPIJSON(method, rawURL string, body io.Reader) ([]byte, int, error) {
+	contentType := ""
+	if body != nil {
+		contentType = "application/json"
+	}
+	resp, err := pluginAPIRequest(method, rawURL, contentType, body)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return raw, resp.StatusCode, err
 }
 
 func runFollowTask(leader, app string, autoFailover bool) error {

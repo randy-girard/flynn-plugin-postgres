@@ -281,21 +281,31 @@ func TestPostgresCLI(t *testing.T) {
 		}
 		dir := t.TempDir()
 		dump := filepath.Join(dir, "postgres.dump")
-		h.appMust(cmdDump, "pg:dump", "-q", "-f", dump)
-		st, err := os.Stat(dump)
+		out, errOut, err := h.appCmd(cmdDump, "pg:dump", "-f", dump)
+		if err == nil {
+			t.Fatalf("pg dump -f must fail\nstdout:\n%s\nstderr:\n%s", out, errOut)
+		}
+		if _, statErr := os.Stat(dump); statErr == nil {
+			t.Fatal("pg dump -f created a local file")
+		}
+		out, errOut, err = h.appCmd(cmdDump, "pg:dump")
+		combined := out + "\n" + errOut
 		if err != nil {
-			t.Fatal(err)
+			if !strings.Contains(strings.ToLower(combined), "blobstore") {
+				t.Fatalf("pg dump on a postgres blobstore must name the blobstore: %v\n%s", err, combined)
+			}
+			return
 		}
-		if st.Size() == 0 {
-			t.Fatal("dump file is empty")
+		ts := strings.TrimSpace(out)
+		if _, err := time.Parse("20060102T150405Z", ts); err != nil {
+			t.Fatalf("dump timestamp %q: %v\n%s", ts, err, combined)
 		}
-		out, errOut, err := h.appCmd(cmdDump, "pg:restore", "-q", "-f", dump)
-		combined := strings.TrimSpace(out + "\n" + errOut)
-		if err != nil && !restoreIgnoredExtensionErrors(combined) {
-			t.Fatalf("flynn pg restore: %v\nstdout:\n%s\nstderr:\n%s", err, out, errOut)
+		list := h.appMust(cmdQuick, "pg:backups")
+		if !strings.Contains(list, ts) {
+			t.Fatalf("pg backups missing %s:\n%s", ts, list)
 		}
-		if err != nil {
-			t.Logf("pg restore reported ignored extension errors (app role cannot DROP EXTENSION):\n%s", combined)
+		if _, errOut, err := h.appCmd(cmdDump, "pg:restore", ts); err != nil {
+			t.Fatalf("pg restore %s: %v\n%s", ts, err, errOut)
 		}
 		got := strings.TrimSpace(h.psql(cmdWait, "-Atc", "SELECT n FROM e2e_probe ORDER BY n"))
 		if !strings.Contains(got, probeN) {

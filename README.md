@@ -70,7 +70,9 @@ is a fallback.
 | `flynn pg:promote` | Make a follower writable and rewrite the primary URL |
 | `flynn pg:unfollow` | Stop replication and leave a standalone writable copy |
 | `flynn pg:upgrade` | Follow, wait with live progress, promote, then recreate followers |
-| `flynn pg:dump` / `pg:restore` | Custom-format dump of this instance |
+| `flynn pg:dump` | Write each logical database to the blobstore and print the timestamp |
+| `flynn pg:backups` | List dump timestamps for this instance |
+| `flynn pg:restore [<timestamp>]` | Restore the newest listed timestamp, or the one you name |
 | `flynn pg:psql` | Open psql against this instance |
 
 The dashboard pages (overview, metrics, databases, users, backup, follow) are

@@ -308,15 +308,19 @@ test.describe('postgres dashboard (live cluster)', () => {
     await expect(page.getByText(/still has 1 follower/)).toBeVisible()
   })
 
-  test('downloads a dump from the backup tab', async ({ page }) => {
+  test('backs up from the backup tab without a file download', async ({ page }) => {
     await openPostgresTab(page, app, 'Backup')
-    await expect(page.getByRole('button', { name: 'Download dump' })).toBeVisible()
-    const [download] = await Promise.all([
-      page.waitForEvent('download', { timeout: dumpMs }),
-      page.getByRole('button', { name: 'Download dump' }).click(),
-    ])
-    expect(download.suggestedFilename()).toMatch(/\.dump$/i)
-    expect(await download.path()).toBeTruthy()
+    await expect(page.getByRole('button', { name: 'Back up now' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Download dump' })).toHaveCount(0)
+    await expect(page.getByLabel('Dump file')).toHaveCount(0)
+    const download = page.waitForEvent('download', { timeout: 1000 }).then(() => {
+      throw new Error('backup tab downloaded a file')
+    }).catch((err: Error) => {
+      if (/download a file/.test(err.message)) throw err
+    })
+    await page.getByRole('button', { name: 'Back up now' }).click()
+    await expect(page.getByText(/blobstore|20\d{6}T\d{6}Z/).first()).toBeVisible({ timeout: dumpMs })
+    await download
   })
 
   test('deletes the follower from settings', async ({ page }) => {

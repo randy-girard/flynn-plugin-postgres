@@ -106,7 +106,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		if a.Name == "create" && strings.Contains(joined, "task create-db") {
 			hasCreate = true
 		}
-		if strings.Contains(joined, "pg_dump") {
+		if a.Name == "dump" && strings.Contains(joined, "task dump") && !strings.Contains(joined, "pg_dump") && !strings.Contains(joined, "DATABASE_URL") {
 			hasDump = true
 		}
 		if strings.Contains(joined, "task follow") {
@@ -126,7 +126,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		t.Fatal("create action must run flynn-postgres-api task create-db")
 	}
 	if !hasDump {
-		t.Fatal("dump action must run pg_dump")
+		t.Fatal("dump action must run flynn-postgres-api task dump without DATABASE_URL")
 	}
 	if !hasFollow {
 		t.Fatal("follow action must run flynn-postgres-api task follow")
@@ -140,8 +140,18 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "create", "shop_analytics"}, true, "", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "dump", "-f", "postgres.dump"}, true, "", false); err != nil {
-		t.Fatal(err)
+	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "dump", "-f", "postgres.dump"}, true, "", false, false); err == nil {
+		t.Fatal("pg dump -f must be rejected")
+	}
+	for _, argv := range [][]string{
+		{"pg", "dump"},
+		{"pg", "backups"},
+		{"pg", "restore"},
+		{"pg", "restore", "20261111T160405Z"},
+	} {
+		if _, err := docopt.Parse(manifest.CLI.Doc, argv, true, "", false); err != nil {
+			t.Fatalf("%v: %v", argv, err)
+		}
 	}
 	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "follow"}, true, "", false); err != nil {
 		t.Fatal(err)
@@ -172,7 +182,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if j := strings.Index(commands, "\nExamples:"); j >= 0 {
 		commands = commands[:j]
 	}
-	for _, verb := range []string{"list", "help", "info", "create", "follow", "wait", "promote", "unfollow", "upgrade", "dump", "restore", "psql"} {
+	for _, verb := range []string{"list", "help", "info", "create", "follow", "wait", "promote", "unfollow", "upgrade", "dump", "backups", "restore", "psql"} {
 		if !strings.Contains(commands, "\t"+verb) {
 			t.Fatalf("Commands: missing %s", verb)
 		}
@@ -185,8 +195,9 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		"Make a follower writable and rewrite the primary URL",
 		"Stop replication and leave a standalone writable copy",
 		"Follow, wait with live progress, promote, then recreate followers",
-		"Dump this instance in custom format",
-		"Restore a dump taken with pg dump",
+		"Write a custom-format dump of each database to the blobstore",
+		"List dump timestamps for this instance",
+		"Restore a listed timestamp into this instance",
 		"Open psql against this instance",
 	} {
 		if !strings.Contains(commands, phrase) {
@@ -199,7 +210,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	} else {
 		t.Fatal("cli.doc must include Examples")
 	}
-	for _, ex := range []string{"pg:create shop_analytics", "pg:info", "pg:restore -f", "pg:unfollow", "pg:upgrade"} {
+	for _, ex := range []string{"pg:create shop_analytics", "pg:info", "pg:backups", "pg:restore", "pg:unfollow", "pg:upgrade"} {
 		if !strings.Contains(examples, ex) {
 			t.Fatalf("Examples missing %q", ex)
 		}

@@ -65,6 +65,7 @@ func main() {
 	h.autoStartClusterUpgrades()
 	go h.metricsLoop()
 	h.startFailoverWatch()
+	h.startBackupSchedule()
 	if err := http.Serve(ln, h); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		shutdown.Fatal(err)
 	}
@@ -83,6 +84,12 @@ type handler struct {
 	appDisplayName   func(string) string
 	appReleaseEnv    func(string) map[string]string
 	liveApps         followerAppLister
+	backupAPI        backupAPI
+	backupLeader     func() bool
+	backupResources  func() ([]*ct.Resource, error)
+	backupStatuses   func() (map[string]postgres.BackupStatus, error)
+	backupHost       func(*ct.Resource) string
+	backupInflight   sync.Map
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -109,6 +116,9 @@ func newHandler(store *postgres.Store) *handler {
 	h.router.POST("/databases/:id/detach", h.detach)
 	h.router.POST("/databases/:id/env-set", h.envSet)
 	h.router.POST("/databases/:id/upgrade", h.upgrade)
+	h.router.GET("/databases/:id/backups", h.listBackups)
+	h.router.POST("/databases/:id/backups", h.createBackup)
+	h.router.POST("/databases/:id/backups/restore", h.restoreBackup)
 	h.router.GET("/databases/:id/upgrade", h.getUpgrade)
 	h.router.GET("/tasks", h.listTasks)
 	h.router.GET("/tasks/:id", h.getTask)
@@ -212,6 +222,7 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		return
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
+		h.purgeTenantBackups(inst)
 		startIsolatedAppDeletion(h.client, inst.App)
 	}
 	h.store.Forget(inst.ID)

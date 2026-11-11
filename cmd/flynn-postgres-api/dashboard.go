@@ -57,6 +57,9 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/api/dump", wrap(h.dashDump))
 	h.router.POST("/dashboard/api/dump", wrap(h.dashDump))
 	h.router.POST("/dashboard/api/restore", wrap(h.dashRestore))
+	h.router.GET("/dashboard/api/backups", wrap(h.dashBackupList))
+	h.router.POST("/dashboard/api/backups", wrap(h.dashBackupCreate))
+	h.router.POST("/dashboard/api/backups/restore", wrap(h.dashBackupRestore))
 	h.router.GET("/dashboard/api/progress", wrap(h.dashProgress))
 }
 
@@ -838,49 +841,58 @@ func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashu
 	insts := h.instancesFor(sess)
 	var b strings.Builder
 	b.WriteString(`<div class="card"><h2>Backup</h2>`)
-	b.WriteString(`<p>Download a custom-format dump of this instance, or restore one in place. Restore replaces data in the selected database and cannot be undone. This is not a Flynn cluster backup and does not include other apps.</p>`)
+	b.WriteString(`<p>Each database is stored in the platform blobstore. Restore a listed timestamp. This is not a Flynn cluster backup and does not include other apps. There is no dump file to download or upload.</p>`)
 	if len(insts) == 0 {
 		b.WriteString(`<p class="muted">Attach a Postgres resource before taking a backup.</p></div>`)
 		writeDash(w, sess, "Backup", b.String())
 		return
 	}
-	b.WriteString(`<div class="row" style="align-items:flex-start">`)
-	b.WriteString(`<div style="flex:1;min-width:16rem"><h3 style="font-size:.85rem;margin:0 0 .4rem">Download</h3>`)
-	b.WriteString(`<p class="muted">pg_dump custom format of the current database. Same as <code>flynn pg dump -f postgres.dump</code>.</p>`)
-	b.WriteString(`<div class="row"><button id="dump" class="primary" type="button">Download dump</button></div></div>`)
-	b.WriteString(`<div style="flex:1;min-width:16rem"><h3 style="font-size:.85rem;margin:0 0 .4rem">Restore</h3>`)
-	b.WriteString(`<p class="muted">Restore a dump taken from this instance. Same as <code>flynn pg restore -f postgres.dump</code>.</p>`)
-	b.WriteString(`<label>Dump file<input id="file" type="file" accept=".dump,.backup,.sql"></label>`)
-	b.WriteString(`<div class="row"><button id="restore" class="danger" type="button">Restore dump</button></div></div>`)
-	b.WriteString(`</div><pre id="out" class="muted" style="margin-top:1rem"></pre>`)
-	b.WriteString(`<ul class="muted">`)
+	b.WriteString(`<p id="dest" class="muted">Loading destination…</p>`)
+	b.WriteString(`<p id="miss" class="banner" hidden>No current dump. The last success is missing or older than 25 hours.</p>`)
+	b.WriteString(`<div class="row"><button id="now" class="primary" type="button">Back up now</button></div>`)
+	b.WriteString(`<label>Timestamp<select id="stamps"></select></label>`)
+	b.WriteString(`<div class="row"><button id="restore" class="danger" type="button">Restore selected</button></div>`)
+	b.WriteString(`<pre id="out" class="muted" style="margin-top:1rem"></pre><ul class="muted">`)
 	for _, inst := range insts {
-		fmt.Fprintf(&b, `<li>Instance <code>%s</code>`, html.EscapeString(inst.App))
-		if inst.Volume != "" {
-			fmt.Fprintf(&b, ` · volume <code>%s</code>`, html.EscapeString(inst.Volume))
-		}
-		b.WriteString(`</li>`)
+		fmt.Fprintf(&b, `<li>Instance <code>%s</code></li>`, html.EscapeString(inst.App))
 	}
 	b.WriteString(`</ul></div>
 <script>
-document.getElementById('dump').onclick=async()=>{
-  const out=document.getElementById('out'); out.textContent='Preparing dump…';
-  const r=await fetch('api/dump');
-  if(!r.ok){ out.textContent=await r.text(); return; }
-  const blob=await r.blob();
-  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='postgres.dump'; a.click();
-  URL.revokeObjectURL(a.href); out.textContent='Dump downloaded.';
+async function load(){
+  const out=document.getElementById('out');
+  const r=await fetch('api/backups',{headers:{Accept:'application/json'}});
+  const body=await r.json().catch(()=>({}));
+  if(!r.ok){ out.textContent=body.error||r.status; return; }
+  const d=body.destination||{};
+  const where=[d.backend,d.bucket,d.container,d.region,d.endpoint].filter(Boolean).join(' ');
+  document.getElementById('dest').textContent=d.allowed?('Destination '+where):'Dumps are not stored in the platform postgres blobstore. Run flynn-host blobstore:set --migrate --delete.';
+  document.getElementById('miss').hidden=!body.miss;
+  const sel=document.getElementById('stamps');
+  sel.innerHTML='';
+  (body.backups||[]).forEach(row=>{
+    const o=document.createElement('option');
+    o.value=row.timestamp; o.textContent=row.timestamp+' '+(row.databases||[]).join(',');
+    sel.appendChild(o);
+  });
+}
+document.getElementById('now').onclick=async()=>{
+  const out=document.getElementById('out'); out.textContent='Backing up…';
+  const r=await fetch('api/backups',{method:'POST',headers:{Accept:'application/json'}});
+  const body=await r.json().catch(()=>({}));
+  out.textContent=r.ok?body.timestamp:(body.error||r.status);
+  if(r.ok) load();
 };
 document.getElementById('restore').onclick=async()=>{
-  const f=document.getElementById('file').files[0];
+  const sel=document.getElementById('stamps');
   const out=document.getElementById('out');
-  if(!f){ out.textContent='Choose a dump file to restore.'; return; }
-  if(!confirm('Restore '+f.name+'? This replaces existing data on this instance.')) return;
+  if(!sel.value){ out.textContent='Choose a listed timestamp.'; return; }
+  if(!confirm('Restore '+sel.value+'? This replaces those databases.')) return;
   out.textContent='Restoring…';
-  const body=new FormData(); body.append('file', f); body.append('dump', f);
-  const r=await fetch('api/restore',{method:'POST',body});
-  out.textContent=r.ok ? 'Restore complete.' : await r.text();
+  const r=await fetch('api/backups/restore',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({timestamp:sel.value})});
+  const body=await r.json().catch(()=>({}));
+  out.textContent=r.ok?'Restore complete.':(body.error||r.status);
 };
+load();
 </script>`)
 	writeDash(w, sess, "Backup", b.String())
 }
@@ -1736,52 +1748,12 @@ func (h *handler) dumpTarget(sess *dashui.Session) (*postgres.Instance, error) {
 	return primary, nil
 }
 
-func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
-	inst, err := h.dumpTarget(sess)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="postgres.dump"`)
-	if h.live() {
-		if err := runDump(inst.ConnectionURL(), w); err != nil {
-			writeAPIError(w, err)
-		}
-		return
-	}
-	fmt.Fprintf(w, "-- flynn postgres dump\n-- instance %s\n", inst.App)
-	for _, db := range inst.Databases {
-		fmt.Fprintf(w, "-- database %s\n", db.Name)
-	}
+func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, _ *dashui.Session) {
+	rejectFileBackup(w)
 }
 
-func (h *handler) dashRestore(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
-	inst, err := h.dumpTarget(sess)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	file, _, err := r.FormFile("dump")
-	if err != nil {
-		file, _, err = r.FormFile("file")
-	}
-	if err != nil {
-		writeAPIError(w, fmt.Errorf("choose a dump file to restore"))
-		return
-	}
-	defer file.Close()
-	if h.live() {
-		if err := runRestore(inst.ConnectionURL(), file); err != nil {
-			writeAPIError(w, err)
-			return
-		}
-	}
-	if wantsJSON(r) {
-		dashui.WriteJSON(w, 200, map[string]string{"status": "ok", "message": "Restore complete"})
-		return
-	}
-	w.WriteHeader(http.StatusOK)
+func (h *handler) dashRestore(w http.ResponseWriter, _ *http.Request, _ *dashui.Session) {
+	rejectFileBackup(w)
 }
 
 func overviewHTML(insts []*postgres.Instance) string {

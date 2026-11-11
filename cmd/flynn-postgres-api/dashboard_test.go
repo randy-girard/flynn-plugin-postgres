@@ -94,8 +94,8 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		if path == "/dashboard/databases" && !strings.Contains(body, "Create database") {
 			t.Fatalf("missing create database: %s", body)
 		}
-		if path == "/dashboard/backup" && !strings.Contains(body, "Download dump") {
-			t.Fatalf("missing dump: %s", body)
+		if path == "/dashboard/backup" && (!strings.Contains(body, "Back up now") || strings.Contains(body, "Download dump")) {
+			t.Fatalf("missing blobstore backup: %s", body)
 		}
 		if path == "/dashboard/replication" && strings.Contains(body, `name="replication"`) {
 			t.Fatalf("follower form still has replication mode: %s", body)
@@ -738,14 +738,14 @@ func TestDashBackupDumpEndpoint(t *testing.T) {
 		t.Fatalf("backup %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Download dump") || !strings.Contains(body, "Restore dump") || strings.Contains(body, "<textarea") {
+	if !strings.Contains(body, "Back up now") || !strings.Contains(body, "Restore selected") || strings.Contains(body, "Download dump") || strings.Contains(body, "<textarea") || strings.Contains(body, `type="file"`) {
 		t.Fatalf("backup page: %s", body)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "flynn postgres dump") {
+	if rec.Code == 200 || strings.Contains(rec.Body.String(), "flynn postgres dump") || rec.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("dump %d %s", rec.Code, rec.Body.String())
 	}
 }
