@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
@@ -92,6 +94,45 @@ func TestLiveDiscoverdProgressForPrimary(t *testing.T) {
 	got = liveDiscoverdProgress(inst)
 	if got == nil || !got.Ready || got.Phase != postgres.PhaseReady {
 		t.Fatalf("ready: %+v", got)
+	}
+}
+
+// A handler with no controller client is the in-memory test and CLI path.
+// Progress on a primary must use the stored snapshot. Asking discoverd waits
+// on DNS (about 10s in CI) and the upgrade poll then misses its deadline.
+func TestNonLivePrimaryProgressDoesNotDialDiscoverd(t *testing.T) {
+	h := newHandler(postgres.NewStore())
+	req := httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(`{"app":"shop"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("create %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("create: %s %v", rec.Body.String(), err)
+	}
+	var dialed atomic.Bool
+	orig := peekDiscoverdInstances
+	peekDiscoverdInstances = func(string) bool {
+		dialed.Store(true)
+		return false
+	}
+	t.Cleanup(func() { peekDiscoverdInstances = orig })
+	done := make(chan struct{})
+	go func() {
+		_, _ = h.store.Progress(created.ID)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("progress did not return")
+	}
+	if dialed.Load() {
+		t.Fatal("non-live primary progress asked discoverd")
 	}
 }
 

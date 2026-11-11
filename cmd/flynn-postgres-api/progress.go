@@ -83,7 +83,7 @@ func openUpgrade(task *postgres.Task) *postgres.Task {
 }
 
 func (h *handler) liveReplicaProgress(inst *postgres.Instance) (*postgres.ReplicaProgress, error) {
-	if inst == nil {
+	if inst == nil || !h.live() {
 		return nil, nil
 	}
 	cur := *inst
