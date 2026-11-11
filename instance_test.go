@@ -881,3 +881,18 @@ func TestAdoptLinksFollowerToLeader(t *testing.T) {
 		t.Fatal("SetAutoFailover(false) must stick")
 	}
 }
+
+func TestUnattachedInstanceIsVisibleAsItsOwnApp(t *testing.T) {
+	s := NewStore()
+	inst, _, err := s.Provision(ProvisionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.App == "" {
+		t.Fatal("instance app name is empty")
+	}
+	got := s.ForApp(inst.App)
+	if len(got) != 1 || got[0].ID != inst.ID {
+		t.Fatalf("ForApp(%s) = %+v", inst.App, got)
+	}
+}

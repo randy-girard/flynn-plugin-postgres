@@ -1070,7 +1070,7 @@ func (i *Instance) visibleTo(app string) bool {
 	if app == "" {
 		return false
 	}
-	if i.Tenant == app {
+	if i.Tenant == app || i.App == app {
 		return true
 	}
 	for _, a := range i.Attachments {

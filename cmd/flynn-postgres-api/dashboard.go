@@ -161,7 +161,12 @@ func (h *handler) instancesFromController(sess *dashui.Session) []*postgres.Inst
 	if err != nil && sess.AppName != "" && sess.AppName != app {
 		resources, err = h.appResources(sess.AppName)
 	}
-	if err != nil || len(resources) == 0 {
+	if (err != nil || len(resources) == 0) && postgres.IsolatedInstanceApp(app) {
+		if matched := h.resourcesForInstanceApp(app); len(matched) > 0 {
+			resources = matched
+		}
+	}
+	if len(resources) == 0 {
 		return nil
 	}
 	var out []*postgres.Instance
@@ -225,6 +230,28 @@ func linkFollowerApps(insts []*postgres.Instance) {
 			leader.Followers = append(leader.Followers, id)
 		}
 	}
+}
+
+// resourcesForInstanceApp finds a controller resource that was created
+// without a tenant app. Its env still names the isolated instance.
+func (h *handler) resourcesForInstanceApp(app string) []*ct.Resource {
+	if h == nil || h.client == nil || strings.TrimSpace(app) == "" {
+		return nil
+	}
+	list, err := h.client.ResourceListAll()
+	if err != nil {
+		return nil
+	}
+	var out []*ct.Resource
+	for _, r := range list {
+		if r == nil || r.Env == nil {
+			continue
+		}
+		if r.Env["FLYNN_POSTGRES"] == app {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (h *handler) appResources(app string) ([]*ct.Resource, error) {
