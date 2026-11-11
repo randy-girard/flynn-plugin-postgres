@@ -70,9 +70,9 @@ is a fallback.
 | `flynn pg:promote` | Make a follower writable and rewrite the primary URL |
 | `flynn pg:unfollow` | Stop replication and leave a standalone writable copy |
 | `flynn pg:upgrade` | Follow, wait with live progress, promote, then recreate followers |
-| `flynn pg:dump` | Write each logical database to the blobstore and print the timestamp |
-| `flynn pg:backups` | List dump timestamps for this instance |
-| `flynn pg:restore [<timestamp>]` | Restore the newest listed timestamp, or the one you name |
+| `flynn pg:dump` | Write each logical database to object storage and print the timestamp. Pass the instance name when the app has more than one Postgres resource |
+| `flynn pg:backups [<resource>]` | List backup timestamps. Pass the instance name when the app has more than one Postgres resource |
+| `flynn pg:restore [<timestamp>]` | Restore the newest listed timestamp, or the one you name. Pass the instance name before the timestamp when the app has more than one Postgres resource |
 | `flynn pg:psql` | Open psql against this instance |
 
 The dashboard pages (overview, metrics, databases, users, backup, follow) are

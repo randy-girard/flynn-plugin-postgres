@@ -101,6 +101,16 @@ func TestFilterBackupDatabasesSkipsCatalogAndRejectsOddNames(t *testing.T) {
 	}
 }
 
+func TestBackupBackendErrorIsForAppUsers(t *testing.T) {
+	msg := ErrBackupBackend.Error()
+	if strings.Contains(msg, "flynn-host") || strings.Contains(msg, "blobstore:set") {
+		t.Fatalf("app-facing backup error names a host command: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "administrator") {
+		t.Fatalf("app-facing backup error should say an administrator has to configure storage: %s", msg)
+	}
+}
+
 func TestDumpBackendAllowedIgnoresTenancy(t *testing.T) {
 	cases := []struct {
 		name, typ string

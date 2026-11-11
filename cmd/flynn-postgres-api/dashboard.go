@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -840,24 +841,37 @@ func (h *handler) readUserBody(r *http.Request) (name, password, database, insta
 func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
 	insts := h.instancesFor(sess)
 	var b strings.Builder
-	b.WriteString(`<div class="card"><h2>Backup</h2>`)
-	b.WriteString(`<p>Each database is stored in the platform blobstore. Restore a listed timestamp. This is not a Flynn cluster backup and does not include other apps. There is no dump file to download or upload.</p>`)
+	b.WriteString(`<div class="tab-toolbar"><p class="hint">Each database is backed up on a schedule. Choose a backup to restore it. There is no file to download.</p></div>`)
 	if len(insts) == 0 {
-		b.WriteString(`<p class="muted">Attach a Postgres resource before taking a backup.</p></div>`)
+		b.WriteString(`<div class="card empty-state"><p>Attach a Postgres resource before taking a backup.</p></div>`)
 		writeDash(w, sess, "Backup", b.String())
 		return
 	}
-	b.WriteString(`<p id="dest" class="muted">Loading destination…</p>`)
-	b.WriteString(`<p id="miss" class="banner" hidden>No current dump. The last success is missing or older than 25 hours.</p>`)
-	b.WriteString(`<div class="row"><button id="now" class="primary" type="button">Back up now</button></div>`)
-	b.WriteString(`<label>Timestamp<select id="stamps"></select></label>`)
-	b.WriteString(`<div class="row"><button id="restore" class="danger" type="button">Restore selected</button></div>`)
-	b.WriteString(`<pre id="out" class="muted" style="margin-top:1rem"></pre><ul class="muted">`)
-	for _, inst := range insts {
-		fmt.Fprintf(&b, `<li>Instance <code>%s</code></li>`, html.EscapeString(inst.App))
+	unavailable, _ := json.Marshal(postgres.ErrBackupBackend.Error())
+	appName := "app"
+	if sess != nil && strings.TrimSpace(sess.AppName) != "" {
+		appName = strings.TrimSpace(sess.AppName)
 	}
-	b.WriteString(`</ul></div>
+	b.WriteString(`<p id="miss" class="banner" hidden>No current backup. The last success is missing or older than 25 hours.</p>`)
+	b.WriteString(`<div class="card"><h3 class="card-title">Back up</h3><p id="dest" class="muted">Loading…</p>`)
+	b.WriteString(`<div class="row"><button id="now" class="btn btn-sm" type="button">Back up now</button></div>`)
+	for _, inst := range insts {
+		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg dump %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
+	}
+	b.WriteString(`</div><div class="card"><h3 class="card-title">Restore</h3>`)
+	b.WriteString(`<p class="muted">Restore replaces the databases in the selected backup.</p>`)
+	b.WriteString(`<div class="row"><button id="restore" class="btn btn-sm" type="button">Restore selected</button></div>`)
+	for _, inst := range insts {
+		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg restore %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
+	}
+	b.WriteString(`</div><div class="card table-card"><table class="table"><thead><tr><th>Timestamp</th><th>Databases</th></tr></thead><tbody id="stamps"></tbody></table>`)
+	for _, inst := range insts {
+		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg backups %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
+	}
+	b.WriteString(`</div><pre id="out" class="muted"></pre>
 <script>
+const unavailable = ` + string(unavailable) + `;
+let selected = '';
 async function load(){
   const out=document.getElementById('out');
   const r=await fetch('api/backups',{headers:{Accept:'application/json'}});
@@ -865,30 +879,44 @@ async function load(){
   if(!r.ok){ out.textContent=body.error||r.status; return; }
   const d=body.destination||{};
   const where=[d.backend,d.bucket,d.container,d.region,d.endpoint].filter(Boolean).join(' ');
-  document.getElementById('dest').textContent=d.allowed?('Destination '+where):'Dumps are not stored in the platform postgres blobstore. Run flynn-host blobstore:set --migrate --delete.';
+  document.getElementById('dest').textContent=d.allowed?(where?('Stored in '+where):'Stored in cluster object storage'):unavailable;
   document.getElementById('miss').hidden=!body.miss;
-  const sel=document.getElementById('stamps');
-  sel.innerHTML='';
-  (body.backups||[]).forEach(row=>{
-    const o=document.createElement('option');
-    o.value=row.timestamp; o.textContent=row.timestamp+' '+(row.databases||[]).join(',');
-    sel.appendChild(o);
+  const bodyEl=document.getElementById('stamps');
+  bodyEl.innerHTML='';
+  const rows=body.backups||[];
+  if(!rows.length){
+    bodyEl.innerHTML='<tr><td colspan="2" class="muted">No backups yet.</td></tr>';
+    selected='';
+    return;
+  }
+  if(!rows.some(row=>row.timestamp===selected)) selected=rows[0].timestamp||'';
+  rows.forEach(row=>{
+    const tr=document.createElement('tr');
+    const ts=document.createElement('td');
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className='btn btn-sm';
+    btn.textContent=row.timestamp||'';
+    btn.onclick=()=>{ selected=row.timestamp||''; };
+    ts.appendChild(btn);
+    const dbs=document.createElement('td');
+    dbs.textContent=(row.databases||[]).join(', ')||'—';
+    tr.appendChild(ts); tr.appendChild(dbs); bodyEl.appendChild(tr);
   });
 }
 document.getElementById('now').onclick=async()=>{
   const out=document.getElementById('out'); out.textContent='Backing up…';
   const r=await fetch('api/backups',{method:'POST',headers:{Accept:'application/json'}});
   const body=await r.json().catch(()=>({}));
-  out.textContent=r.ok?body.timestamp:(body.error||r.status);
+  out.textContent=r.ok?(body.timestamp||'Backup started.'):(body.error||r.status);
   if(r.ok) load();
 };
 document.getElementById('restore').onclick=async()=>{
-  const sel=document.getElementById('stamps');
   const out=document.getElementById('out');
-  if(!sel.value){ out.textContent='Choose a listed timestamp.'; return; }
-  if(!confirm('Restore '+sel.value+'? This replaces those databases.')) return;
+  if(!selected){ out.textContent='Choose a listed backup.'; return; }
+  if(!confirm('Restore '+selected+'? This replaces those databases.')) return;
   out.textContent='Restoring…';
-  const r=await fetch('api/backups/restore',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({timestamp:sel.value})});
+  const r=await fetch('api/backups/restore',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({timestamp:selected})});
   const body=await r.json().catch(()=>({}));
   out.textContent=r.ok?'Restore complete.':(body.error||r.status);
 };

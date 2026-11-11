@@ -62,8 +62,10 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		CLI struct {
 			ResourceEnv string `json:"resource_env"`
 			Actions     []struct {
-				Name string   `json:"name"`
-				Args []string `json:"args"`
+				Name        string   `json:"name"`
+				Args        []string `json:"args"`
+				Append      string   `json:"append"`
+				Passthrough bool     `json:"passthrough"`
 			} `json:"actions"`
 		} `json:"cli"`
 	}
@@ -95,6 +97,8 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	}
 	var psqlArgs []string
 	var hasUpgrade, hasCreate, hasDump, hasFollow, hasInfo bool
+	var restoreAppend string
+	var restorePassthrough bool
 	for _, a := range cli.CLI.Actions {
 		joined := strings.Join(a.Args, " ")
 		if strings.Contains(joined, "DATABASE_URL") && a.Name == "psql" {
@@ -115,6 +119,10 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		if a.Name == "info" && strings.Contains(joined, "task info") {
 			hasInfo = true
 		}
+		if a.Name == "restore" && strings.Contains(joined, "task restore") {
+			restoreAppend = a.Append
+			restorePassthrough = a.Passthrough
+		}
 	}
 	if len(psqlArgs) == 0 {
 		t.Fatal("psql action missing DATABASE_URL")
@@ -134,6 +142,9 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	if !hasInfo {
 		t.Fatal("info action must run flynn-postgres-api task info")
 	}
+	if restorePassthrough || restoreAppend != "<timestamp>" {
+		t.Fatalf("restore must append <timestamp> and not pass the whole argv (that repeats the resource name); append=%q passthrough=%v", restoreAppend, restorePassthrough)
+	}
 	if _, err := docopt.Parse(manifest.CLI.Doc, []string{"pg", "upgrade"}, true, "", false); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +156,9 @@ func TestPluginDocParsesPsql(t *testing.T) {
 	}
 	for _, argv := range [][]string{
 		{"pg", "dump"},
+		{"pg", "dump", "postgresql-reef-55266"},
 		{"pg", "backups"},
+		{"pg", "backups", "postgresql-reef-55266"},
 		{"pg", "restore"},
 		{"pg", "restore", "20261111T160405Z"},
 	} {
@@ -195,8 +208,8 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		"Make a follower writable and rewrite the primary URL",
 		"Stop replication and leave a standalone writable copy",
 		"Follow, wait with live progress, promote, then recreate followers",
-		"Write a custom-format dump of each database to the blobstore",
-		"List dump timestamps for this instance",
+		"Write a custom-format dump of each database on this instance to object storage",
+		"List backup timestamps for this instance",
 		"Restore a listed timestamp into this instance",
 		"Open psql against this instance",
 	} {

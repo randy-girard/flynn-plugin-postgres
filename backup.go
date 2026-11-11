@@ -33,7 +33,7 @@ const (
 
 var (
 	ErrBackupBusy      = errors.New("a backup is already running for this database")
-	ErrBackupBackend   = errors.New("tenant dumps are not stored in the platform postgres blobstore; run flynn-host blobstore:set --migrate --delete")
+	ErrBackupBackend   = errors.New("backups are unavailable until an administrator configures object storage for this cluster")
 	ErrBackupNotListed = errors.New("that timestamp is not a backup of this database")
 	ErrBackupFollower  = errors.New("backups run on the primary")
 	ErrBackupLock      = errors.New("backup lock lost")

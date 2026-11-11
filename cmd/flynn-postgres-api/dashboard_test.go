@@ -94,7 +94,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		if path == "/dashboard/databases" && !strings.Contains(body, "Create database") {
 			t.Fatalf("missing create database: %s", body)
 		}
-		if path == "/dashboard/backup" && (!strings.Contains(body, "Back up now") || strings.Contains(body, "Download dump")) {
+		if path == "/dashboard/backup" && (!strings.Contains(body, "Back up now") || strings.Contains(body, "Download dump") || strings.Contains(body, "flynn-host")) {
 			t.Fatalf("missing blobstore backup: %s", body)
 		}
 		if path == "/dashboard/replication" && strings.Contains(body, `name="replication"`) {
