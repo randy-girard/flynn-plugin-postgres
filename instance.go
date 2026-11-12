@@ -35,20 +35,21 @@ const (
 )
 
 var (
-	ErrNotFound           = errors.New("postgres instance not found")
-	ErrReadOnly           = errors.New("follower is read-only")
-	ErrFollowFollower     = errors.New("a follower cannot follow another follower")
-	ErrNotFollower        = errors.New("only a follower can be promoted or unfollowed")
-	ErrNoResize           = errors.New("no in-place resize or upgrade; pg:upgrade follows, waits until caught up, then promotes")
-	ErrHasFollowers       = errors.New("cannot remove a resource while it still has followers")
-	ErrNotPrimary         = errors.New("only a primary can be upgraded")
-	ErrUpgradeInProgress  = errors.New("an upgrade is already running for this instance")
-	ErrUpgradeFollower    = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
-	ErrFollowLogical      = errors.New("followers use streaming replication on the same engine version; use pg:upgrade for a major-version swap")
-	ErrFollowVersion      = errors.New("a follower must run the same engine version as its primary; use pg:upgrade to swap to a new version")
-	ErrAutoFailoverNoHost = errors.New("auto-failover followers need another live node; this cluster has only the primary's host")
-	ErrAutoFailoverExists = errors.New("this primary already has an auto-failover follower")
-	ErrAutoFailoverFollow = errors.New("auto-failover requires a follower (--follow)")
+	ErrNotFound              = errors.New("postgres instance not found")
+	ErrReadOnly              = errors.New("follower is read-only")
+	ErrFollowFollower        = errors.New("a follower cannot follow another follower")
+	ErrNotFollower           = errors.New("only a follower can be promoted or unfollowed")
+	ErrNoResize              = errors.New("no in-place resize or upgrade; pg:upgrade follows, waits until caught up, then promotes")
+	ErrHasFollowers          = errors.New("cannot remove a resource while it still has followers")
+	ErrNotPrimary            = errors.New("only a primary can be upgraded")
+	ErrUpgradeInProgress     = errors.New("an upgrade is already running for this instance")
+	ErrUpgradeFollower       = errors.New("followers are recreated after the new primary is promoted; do not upgrade a follower")
+	ErrFollowLogical         = errors.New("followers use streaming replication on the same engine version; use pg:upgrade for a major-version swap")
+	ErrFollowVersion         = errors.New("a follower must run the same engine version as its primary; use pg:upgrade to swap to a new version")
+	ErrAutoFailoverNoHost    = errors.New("auto-failover followers need another live node; this cluster has only the primary's host")
+	ErrAutoFailoverExists    = errors.New("this primary already has an auto-failover follower")
+	ErrAutoFailoverFollow    = errors.New("auto-failover requires a follower (--follow)")
+	ErrPlatformReplicaExists = errors.New("this primary already has a platform replica")
 )
 
 const EnvAutoFailover = "FLYNN_POSTGRES_AUTO_FAILOVER"
@@ -120,6 +121,7 @@ type Instance struct {
 	Attachments       []Attachment
 	Followers         []string
 	AutoFailover      bool
+	PlatformReplica   bool
 	ReplicaPending    bool
 	// ServiceAlias is an extra discoverd name the promoted job registers
 	// (the previous primary's app) so existing DATABASE_URL hosts keep resolving.
@@ -130,35 +132,37 @@ type Instance struct {
 
 // Info is the pg:info view.
 type Info struct {
-	ID             string           `json:"id"`
-	Role           Role             `json:"role"`
-	LeaderID       string           `json:"leader_id,omitempty"`
-	Followers      []string         `json:"followers,omitempty"`
-	LagBytes       int64            `json:"lag_bytes"`
-	ReadOnly       bool             `json:"read_only"`
-	Nodes          int              `json:"nodes"`
-	Runtime        string           `json:"runtime"`
-	EngineVersion  string           `json:"engine_version,omitempty"`
-	Mode           ReplicationMode  `json:"replication,omitempty"`
-	App            string           `json:"app"`
-	Volume         string           `json:"volume"`
-	Host           string           `json:"host"`
-	Follows        string           `json:"follows,omitempty"`
-	AutoFailover   bool             `json:"auto_failover,omitempty"`
-	ReplicaPending bool             `json:"replica_pending,omitempty"`
-	Attachments    []AttachmentInfo `json:"attachments,omitempty"`
+	ID              string           `json:"id"`
+	Role            Role             `json:"role"`
+	LeaderID        string           `json:"leader_id,omitempty"`
+	Followers       []string         `json:"followers,omitempty"`
+	LagBytes        int64            `json:"lag_bytes"`
+	ReadOnly        bool             `json:"read_only"`
+	Nodes           int              `json:"nodes"`
+	Runtime         string           `json:"runtime"`
+	EngineVersion   string           `json:"engine_version,omitempty"`
+	Mode            ReplicationMode  `json:"replication,omitempty"`
+	App             string           `json:"app"`
+	Volume          string           `json:"volume"`
+	Host            string           `json:"host"`
+	Follows         string           `json:"follows,omitempty"`
+	AutoFailover    bool             `json:"auto_failover,omitempty"`
+	PlatformReplica bool             `json:"platform_replica,omitempty"`
+	ReplicaPending  bool             `json:"replica_pending,omitempty"`
+	Attachments     []AttachmentInfo `json:"attachments,omitempty"`
 }
 
 // ProvisionRequest creates a primary, or a follower when Follow is set.
 type ProvisionRequest struct {
-	Tenant       string
-	App          string
-	As           string
-	Follow       string
-	Mode         ReplicationMode
-	Runtime      string
-	ForUpgrade   bool
-	AutoFailover bool
+	Tenant          string
+	App             string
+	As              string
+	Follow          string
+	Mode            ReplicationMode
+	Runtime         string
+	ForUpgrade      bool
+	AutoFailover    bool
+	PlatformReplica bool
 }
 
 // PromoteResult is a promoted follower plus the previous leader, which remains.
@@ -269,8 +273,14 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 	if req.AutoFailover && leader == nil {
 		return nil, nil, ErrAutoFailoverFollow
 	}
+	if req.PlatformReplica && leader == nil {
+		return nil, nil, ErrAutoFailoverFollow
+	}
 	if req.AutoFailover && autoFailoverFollowerLocked(s, leader) != nil {
 		return nil, nil, ErrAutoFailoverExists
+	}
+	if req.PlatformReplica && platformReplicaLocked(s, leader) != nil {
+		return nil, nil, ErrPlatformReplicaExists
 	}
 
 	id := newID()
@@ -327,6 +337,7 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 			inst.Runtime = leader.Runtime
 		}
 		inst.AutoFailover = req.AutoFailover
+		inst.PlatformReplica = req.PlatformReplica
 	}
 
 	s.byID[inst.ID] = inst
@@ -635,23 +646,24 @@ func (s *Store) Info(id string) (Info, error) {
 		}
 	}
 	return Info{
-		ID:             inst.ID,
-		Role:           inst.Role,
-		LeaderID:       inst.LeaderID,
-		Followers:      followers,
-		LagBytes:       inst.LagBytes,
-		ReadOnly:       inst.ReadOnly,
-		Nodes:          inst.Nodes,
-		Runtime:        inst.Runtime,
-		EngineVersion:  inst.EngineVersion,
-		Mode:           inst.Mode,
-		App:            inst.App,
-		Volume:         inst.Volume,
-		Host:           inst.ServiceHost,
-		Follows:        follows,
-		AutoFailover:   inst.AutoFailover,
-		ReplicaPending: inst.ReplicaPending,
-		Attachments:    attachmentInfos(inst),
+		ID:              inst.ID,
+		Role:            inst.Role,
+		LeaderID:        inst.LeaderID,
+		Followers:       followers,
+		LagBytes:        inst.LagBytes,
+		ReadOnly:        inst.ReadOnly,
+		Nodes:           inst.Nodes,
+		Runtime:         inst.Runtime,
+		EngineVersion:   inst.EngineVersion,
+		Mode:            inst.Mode,
+		App:             inst.App,
+		Volume:          inst.Volume,
+		Host:            inst.ServiceHost,
+		Follows:         follows,
+		AutoFailover:    inst.AutoFailover,
+		PlatformReplica: inst.PlatformReplica,
+		ReplicaPending:  inst.ReplicaPending,
+		Attachments:     attachmentInfos(inst),
 	}, nil
 }
 
@@ -837,6 +849,17 @@ func (s *Store) SetLag(id string, bytes int64) error {
 // Promote makes the follower writable, ends the follow, and rewrites the
 // previous leader's attachment URLs. The old leader remains its own resource.
 func (s *Store) Promote(id string) (*PromoteResult, error) {
+	return s.promote(id, false)
+}
+
+// PromoteKeepingService promotes without rewriting attachment URLs. The
+// promoted instance registers the previous primary's discoverd name so
+// DATABASE_URL keeps leader.<original>.discoverd.
+func (s *Store) PromoteKeepingService(id string) (*PromoteResult, error) {
+	return s.promote(id, true)
+}
+
+func (s *Store) promote(id string, keepService bool) (*PromoteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fol := s.lookupLocked(id)
@@ -851,24 +874,28 @@ func (s *Store) Promote(id string) (*PromoteResult, error) {
 		return nil, ErrNotFound
 	}
 	s.catchUpLocked(fol)
-	newURL := fol.appURL()
 	var rewritten []Attachment
-	for i := range leader.Attachments {
-		leader.Attachments[i].URL = newURL
-		for k := range leader.Attachments[i].Env {
-			leader.Attachments[i].Env[k] = newURL
+	if !keepService {
+		newURL := fol.appURL()
+		for i := range leader.Attachments {
+			leader.Attachments[i].URL = newURL
+			for k := range leader.Attachments[i].Env {
+				leader.Attachments[i].Env[k] = newURL
+			}
+			rewritten = append(rewritten, leader.Attachments[i])
 		}
-		rewritten = append(rewritten, leader.Attachments[i])
+	} else if strings.TrimSpace(leader.App) != "" {
+		fol.ServiceAlias = leader.App
 	}
 	leader.Followers = removeFollowerRef(leader.Followers, fol)
-	auto := fol.AutoFailover
+	failover := fol.AutoFailover || fol.PlatformReplica
 	fol.Role = RolePrimary
 	fol.ReadOnly = false
 	fol.LeaderID = ""
 	fol.Mode = ""
 	fol.LagBytes = 0
 	fol.AutoFailover = false
-	if auto {
+	if failover {
 		leader.Role = RoleDeposed
 		leader.ReadOnly = true
 		leader.LeaderID = fol.ID
@@ -1172,7 +1199,10 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		inst.ReadOnly = true
 		inst.LeaderID = firstNonEmpty(env["FLYNN_POSTGRES_LEADER"], inst.LeaderID)
 		inst.AutoFailover = envBool(env[EnvAutoFailover])
+		inst.PlatformReplica = envBool(env[EnvPlatformReplica])
 	}
+	inst.PlatformReplica = inst.PlatformReplica || envBool(env[EnvPlatformReplica])
+	inst.ServiceAlias = strings.TrimSpace(env[EnvServiceAlias])
 	inst.ReplicaPending = envBool(env["FLYNN_POSTGRES_REPLICA_PENDING"])
 	if inst.Role == RolePrimary {
 		inst.AutoFailover = false

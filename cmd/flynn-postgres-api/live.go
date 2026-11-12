@@ -373,6 +373,12 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if inst.AutoFailover {
 		env[postgres.EnvAutoFailover] = "true"
 	}
+	if inst.PlatformReplica {
+		env[postgres.EnvPlatformReplica] = "true"
+	}
+	if strings.TrimSpace(inst.ServiceAlias) != "" && inst.Role == postgres.RolePrimary {
+		env[postgres.EnvServiceAlias] = inst.ServiceAlias
+	}
 	if inst.ReplicaPending {
 		env["FLYNN_POSTGRES_REPLICA_PENDING"] = "true"
 	}
@@ -400,6 +406,12 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 			"flynn-expose-port": "5432",
 			"flynn-expose-tls":  "required",
 		},
+	}
+	if inst.PlatformReplica {
+		app.Meta["flynn-postgres-platform-replica"] = "true"
+		if leader != nil && leader.App != "" {
+			app.Meta["flynn-postgres-leader"] = leader.App
+		}
 	}
 	if err := c.CreateApp(app); err != nil {
 		return err
@@ -464,6 +476,16 @@ func stampIsolatedRole(c isolatedReleaseClient, inst *postgres.Instance, leader 
 	}
 	applyPostgresResourceEnv(inst, env, leader)
 	stampInstanceMetricsPort(env)
+	if inst.Role == postgres.RolePrimary && strings.TrimSpace(inst.ServiceAlias) != "" {
+		env[postgres.EnvServiceAlias] = inst.ServiceAlias
+	} else {
+		delete(env, postgres.EnvServiceAlias)
+	}
+	if inst.PlatformReplica {
+		env[postgres.EnvPlatformReplica] = "true"
+	} else {
+		delete(env, postgres.EnvPlatformReplica)
+	}
 	if envEqual(rel.Env, env) {
 		return nil
 	}
@@ -778,18 +800,27 @@ func (h *handler) runtimePlacementTags(inst *postgres.Instance) map[string]map[s
 }
 
 func (h *handler) autoFailoverPlacementTags(inst, leader *postgres.Instance) (map[string]map[string]string, error) {
-	if inst == nil || !inst.AutoFailover || leader == nil || strings.TrimSpace(leader.App) == "" {
+	if inst == nil || leader == nil || strings.TrimSpace(leader.App) == "" {
+		return nil, nil
+	}
+	if !inst.AutoFailover && !inst.PlatformReplica {
 		return nil, nil
 	}
 	if h == nil || h.client == nil {
-		return nil, postgres.ErrAutoFailoverNoHost
+		if inst.PlatformReplica {
+			return nil, postgres.ErrAutoFailoverNoHost
+		}
+		return nil, nil
 	}
 	host, err := runningAppHost(h.client, leader.App)
 	if err != nil {
 		return nil, err
 	}
-	if host == "" || !clusterHasOtherHost(h.client, host) {
-		return nil, postgres.ErrAutoFailoverNoHost
+	if host == "" || !h.otherHostFits(host, firstNonEmptyLocal(inst.Runtime, leader.Runtime)) {
+		if inst.PlatformReplica {
+			return nil, postgres.ErrAutoFailoverNoHost
+		}
+		return nil, nil
 	}
 	return map[string]map[string]string{
 		postgres.ProcessName: {"flynn-avoid-host-ids": host},

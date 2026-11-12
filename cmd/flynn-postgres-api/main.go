@@ -90,6 +90,15 @@ type handler struct {
 	backupStatuses   func() (map[string]postgres.BackupStatus, error)
 	backupHost       func(*ct.Resource) string
 	backupInflight   sync.Map
+	availability     func() (string, error)
+	failoverLeader   func() bool
+	jobs             func(string) ([]*ct.Job, error)
+	scaleRelease     func(app, release string, opts ct.ScaleOptions) error
+	getRelease       func(string) (*ct.Release, error)
+	hostFits         func() ([]postgres.HostFit, error)
+	hostsCached      bool
+	hostFit          []postgres.HostFit
+	hostFitErr       error
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -217,9 +226,26 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 		writeAPIError(w, err)
 		return
 	}
-	if err := postgres.CanDeleteResource(inst, h.followerApps(inst)); err != nil {
+	names := h.followerApps(inst)
+	platform := map[string]bool{}
+	if h.store != nil {
+		for _, fol := range h.store.PlatformReplicas() {
+			if fol != nil && (fol.LeaderID == inst.ID || fol.LeaderID == inst.App) && fol.App != "" {
+				platform[fol.App] = true
+			}
+		}
+	}
+	if err := postgres.CanDeleteResource(inst, postgres.UserFollowerNames(names, platform)); err != nil {
 		writeAPIError(w, err)
 		return
+	}
+	for name := range platform {
+		if h.live() && h.client != nil {
+			startIsolatedAppDeletion(h.client, name)
+		}
+		if h.store != nil {
+			h.store.Forget(name)
+		}
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
 		h.purgeTenantBackups(inst)
@@ -479,6 +505,10 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string, autoF
 }
 
 func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
+	if err := h.rejectPlatformReplicaControl(p.ByName("id")); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	res, err := h.store.Promote(p.ByName("id"))
 	if err != nil {
 		writeAPIError(w, err)
@@ -510,6 +540,10 @@ func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.P
 }
 
 func (h *handler) unfollow(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
+	if err := h.rejectPlatformReplicaControl(p.ByName("id")); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	before, _ := h.store.Get(p.ByName("id"))
 	inst, err := h.store.Unfollow(p.ByName("id"))
 	if err != nil {

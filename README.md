@@ -45,6 +45,13 @@ Inside one instance the owner can add databases and users. Those roles exist
 only in that instance. Two resources do not share an app, volume, superuser,
 or any credential that can read the other instance.
 
+`flynn-host postgres:availability` is `manual` or `system` for the whole cluster.
+Hosted and self-hosted use the same values. `system` keeps one platform replica
+per primary when another host can take the volume. That replica is not an
+add-on. `manual` creates nothing extra. Add follower stays available in both
+modes. Automatic failover of a user follower applies only while the setting is
+`manual`. A cluster admin can set the same value on Cluster → Settings.
+
 A follower is a new resource, not an extra node. It copies the leader with
 streaming replication and must run the same engine version. It is read-only.
 A follower cannot follow another follower. Its `--as` name does not replace

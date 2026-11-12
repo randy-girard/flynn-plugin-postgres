@@ -292,6 +292,11 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src[follow:boot], "touch /data/standby.signal") {
 		t.Fatal("followers must restore standby.signal after a primary-stamped bounce")
 	}
+	deposed := strings.Index(src, `role}" == "deposed"`)
+	execPostgres := strings.Index(src, "exec /bin/flynn-postgres serve")
+	if deposed < 0 || execPostgres < deposed || !strings.Contains(src[deposed:execPostgres], "exit 1") {
+		t.Fatal("a deposed role must exit before postgres can start writable")
+	}
 	if !strings.Contains(src[follow:boot+80], `role}" != "follower"`) {
 		t.Fatal("primary bootstrap must not run when the job is a follower")
 	}
@@ -448,8 +453,8 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 	if regDepth != claimDepth {
 		t.Fatal("every instance must claim leader.<FLYNN_POSTGRES>.discoverd, including a follower; a follower registers its own service, and without that claim image-swap cannot read its replay LSN")
 	}
-	if strings.Contains(src, "POSTGRES_SERVICE_ALIAS") {
-		t.Fatal("do not alias the old discoverd name; attached apps deploy onto the new primary URL")
+	if !strings.Contains(src, "FLYNN_POSTGRES_SERVICE_ALIAS") || !strings.Contains(src, "LeaderServices(") {
+		t.Fatal("a promoted primary must claim leader.<original>.discoverd so DATABASE_URL does not change")
 	}
 }
 

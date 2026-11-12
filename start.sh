@@ -83,6 +83,12 @@ grep -q "^timescaledb.max_background_workers" "${conf}" || echo "timescaledb.max
 # If that job is put back to follower, the signal is already gone and bootstrap
 # would treat the copied data directory as a new primary.
 role="${FLYNN_POSTGRES_ROLE:-${POSTGRES_ROLE:-}}"
+# A fenced primary is deposed. It must not accept writes if the host starts
+# the volume again. An empty role still bootstraps a new primary.
+if [[ "${role}" == "deposed" ]]; then
+  echo "refusing writable start: postgres role is deposed" >&2
+  exit 1
+fi
 if [[ "${role}" == "primary" ]]; then
   rm -f /data/standby.signal /data/recovery.signal
 elif [[ "${role}" == "follower" ]]; then

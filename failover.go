@@ -90,6 +90,58 @@ func (s *Store) NeedsReplica() []*Instance {
 	return out
 }
 
+func platformReplicaLocked(s *Store, leader *Instance) *Instance {
+	if s == nil || leader == nil {
+		return nil
+	}
+	for _, id := range leader.Followers {
+		fol := s.lookupLocked(id)
+		if fol != nil && fol.PlatformReplica && fol.Role == RoleFollower {
+			return fol
+		}
+	}
+	for _, inst := range s.byID {
+		if inst == nil || inst.Role != RoleFollower || !inst.PlatformReplica {
+			continue
+		}
+		if inst.LeaderID == leader.ID || inst.LeaderID == leader.App {
+			return inst
+		}
+	}
+	return nil
+}
+
+// PlatformReplicas are the failover copies system mode promotes.
+func (s *Store) PlatformReplicas() []*Instance {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Instance
+	for _, inst := range s.byID {
+		if inst != nil && inst.Role == RoleFollower && inst.PlatformReplica {
+			out = append(out, inst.snapshot())
+		}
+	}
+	return out
+}
+
+// MissingPlatformReplica lists primaries that do not have a platform replica.
+func (s *Store) MissingPlatformReplica() []*Instance {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*Instance
+	for _, inst := range s.byID {
+		if inst == nil || inst.Role != RolePrimary {
+			continue
+		}
+		if platformReplicaLocked(s, inst) != nil {
+			inst.ReplicaPending = false
+			continue
+		}
+		out = append(out, inst.snapshot())
+	}
+	return out
+}
+
 // AutoFailoverFollowers are replicas that should promote if their primary job is gone.
 func (s *Store) AutoFailoverFollowers() []*Instance {
 	s.mu.Lock()

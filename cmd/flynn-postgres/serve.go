@@ -80,6 +80,29 @@ func servePostgres() error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return postgres.WrapDiscoverdAuth(err)
 	}
+	// A promoted primary also claims FLYNN_POSTGRES_SERVICE_ALIAS, the original
+	// primary name, so DATABASE_URL stays on leader.<original>.discoverd.
+	role := strings.TrimSpace(firstSet(os.Getenv("FLYNN_POSTGRES_ROLE"), os.Getenv("POSTGRES_ROLE")))
+	alias := strings.TrimSpace(os.Getenv(postgres.EnvServiceAlias))
+	for _, name := range postgres.LeaderServices(role, service, alias) {
+		if name == service {
+			continue
+		}
+		if err := disc.AddService(name, &discoverd.ServiceConfig{LeaderType: discoverd.LeaderTypeManual}); err != nil && !httphelper.IsObjectExistsError(err) {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			return postgres.WrapDiscoverdAuth(err)
+		}
+		hbAlias, err := disc.RegisterInstance(name, inst)
+		if err != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			return postgres.WrapDiscoverdAuth(err)
+		}
+		shutdown.BeforeExit(func() { hbAlias.Close() })
+		if err := ignoreLeaderElectionError(disc.Service(name).SetLeader(inst.ID)); err != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			return postgres.WrapDiscoverdAuth(err)
+		}
+	}
 
 	go serveInstanceMetrics()
 	logInstanceTopology()

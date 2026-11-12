@@ -985,7 +985,18 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 	if primaries := dashWritablePrimaries(insts); len(primaries) > 0 {
 		b.WriteString(primaryActionForms(instanceRef(primaries[0]), h.store))
 	}
-	b.WriteString(`</div></div><div class="card table-card"><table><tr><th>Instance</th><th>Role</th><th>Follows</th><th>Auto-failover</th><th>Status</th><th>Host</th><th></th></tr>`)
+	b.WriteString(`</div></div>`)
+	if mode, err := h.currentAvailability(); err == nil && mode == postgres.AvailabilitySystem {
+		word := "unprotected"
+		for _, inst := range insts {
+			if inst != nil && (inst.Role == postgres.RolePrimary || inst.Role == "") && h.platformProtected(inst) {
+				word = "protected"
+				break
+			}
+		}
+		b.WriteString(`<p class="hint">Failover: ` + word + `. A platform replica is not an add-on. It is protected only while it is streaming within 16 MiB.</p>`)
+	}
+	b.WriteString(`<div class="card table-card"><table><tr><th>Instance</th><th>Role</th><th>Follows</th><th>Auto-failover</th><th>Status</th><th>Host</th><th></th></tr>`)
 	rows := 0
 	for _, inst := range insts {
 		view := h.replicationView(inst)
@@ -1003,6 +1014,10 @@ func (h *handler) dashReplication(w http.ResponseWriter, r *http.Request, sess *
 		auto := "—"
 		if view.AutoFailover {
 			auto = "yes"
+		}
+		if inst.PlatformReplica {
+			view.Actions = ""
+			auto = "platform"
 		}
 		if view.ReplicaPending {
 			auto = "replica pending"
@@ -1263,6 +1278,9 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		}
 		return "Follower started with streaming replication. It is read-only until you promote or unfollow it.", nil
 	case "promote":
+		if err := h.rejectPlatformReplicaControl(id); err != nil {
+			return "", err
+		}
 		res, err := h.store.Promote(id)
 		if err != nil {
 			return "", err
@@ -1282,6 +1300,9 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		}
 		return "Follower promoted. It is now the primary. The previous leader remains as its own resource.", nil
 	case "unfollow":
+		if err := h.rejectPlatformReplicaControl(id); err != nil {
+			return "", err
+		}
 		inst, err := h.store.Unfollow(id)
 		if err != nil {
 			return "", err
@@ -1330,6 +1351,9 @@ func (h *handler) dashFollow(sess *dashui.Session, leader, runtime string, autoF
 	follow := instanceRef(inst)
 	if follow == "" {
 		return postgres.ErrNotFound
+	}
+	if mode, err := h.currentAvailability(); err == nil && mode == postgres.AvailabilitySystem {
+		autoFailover = false
 	}
 	_, err := h.provisionFollow(app, appRef, follow, runtime, autoFailover)
 	return err
@@ -1497,6 +1521,9 @@ func followerActionForms(ref string, autoFailover bool) string {
 }
 
 func (h *handler) removeFollower(id string) error {
+	if err := h.rejectPlatformReplicaControl(id); err != nil {
+		return err
+	}
 	id = strings.TrimSpace(id)
 	if h == nil || h.store == nil || id == "" {
 		return fmt.Errorf("choose a follower")
@@ -1600,11 +1627,32 @@ func (h *handler) dashAddFollowerPanel(primaries []*postgres.Instance) string {
 		"add-follower-form",
 		"..",
 		"Add follower",
-		dashAddFollowerFields(primaries),
+		dashAddFollowerFields(primaries, h.offerAutoFailover()),
 	)
 }
 
-func dashAddFollowerFields(primaries []*postgres.Instance) string {
+func (h *handler) offerAutoFailover() bool {
+	mode, err := h.currentAvailability()
+	return err != nil || mode != postgres.AvailabilitySystem
+}
+
+func (h *handler) platformProtected(primary *postgres.Instance) bool {
+	if h == nil || h.store == nil || primary == nil || primary.ReplicaPending {
+		return false
+	}
+	for _, fol := range h.store.PlatformReplicas() {
+		if fol == nil || (fol.LeaderID != primary.ID && fol.LeaderID != primary.App) {
+			continue
+		}
+		if h.client == nil {
+			return false
+		}
+		return h.targetPromotable(fol, primary)
+	}
+	return false
+}
+
+func dashAddFollowerFields(primaries []*postgres.Instance, auto bool) string {
 	var b strings.Builder
 	b.WriteString(`<input type="hidden" name="action" value="follow">`)
 	if len(primaries) == 1 {
@@ -1621,8 +1669,12 @@ func dashAddFollowerFields(primaries []*postgres.Instance) string {
 		}
 		b.WriteString(`</select>`)
 	}
-	b.WriteString(`<label><input type="checkbox" name="auto_failover" value="1"> Automatic failover</label>`)
-	b.WriteString(`<p class="hint">Place the replica on another host and promote it if the primary job is lost. Needs two or more live nodes. A replacement replica is then created to keep the pair.</p>`)
+	if auto {
+		b.WriteString(`<label><input type="checkbox" name="auto_failover" value="1"> Automatic failover</label>`)
+		b.WriteString(`<p class="hint">Place the replica on another host and promote it if the primary job is lost. Needs two or more live nodes. A replacement replica is then created to keep the pair.</p>`)
+	} else {
+		b.WriteString(`<p class="hint">Cluster availability is system. This follower stays read-only. The platform replica is the failover target.</p>`)
+	}
 	return b.String()
 }
 

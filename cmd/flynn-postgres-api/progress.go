@@ -239,6 +239,27 @@ func backupPercentLive(copied, total int64) int {
 	return n
 }
 
+func basebackupActive(connURL string) (bool, bool) {
+	out, err := runSQL(connURL, sqlBasebackup)
+	if err != nil {
+		return false, false
+	}
+	if firstSQLLine(out) == "" {
+		return false, true
+	}
+	copied, total, phase, ok := parseBasebackupRow(out)
+	if !ok {
+		return false, false
+	}
+	if total > 0 && copied < total {
+		return true, true
+	}
+	if phase != "" && copied < total {
+		return true, true
+	}
+	return false, true
+}
+
 func queryBasebackup(connURL string) (copied, total int64, phase string, ok bool) {
 	out, err := runSQL(connURL, sqlBasebackup)
 	if err != nil {

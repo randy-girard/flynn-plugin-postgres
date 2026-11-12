@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	ct "github.com/randy-girard/flynn/controller/types"
+	discoverd "github.com/randy-girard/flynn/discoverd/client"
 )
 
 const autoFailoverGrace = 30 * time.Second
@@ -60,19 +63,108 @@ func appJobRunning(c interface {
 }
 
 func (h *handler) fenceIsolatedApp(app string) error {
-	if h == nil || h.client == nil || strings.TrimSpace(app) == "" {
+	if h == nil || strings.TrimSpace(app) == "" {
 		return nil
 	}
-	rel, err := h.client.GetAppRelease(app)
-	if err != nil || rel == nil {
+	return fenceRunningApp(h, app)
+}
+
+// fenceRunningApp scales the release that is actually running to 0 and waits
+// until that job is gone. A list or scale error refuses promotion.
+func fenceRunningApp(h *handler, app string) error {
+	jobs, err := h.listAppJobs(app)
+	if err != nil {
 		return err
 	}
-	timeout := instanceReadyTimeout
-	return h.client.ScaleAppRelease(app, rel.ID, ct.ScaleOptions{
-		Processes: map[string]int{postgres.ProcessName: 0},
-		Timeout:   &timeout,
-		NoWait:    true,
-	})
+	ids := map[string]struct{}{}
+	for _, j := range jobs {
+		if j == nil || !jobOccupies(j.State) || strings.TrimSpace(j.ReleaseID) == "" {
+			continue
+		}
+		ids[j.ReleaseID] = struct{}{}
+	}
+	if len(ids) == 0 {
+		rel, err := h.releaseOf(app)
+		if err != nil {
+			return err
+		}
+		if rel != nil && rel.ID != "" {
+			ids[rel.ID] = struct{}{}
+		}
+	}
+	timeout := 60 * time.Second
+	for id := range ids {
+		if err := h.scaleTo(app, id, ct.ScaleOptions{
+			Processes: map[string]int{postgres.ProcessName: 0},
+			Timeout:   &timeout,
+		}); err != nil {
+			return err
+		}
+	}
+	jobs, err = h.listAppJobs(app)
+	if err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		if j != nil && jobOccupies(j.State) {
+			return fmt.Errorf("primary %s did not stop", app)
+		}
+	}
+	return nil
+}
+
+func jobOccupies(state ct.JobState) bool {
+	switch state {
+	case ct.JobStateUp, ct.JobStateStarting, ct.JobStatePending, ct.JobStateStopping:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *handler) listAppJobs(app string) ([]*ct.Job, error) {
+	if h != nil && h.jobs != nil {
+		return h.jobs(app)
+	}
+	if h == nil || h.client == nil {
+		return nil, fmt.Errorf("missing controller")
+	}
+	return h.client.JobList(app)
+}
+
+func (h *handler) releaseOf(app string) (*ct.Release, error) {
+	if h != nil && h.getRelease != nil {
+		return h.getRelease(app)
+	}
+	if h == nil || h.client == nil {
+		return nil, fmt.Errorf("missing controller")
+	}
+	return h.client.GetAppRelease(app)
+}
+
+func (h *handler) scaleTo(app, release string, opts ct.ScaleOptions) error {
+	if h != nil && h.scaleRelease != nil {
+		return h.scaleRelease(app, release, opts)
+	}
+	if h == nil || h.client == nil {
+		return fmt.Errorf("missing controller")
+	}
+	return h.client.ScaleAppRelease(app, release, opts)
+}
+
+// primaryObservedDown is true only when a successful job list shows no
+// occupying job. A list error is not "down".
+func primaryObservedDown(h *handler, app string) (down, known bool) {
+	jobs, err := h.listAppJobs(app)
+	if err != nil {
+		return false, false
+	}
+	for _, j := range jobs {
+		if j != nil && jobOccupies(j.State) {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 func (h *handler) unfenceIsolatedApp(app string) error {
@@ -86,79 +178,305 @@ func (h *handler) unfenceIsolatedApp(app string) error {
 	return h.client.ScaleAppRelease(app, rel.ID, instanceScaleOptions())
 }
 
+const failoverServiceName = "postgres-failover"
+
+var (
+	readReplicaRecovery  = queryFollowerReplay
+	readPrimaryWAL       = queryWalBytes
+	readBasebackupActive = basebackupActive
+)
+
 func (h *handler) startFailoverWatch() {
 	if h == nil || h.client == nil || h.store == nil {
 		return
 	}
-	go func() {
-		downSince := map[string]time.Time{}
-		var lastReap time.Time
-		for {
-			h.reconcileAutoFailover(downSince)
-			if time.Since(lastReap) >= time.Minute {
-				h.reapOrphanInstances()
-				lastReap = time.Now()
+	var leader atomic.Bool
+	h.failoverLeader = leader.Load
+	go h.failoverLeaseLoop(&leader)
+}
+
+func (h *handler) failoverLeaseLoop(leader *atomic.Bool) {
+	downSince := map[string]time.Time{}
+	var lastReap time.Time
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000"
+	}
+	for {
+		dc := postgres.NewDiscoverdClient()
+		hb, err := dc.AddServiceAndRegister(failoverServiceName, ":"+port)
+		if err != nil {
+			if h.log != nil {
+				h.log.Error("postgres failover lease", "err", err)
 			}
-			time.Sleep(autoFailoverTick)
+			time.Sleep(time.Second)
+			continue
 		}
-	}()
+		self := hb.Addr()
+		leaders := make(chan *discoverd.Instance)
+		stream, err := dc.Service(failoverServiceName).Leaders(leaders)
+		if err != nil {
+			_ = hb.Close()
+			time.Sleep(time.Second)
+			continue
+		}
+		ticker := time.NewTicker(autoFailoverTick)
+		stopped := false
+		for !stopped {
+			select {
+			case inst, ok := <-leaders:
+				if !ok {
+					leader.Store(false)
+					stopped = true
+					break
+				}
+				if inst == nil {
+					continue
+				}
+				leader.Store(inst.Addr == self)
+			case <-ticker.C:
+				if leader.Load() {
+					h.reconcileAutoFailover(downSince)
+					if time.Since(lastReap) >= time.Minute {
+						h.reapOrphanInstances()
+						lastReap = time.Now()
+					}
+				}
+			}
+		}
+		ticker.Stop()
+		_ = hb.Close()
+		if stream != nil {
+			_ = stream.Close()
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func (h *handler) reconcileAutoFailover(downSince map[string]time.Time) {
 	if h == nil || h.store == nil {
 		return
 	}
-	h.pruneStoreGoneIsolated()
-	for _, fol := range h.store.AutoFailoverFollowers() {
-		if fol == nil {
-			continue
-		}
-		leader, err := h.store.Get(fol.LeaderID)
-		if err != nil || leader == nil {
-			continue
-		}
-		if appJobRunning(h.client, leader.App) {
-			delete(downSince, fol.ID)
-			continue
-		}
-		if _, ok := downSince[fol.ID]; !ok {
-			downSince[fol.ID] = time.Now()
-			continue
-		}
-		if time.Since(downSince[fol.ID]) < autoFailoverGrace {
-			continue
-		}
-		res, err := h.store.Promote(fol.ID)
-		if err != nil {
-			if h.log != nil {
-				h.log.Error("auto-failover promote", "follower", fol.App, "err", err)
-			}
-			continue
-		}
-		delete(downSince, fol.ID)
-		if res != nil {
-			fromApp, toApp := "", ""
-			if res.PreviousLeader != nil {
-				fromApp = res.PreviousLeader.App
-			}
-			if res.Promoted != nil {
-				toApp = res.Promoted.App
-			}
-			h.emitTopology(postgres.CodeFailover, res.Promoted, fromApp, toApp, "reason=auto")
-			_ = h.stampIsolatedRole(res.Promoted)
-			if res.PreviousLeader != nil {
-				h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=auto")
-				_ = h.stampIsolatedRole(res.PreviousLeader)
-				_ = h.fenceIsolatedApp(res.PreviousLeader.App)
-			}
-			h.syncResourceEnv(nil, res.Promoted)
-		}
-		_ = h.ensureAutoFailoverReplica(res.Promoted)
+	if h.failoverLeader != nil && !h.failoverLeader() {
+		return
 	}
-	for _, primary := range h.store.NeedsReplica() {
-		_ = h.ensureAutoFailoverReplica(primary)
+	mode, err := h.currentAvailability()
+	if err != nil {
+		return
+	}
+	h.hostsCached = false
+	h.pruneStoreGoneIsolated()
+	switch mode {
+	case postgres.AvailabilitySystem:
+		for _, fol := range h.store.PlatformReplicas() {
+			h.considerFailover(downSince, fol)
+		}
+		h.provisionMissingPlatformReplicas()
+	default:
+		for _, fol := range h.store.AutoFailoverFollowers() {
+			if fol == nil || fol.PlatformReplica {
+				continue
+			}
+			h.considerFailover(downSince, fol)
+		}
+		for _, primary := range h.store.NeedsReplica() {
+			_ = h.ensureAutoFailoverReplica(primary)
+		}
 	}
 	h.replaceBrokenFollowers()
+}
+
+func (h *handler) considerFailover(downSince map[string]time.Time, fol *postgres.Instance) {
+	if h == nil || h.store == nil || fol == nil {
+		return
+	}
+	leader, err := h.store.Get(fol.LeaderID)
+	if err != nil || leader == nil {
+		return
+	}
+	down, known := primaryObservedDown(h, leader.App)
+	if !known {
+		return
+	}
+	if !down {
+		delete(downSince, fol.ID)
+		return
+	}
+	if _, ok := downSince[fol.ID]; !ok {
+		downSince[fol.ID] = time.Now()
+		return
+	}
+	if time.Since(downSince[fol.ID]) < autoFailoverGrace {
+		return
+	}
+	if !h.targetPromotable(fol, leader) {
+		return
+	}
+	if err := h.fenceIsolatedApp(leader.App); err != nil {
+		if h.log != nil {
+			h.log.Error("auto-failover fence", "primary", leader.App, "err", err)
+		}
+		return
+	}
+	res, err := h.store.PromoteKeepingService(fol.ID)
+	if err != nil {
+		if h.log != nil {
+			h.log.Error("auto-failover promote", "follower", fol.App, "err", err)
+		}
+		return
+	}
+	delete(downSince, fol.ID)
+	if res == nil {
+		return
+	}
+	fromApp, toApp := "", ""
+	if res.PreviousLeader != nil {
+		fromApp = res.PreviousLeader.App
+	}
+	if res.Promoted != nil {
+		toApp = res.Promoted.App
+	}
+	h.emitTopology(postgres.CodeFailover, res.Promoted, fromApp, toApp, "reason=auto")
+	if res.PreviousLeader != nil {
+		h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=auto")
+		_ = h.stampIsolatedRole(res.PreviousLeader)
+		_ = h.fenceIsolatedApp(res.PreviousLeader.App)
+	}
+	if res.Promoted != nil {
+		_ = h.stampIsolatedRole(res.Promoted)
+		if err := h.promoteIsolatedJob(res.Promoted); err != nil && h.log != nil {
+			h.log.Error("auto-failover bounce", "app", res.Promoted.App, "err", err)
+		}
+	}
+}
+
+func (h *handler) targetPromotable(fol, leader *postgres.Instance) bool {
+	if fol == nil || leader == nil {
+		return false
+	}
+	recovering, replay, ok := readReplicaRecovery(fol.ConnectionURL())
+	if !ok {
+		return false
+	}
+	wal, wok := readPrimaryWAL(leader.ConnectionURL())
+	lag := wal - replay
+	if lag < 0 {
+		lag = 0
+	}
+	active, bok := readBasebackupActive(leader.ConnectionURL())
+	if !bok {
+		return false
+	}
+	return postgres.ReplicaPromotable(postgres.ReplicaHealth{
+		InRecovery: recovering,
+		LagBytes:   lag,
+		LagKnown:   wok,
+		Basebackup: active,
+	})
+}
+
+func (h *handler) rejectPlatformReplicaControl(id string) error {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	inst, err := h.store.Get(id)
+	if err != nil || inst == nil || !inst.PlatformReplica {
+		return nil
+	}
+	return fmt.Errorf("the platform replica is managed by the cluster")
+}
+
+func (h *handler) currentAvailability() (string, error) {
+	if h != nil && h.availability != nil {
+		return h.availability()
+	}
+	return fetchPostgresAvailability()
+}
+
+func (h *handler) provisionMissingPlatformReplicas() {
+	if h == nil || h.store == nil {
+		return
+	}
+	var ids []string
+	for _, primary := range h.store.MissingPlatformReplica() {
+		if primary == nil {
+			continue
+		}
+		ids = append(ids, firstNonEmptyLocal(primary.ID, primary.App))
+	}
+	created := 0
+	for _, id := range postgres.BatchIDs(ids, postgres.PlatformReplicaBatch) {
+		if created >= postgres.PlatformReplicaBatch {
+			break
+		}
+		primary, err := h.store.Get(id)
+		if err != nil || primary == nil || h.upgradeInProgress(primary.ID) || h.upgradeInProgress(primary.App) {
+			continue
+		}
+		host, _ := runningAppHost(h.client, primary.App)
+		if host == "" || !h.otherHostFits(host, primary.Runtime) {
+			_ = h.store.SetReplicaPending(primary.ID, true)
+			continue
+		}
+		if err := h.createPlatformReplica(primary); err != nil {
+			_ = h.store.SetReplicaPending(primary.ID, true)
+			if h.log != nil {
+				h.log.Error("platform replica", "primary", primary.App, "err", err)
+			}
+			continue
+		}
+		created++
+	}
+}
+
+func (h *handler) createPlatformReplica(primary *postgres.Instance) error {
+	if h == nil || h.store == nil || primary == nil {
+		return nil
+	}
+	inst, _, err := h.store.Provision(postgres.ProvisionRequest{
+		Tenant:          firstNonEmptyLocal(primary.Tenant, primary.App),
+		Follow:          firstNonEmptyLocal(primary.ID, primary.App),
+		Runtime:         primary.Runtime,
+		PlatformReplica: true,
+	})
+	if err != nil {
+		return err
+	}
+	if err := h.startInstance(inst); err != nil {
+		h.store.Forget(inst.ID)
+		return err
+	}
+	_ = h.store.SetReplicaPending(primary.ID, false)
+	return nil
+}
+
+func (h *handler) otherHostFits(avoid, runtime string) bool {
+	hosts, err := h.currentHostFits()
+	if err != nil {
+		return false
+	}
+	mem, disk := h.runtimeNeed(runtime)
+	_, ok := postgres.OtherHostCanTake(hosts, avoid, mem, disk)
+	return ok
+}
+
+func (h *handler) currentHostFits() ([]postgres.HostFit, error) {
+	if h != nil && h.hostsCached {
+		return h.hostFit, h.hostFitErr
+	}
+	var hosts []postgres.HostFit
+	var err error
+	if h != nil && h.hostFits != nil {
+		hosts, err = h.hostFits()
+	} else {
+		hosts, err = h.loadHostFits()
+	}
+	if h != nil {
+		h.hostFit = hosts
+		h.hostFitErr = err
+		h.hostsCached = true
+	}
+	return hosts, err
 }
 
 func (h *handler) pruneStoreGoneIsolated() {
@@ -200,11 +518,8 @@ func (h *handler) ensureAutoFailoverReplica(primary *postgres.Instance) error {
 		}
 		return nil
 	}
-	host, _ := runningAppHost(h.client, primary.App)
-	if host != "" && !clusterHasOtherHost(h.client, host) {
-		_ = h.store.SetReplicaPending(primary.ID, true)
-		return postgres.ErrAutoFailoverNoHost
-	}
+	// A user follower still starts when no other host can take the volume.
+	// autoFailoverPlacementTags then omits flynn-avoid-host-ids.
 	tenant := firstNonEmptyLocal(primary.Tenant, primary.App)
 	_, err = h.provisionFollow(tenant, tenant, firstNonEmptyLocal(primary.App, primary.ID), primary.Runtime, true)
 	if err != nil {
