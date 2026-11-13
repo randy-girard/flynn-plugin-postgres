@@ -109,6 +109,9 @@ func TestBackupBackendErrorIsForAppUsers(t *testing.T) {
 	if !strings.Contains(strings.ToLower(msg), "administrator") {
 		t.Fatalf("app-facing backup error should say an administrator has to configure storage: %s", msg)
 	}
+	if !strings.Contains(strings.ToLower(msg), "blobstore") {
+		t.Fatalf("app-facing backup error should name the blobstore: %s", msg)
+	}
 }
 
 func TestDumpBackendAllowedIgnoresTenancy(t *testing.T) {

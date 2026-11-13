@@ -33,7 +33,7 @@ const (
 
 var (
 	ErrBackupBusy      = errors.New("a backup is already running for this database")
-	ErrBackupBackend   = errors.New("backups are unavailable until an administrator configures object storage for this cluster")
+	ErrBackupBackend   = errors.New("backups are unavailable while the cluster blobstore is not object storage; an administrator has to configure object storage")
 	ErrBackupNotListed = errors.New("that timestamp is not a backup of this database")
 	ErrBackupFollower  = errors.New("backups run on the primary")
 	ErrBackupLock      = errors.New("backup lock lost")
