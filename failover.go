@@ -111,6 +111,60 @@ func platformReplicaLocked(s *Store, leader *Instance) *Instance {
 	return nil
 }
 
+// retargetUserFollowersLocked moves read-only user followers from the
+// deposed primary onto the new primary. They stay followers. The platform
+// replica is not included and is not marked for promotion.
+func (s *Store) retargetUserFollowersLocked(from, to *Instance) {
+	if s == nil || from == nil || to == nil {
+		return
+	}
+	moved := map[string]bool{}
+	take := func(fol *Instance) {
+		if fol == nil || fol.ID == "" || fol.ID == to.ID || fol.ID == from.ID || moved[fol.ID] {
+			return
+		}
+		if fol.Role != RoleFollower || fol.PlatformReplica {
+			return
+		}
+		if fol.LeaderID != from.ID && fol.LeaderID != from.App {
+			return
+		}
+		fol.LeaderID = to.ID
+		fol.Role = RoleFollower
+		fol.ReadOnly = true
+		fol.AutoFailover = false
+		moved[fol.ID] = true
+		to.Followers = appendFollowerID(to.Followers, fol.ID)
+	}
+	for _, id := range append([]string(nil), from.Followers...) {
+		take(s.lookupLocked(id))
+	}
+	for _, inst := range s.byID {
+		take(inst)
+	}
+	kept := from.Followers[:0]
+	for _, id := range from.Followers {
+		fol := s.lookupLocked(id)
+		if fol != nil && moved[fol.ID] {
+			continue
+		}
+		if moved[id] {
+			continue
+		}
+		kept = append(kept, id)
+	}
+	from.Followers = kept
+}
+
+func appendFollowerID(list []string, id string) []string {
+	for _, cur := range list {
+		if cur == id {
+			return list
+		}
+	}
+	return append(list, id)
+}
+
 // PlatformReplicas are the failover copies system mode promotes.
 func (s *Store) PlatformReplicas() []*Instance {
 	s.mu.Lock()

@@ -362,7 +362,7 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	copyClusterDiscoverdEnv(env)
 	stampInstanceMetricsPort(env)
 	if leader != nil && inst.Role == postgres.RoleFollower {
-		env["FLYNN_POSTGRES_PRIMARY_URL"] = leader.ConnectionURL()
+		env["FLYNN_POSTGRES_PRIMARY_URL"] = leader.ReplicationURL()
 		env["FLYNN_POSTGRES_ROLE"] = "follower"
 		if leader.App != "" {
 			env["FLYNN_POSTGRES_LEADER"] = leader.App

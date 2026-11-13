@@ -1,6 +1,9 @@
 package postgres
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestReplicaPromotableRequiresRecoveryLagAndNoBasebackup(t *testing.T) {
 	ok := ReplicaHealth{InRecovery: true, LagBytes: 0, LagKnown: true}
@@ -110,5 +113,63 @@ func TestPromoteKeepingServiceLeavesAttachmentURL(t *testing.T) {
 	}
 	if res.PreviousLeader.Role != RoleDeposed || !res.Promoted.ReplicaPending {
 		t.Fatalf("promoted %+v previous %+v", res.Promoted.Role, res.PreviousLeader.Role)
+	}
+}
+
+func TestPromoteKeepingServiceRetargetsUserFollowersAndChainsAlias(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform, _, err := s.Provision(ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.PromoteKeepingService(platform.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotUser, err := s.Get(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUser.Role != RoleFollower || !gotUser.ReadOnly || gotUser.LeaderID != first.Promoted.ID {
+		t.Fatalf("user follower %+v should follow the new primary %s", gotUser, first.Promoted.ID)
+	}
+	if gotUser.AutoFailover || gotUser.PlatformReplica {
+		t.Fatal("a retargeted user follower is not the failover target")
+	}
+	if first.Promoted.ServiceAlias != leader.App {
+		t.Fatalf("first alias %q", first.Promoted.ServiceAlias)
+	}
+	primary, err := s.Get(first.Promoted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(primary.ReplicationURL(), "leader."+leader.App+".discoverd") {
+		t.Fatalf("replication url %q", primary.ReplicationURL())
+	}
+	next, _, err := s.Provision(ProvisionRequest{Follow: first.Promoted.ID, PlatformReplica: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.PromoteKeepingService(next.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Promoted.ServiceAlias != leader.App {
+		t.Fatalf("second failover must keep the original discoverd name, alias %q", second.Promoted.ServiceAlias)
+	}
+	gotUser, err = s.Get(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUser.Role != RoleFollower || !gotUser.ReadOnly || gotUser.LeaderID != second.Promoted.ID {
+		t.Fatalf("user follower after second failover %+v want leader %s", gotUser, second.Promoted.ID)
 	}
 }

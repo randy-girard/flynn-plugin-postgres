@@ -144,6 +144,19 @@ SQL
   chown postgres:postgres /data/.flynn-bootstrapped
 fi
 
+# A restarted follower keeps its data directory, so pg_basebackup does not
+# run again. primary_conninfo would still name the previous primary. Rewrite
+# it from FLYNN_POSTGRES_PRIMARY_URL before postgres reads the file.
+if [[ "${role}" == "follower" && -n "${primary_url}" && -s /data/PG_VERSION ]]; then
+  auto=/data/postgresql.auto.conf
+  touch "${auto}"
+  grep -v '^primary_conninfo' "${auto}" > "${auto}.flynn" || true
+  escaped=${primary_url//\'/\'\'}
+  printf "primary_conninfo = '%s'\n" "${escaped}" >> "${auto}.flynn"
+  mv "${auto}.flynn" "${auto}"
+  chown postgres:postgres "${auto}"
+fi
+
 # The Go process stays up so discoverd keeps the registration. exec cannot
 # call a shell function, and a bare postgres process never registers.
 export POSTGRES_BIN="${PG_BIN}/postgres"

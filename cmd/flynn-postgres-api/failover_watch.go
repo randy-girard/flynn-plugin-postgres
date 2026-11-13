@@ -347,7 +347,51 @@ func (h *handler) considerFailover(downSince map[string]time.Time, fol *postgres
 		if err := h.promoteIsolatedJob(res.Promoted); err != nil && h.log != nil {
 			h.log.Error("auto-failover bounce", "app", res.Promoted.App, "err", err)
 		}
+		h.retargetFollowerJobs(res.Promoted)
 	}
+}
+
+// retargetFollowerJobs restarts user followers so they stream from the
+// stable discoverd name the new primary claims.
+func (h *handler) retargetFollowerJobs(primary *postgres.Instance) {
+	if h == nil || h.store == nil || primary == nil {
+		return
+	}
+	for _, id := range primary.Followers {
+		fol, err := h.store.Get(id)
+		if err != nil || fol == nil || fol.Role != postgres.RoleFollower || fol.PlatformReplica {
+			continue
+		}
+		if err := h.retargetFollowerJob(fol); err != nil && h.log != nil {
+			h.log.Error("retarget follower", "app", fol.App, "err", err)
+		}
+	}
+}
+
+func (h *handler) retargetFollowerJob(fol *postgres.Instance) error {
+	if h == nil || h.client == nil || fol == nil || strings.TrimSpace(fol.App) == "" {
+		return nil
+	}
+	var leader *postgres.Instance
+	if h.store != nil && fol.LeaderID != "" {
+		leader, _ = h.store.Get(fol.LeaderID)
+	}
+	app, err := h.client.GetApp(fol.App)
+	if err != nil || app == nil {
+		return err
+	}
+	oldRel, err := h.client.GetAppRelease(app.ID)
+	if err != nil || oldRel == nil {
+		return err
+	}
+	if err := stampIsolatedRole(h.client, fol, leader); err != nil {
+		return err
+	}
+	newRel, err := h.client.GetAppRelease(app.ID)
+	if err != nil || newRel == nil {
+		return err
+	}
+	return bounceIsolatedRelease(h.client, app.ID, oldRel.ID, newRel.ID, oldRel)
 }
 
 func (h *handler) targetPromotable(fol, leader *postgres.Instance) bool {

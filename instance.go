@@ -884,8 +884,8 @@ func (s *Store) promote(id string, keepService bool) (*PromoteResult, error) {
 			}
 			rewritten = append(rewritten, leader.Attachments[i])
 		}
-	} else if strings.TrimSpace(leader.App) != "" {
-		fol.ServiceAlias = leader.App
+	} else if name := leader.StableService(); name != "" {
+		fol.ServiceAlias = name
 	}
 	leader.Followers = removeFollowerRef(leader.Followers, fol)
 	failover := fol.AutoFailover || fol.PlatformReplica
@@ -895,6 +895,10 @@ func (s *Store) promote(id string, keepService bool) (*PromoteResult, error) {
 	fol.Mode = ""
 	fol.LagBytes = 0
 	fol.AutoFailover = false
+	fol.PlatformReplica = false
+	if keepService {
+		s.retargetUserFollowersLocked(leader, fol)
+	}
 	if failover {
 		leader.Role = RoleDeposed
 		leader.ReadOnly = true
@@ -1236,6 +1240,52 @@ func envBool(v string) bool {
 		return true
 	}
 	return false
+}
+
+// StableService is the discoverd service apps and followers keep using.
+// A promoted primary inherits the previous stable name, not only the
+// immediate predecessor's own app name.
+func (i *Instance) StableService() string {
+	if i == nil {
+		return ""
+	}
+	if a := strings.TrimSpace(i.ServiceAlias); a != "" {
+		return a
+	}
+	return strings.TrimSpace(i.App)
+}
+
+// StableServiceHost is leader.<stable>.discoverd. Without an alias this is
+// the instance's own service host.
+func (i *Instance) StableServiceHost() string {
+	if i == nil {
+		return ""
+	}
+	if strings.TrimSpace(i.ServiceAlias) == "" {
+		if h := strings.TrimSpace(i.ServiceHost); h != "" {
+			return h
+		}
+	}
+	name := i.StableService()
+	if name == "" {
+		return ""
+	}
+	return "leader." + name + ".discoverd"
+}
+
+// ReplicationURL is the primary URL a follower should use. It stays on the
+// stable discoverd name after failover.
+func (i *Instance) ReplicationURL() string {
+	if i == nil {
+		return ""
+	}
+	host := i.StableServiceHost()
+	if host == "" || host == strings.TrimSpace(i.ServiceHost) {
+		return i.ConnectionURL()
+	}
+	clone := *i
+	clone.ServiceHost = host
+	return clone.appURL()
 }
 
 func (i *Instance) appURL() string {

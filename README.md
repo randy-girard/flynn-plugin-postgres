@@ -51,6 +51,8 @@ per primary when another host can take the volume. That replica is not an
 add-on. `manual` creates nothing extra. Add follower stays available in both
 modes. Automatic failover of a user follower applies only while the setting is
 `manual`. A cluster admin can set the same value on Cluster → Settings.
+After a system failover, user followers stay read-only and keep following
+`leader.<original>.discoverd`. A later failover keeps that same name.
 
 A follower is a new resource, not an extra node. It copies the leader with
 streaming replication and must run the same engine version. It is read-only.

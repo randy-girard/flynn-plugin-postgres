@@ -643,7 +643,7 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 		leaderApp := ""
 		if leader != nil {
 			leaderApp = strings.TrimSpace(leader.App)
-			if u := strings.TrimSpace(leader.ConnectionURL()); u != "" {
+			if u := strings.TrimSpace(leader.ReplicationURL()); u != "" {
 				env["FLYNN_POSTGRES_PRIMARY_URL"] = u
 			}
 		}

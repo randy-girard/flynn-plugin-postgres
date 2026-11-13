@@ -297,6 +297,10 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if deposed < 0 || execPostgres < deposed || !strings.Contains(src[deposed:execPostgres], "exit 1") {
 		t.Fatal("a deposed role must exit before postgres can start writable")
 	}
+	rewrite := strings.Index(src, "grep -v '^primary_conninfo'")
+	if rewrite < 0 || rewrite > execPostgres {
+		t.Fatal("a restarted follower must rewrite primary_conninfo from FLYNN_POSTGRES_PRIMARY_URL before postgres starts; pg_basebackup does not run again")
+	}
 	if !strings.Contains(src[follow:boot+80], `role}" != "follower"`) {
 		t.Fatal("primary bootstrap must not run when the job is a follower")
 	}
