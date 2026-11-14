@@ -488,6 +488,11 @@ code, pre { font-family: var(--font-mono); font-size: .85rem; }
 pre { white-space: pre-wrap; overflow: auto; }
 a { color: var(--color-primary); }
 .banner { padding: .65rem .8rem; border-radius: var(--radius); background: var(--color-danger-soft); color: var(--color-danger); border: 1px solid var(--color-danger); margin-bottom: 1rem; }
+.alert-bar { display: flex; align-items: baseline; flex-wrap: wrap; gap: .3rem .75rem; margin: 0 0 1rem; padding: .65rem .95rem .65rem .85rem; border: 1px solid rgba(245,185,66,.35); border-radius: var(--radius); background: rgba(245,185,66,.12); box-shadow: inset 3px 0 0 #f5b942; color: var(--color-text); }
+.alert-bar-label { font-size: .82rem; font-weight: 650; color: #f5b942; }
+.alert-bar-detail { font-size: .85rem; line-height: 1.35; }
+html[data-theme="light"] .alert-bar { border-color: rgba(168,107,18,.32); background: rgba(168,107,18,.12); box-shadow: inset 3px 0 0 #a86b12; }
+html[data-theme="light"] .alert-bar-label { color: #a86b12; }
 .ok { color: var(--color-success); }
 .pill { display: inline-block; font-size: .72rem; font-weight: 650; letter-spacing: .03em; text-transform: uppercase; padding: .12rem .45rem; border-radius: 999px; border: 1px solid var(--color-border); color: var(--color-text-muted); }
 .replica-progress { min-width: 8rem; display: flex; flex-direction: column; gap: .25rem; }
@@ -505,6 +510,15 @@ a { color: var(--color-primary); }
 .table-card { padding: 0; overflow: hidden; }
 .table-card table { margin: 0; }
 .table-card th, .table-card td { padding: .65rem 1.15rem; }
+.card-head { padding: 1.05rem 1.15rem .85rem; }
+.card-head .tab-toolbar { margin: 0; }
+.table-card > .card-head { border-bottom: 1px solid var(--color-border); }
+.card-head h2 { margin: 0; }
+.card-head .muted, .card-head .hint { margin: .35rem 0 0; }
+tr.is-clickable { cursor: pointer; }
+tr.is-selected td { background: var(--color-surface-hover); }
+.backup-commands { display: flex; flex-direction: column; gap: .85rem; margin-top: .85rem; }
+.backup-commands pre { margin: .3rem 0 0; }
 .btn-sm { font-size: .8rem; padding: .32rem .7rem; }
 .btn-ghost { background: transparent; box-shadow: none; }
 .side-panel-layer { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: flex-end; align-items: stretch; }

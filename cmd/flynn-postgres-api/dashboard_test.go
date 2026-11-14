@@ -723,10 +723,43 @@ func TestDashFollowersListIsTable(t *testing.T) {
 	}
 }
 
+func TestDashBackupCommandOmitsRepeatedApp(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	store := postgres.NewStore()
+	const name = "postgresql-cedar-55684"
+	if store.Adopt(&postgres.Instance{
+		ID:     name,
+		App:    name,
+		Tenant: name,
+		Role:   postgres.RolePrimary,
+	}) == nil {
+		t.Fatal("adopt")
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/backup", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", name)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("backup %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, verb := range []string{"dump", "backups", "restore"} {
+		want := "flynn pg " + verb + " " + name
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "-a "+name) {
+		t.Fatalf("app flag repeats the resource: %s", body)
+	}
+}
+
 func TestDashBackupDumpEndpoint(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
 	store := postgres.NewStore()
-	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+	inst, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	h := newHandler(store)
@@ -740,6 +773,12 @@ func TestDashBackupDumpEndpoint(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "Back up now") || !strings.Contains(body, "Restore selected") || strings.Contains(body, "Download dump") || strings.Contains(body, "<textarea") || strings.Contains(body, `type="file"`) {
 		t.Fatalf("backup page: %s", body)
+	}
+	if !strings.Contains(body, "flynn -a shop-a pg dump "+inst.App) {
+		t.Fatalf("user app command: %s", body)
+	}
+	if strings.Contains(body, "flynn -a "+inst.App+" pg dump "+inst.App) {
+		t.Fatalf("resource repeated as the app: %s", body)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")

@@ -865,71 +865,128 @@ func (h *handler) readUserBody(r *http.Request) (name, password, database, insta
 	return "", "", "", "", fmt.Errorf("missing request")
 }
 
+func backupPageApp(sess *dashui.Session) string {
+	if sess == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(sess.AppName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(sess.AppID)
+}
+
+// backupCommand is the flynn pg line for one database. When the page app is
+// that database, -a would repeat the name and the job would be refused.
+func backupCommand(appName, resource, verb string) string {
+	appName = strings.TrimSpace(appName)
+	resource = strings.TrimSpace(resource)
+	verb = strings.TrimSpace(verb)
+	if resource != "" && (appName == "" || strings.EqualFold(appName, resource)) {
+		return "flynn pg " + verb + " " + resource
+	}
+	if resource != "" && appName != "" {
+		return "flynn -a " + appName + " pg " + verb + " " + resource
+	}
+	if appName != "" {
+		return "flynn -a " + appName + " pg " + verb
+	}
+	return "flynn pg " + verb
+}
+
+func writeBackupCommands(b *strings.Builder, appName, resource string, single bool) {
+	if strings.TrimSpace(resource) == "" {
+		return
+	}
+	for _, item := range []struct{ title, verb string }{
+		{"Back up", "dump"},
+		{"List", "backups"},
+		{"Restore", "restore"},
+	} {
+		cmd := backupCommand(appName, resource, item.verb)
+		id := ""
+		if single && item.verb == "restore" {
+			id = ` id="cmd-restore"`
+		}
+		fmt.Fprintf(b, `<div><p class="hint">%s</p><pre class="mono"%s>%s</pre></div>`, html.EscapeString(item.title), id, html.EscapeString(cmd))
+	}
+}
+
 func (h *handler) dashBackup(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
 	insts := h.instancesFor(sess)
 	var b strings.Builder
-	b.WriteString(`<div class="tab-toolbar"><p class="hint">Each database is backed up on a schedule. Choose a backup to restore it. There is no file to download.</p></div>`)
 	if len(insts) == 0 {
 		b.WriteString(`<div class="card empty-state"><p>Attach a Postgres resource before taking a backup.</p></div>`)
 		writeDash(w, sess, "Backup", b.String())
 		return
 	}
 	unavailable, _ := json.Marshal(postgres.ErrBackupBackend.Error())
-	appName := "app"
-	if sess != nil && strings.TrimSpace(sess.AppName) != "" {
-		appName = strings.TrimSpace(sess.AppName)
-	}
-	b.WriteString(`<p id="miss" class="banner" hidden>No current backup. The last success is missing or older than 25 hours.</p>`)
-	b.WriteString(`<div class="card"><h3 class="card-title">Back up</h3><p id="dest" class="muted">Loading…</p>`)
-	b.WriteString(`<div class="row"><button id="now" class="btn btn-sm" type="button">Back up now</button></div>`)
+	appName := backupPageApp(sess)
+	var restoreBase string
+	named := 0
 	for _, inst := range insts {
-		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg dump %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
+		if inst != nil && strings.TrimSpace(inst.App) != "" {
+			named++
+		}
 	}
-	b.WriteString(`</div><div class="card"><h3 class="card-title">Restore</h3>`)
-	b.WriteString(`<p class="muted">Restore replaces the databases in the selected backup.</p>`)
-	b.WriteString(`<div class="row"><button id="restore" class="btn btn-sm" type="button">Restore selected</button></div>`)
+	b.WriteString(`<div id="miss" class="alert-bar" role="status" hidden><span class="alert-bar-label">No current backup</span><span class="alert-bar-detail">The last success is missing or older than 25 hours.</span></div>`)
+	b.WriteString(`<div class="card table-card"><div class="card-head"><div class="tab-toolbar is-spread">`)
+	b.WriteString(`<div><h2>Backups</h2><p id="dest" class="muted">Loading…</p><p class="hint">Each database is backed up on a schedule. Choose a backup to restore it. There is no file to download.</p></div>`)
+	b.WriteString(`<div class="tab-toolbar-actions"><button id="now" class="btn btn-sm" type="button">Back up now</button><button id="restore" class="btn btn-sm" type="button">Restore selected</button></div>`)
+	b.WriteString(`</div></div><table class="table"><thead><tr><th>Timestamp</th><th>Databases</th></tr></thead><tbody id="stamps"></tbody></table></div>`)
+	b.WriteString(`<div class="card"><h2>Command line</h2><p class="hint">The resource name selects the database.</p><div class="backup-commands">`)
 	for _, inst := range insts {
-		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg restore %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
+		if inst == nil {
+			continue
+		}
+		writeBackupCommands(&b, appName, inst.App, named == 1)
+		if named == 1 {
+			restoreBase = backupCommand(appName, inst.App, "restore")
+		}
 	}
-	b.WriteString(`</div><div class="card table-card"><table class="table"><thead><tr><th>Timestamp</th><th>Databases</th></tr></thead><tbody id="stamps"></tbody></table>`)
-	for _, inst := range insts {
-		fmt.Fprintf(&b, `<pre class="mono-id">flynn -a %s pg backups %s</pre>`, html.EscapeString(appName), html.EscapeString(inst.App))
-	}
-	b.WriteString(`</div><pre id="out" class="muted"></pre>
+	restoreJSON, _ := json.Marshal(restoreBase)
+	b.WriteString(`</div></div><pre id="out" class="muted"></pre>
 <script>
 const unavailable = ` + string(unavailable) + `;
+const restoreBase = ` + string(restoreJSON) + `;
 let selected = '';
+function showRestore(){
+  const el=document.getElementById('cmd-restore');
+  if(!el) return;
+  el.textContent=restoreBase+(selected?(' '+selected):'');
+}
+function paint(rows){
+  const bodyEl=document.getElementById('stamps');
+  bodyEl.innerHTML='';
+  if(!rows.length){
+    bodyEl.innerHTML='<tr><td colspan="2" class="muted">No backups yet.</td></tr>';
+    selected='';
+    showRestore();
+    return;
+  }
+  if(!rows.some(row=>row.timestamp===selected)) selected=rows[0].timestamp||'';
+  rows.forEach(row=>{
+    const tr=document.createElement('tr');
+    const on=row.timestamp===selected;
+    tr.className='is-clickable'+(on?' is-selected':'');
+    tr.onclick=()=>{ selected=row.timestamp||''; paint(rows); };
+    const ts=document.createElement('td');
+    ts.textContent=row.timestamp||'';
+    const dbs=document.createElement('td');
+    dbs.textContent=(row.databases||[]).join(', ')||'—';
+    tr.appendChild(ts); tr.appendChild(dbs); bodyEl.appendChild(tr);
+  });
+  showRestore();
+}
 async function load(){
   const out=document.getElementById('out');
   const r=await fetch('api/backups',{headers:{Accept:'application/json'}});
   const body=await r.json().catch(()=>({}));
   if(!r.ok){ out.textContent=body.error||r.status; return; }
   const d=body.destination||{};
-  const where=[d.backend,d.bucket,d.container,d.region,d.endpoint].filter(Boolean).join(' ');
+  const where=[d.backend,d.bucket,d.container,d.region,d.endpoint].filter(Boolean).join(' · ');
   document.getElementById('dest').textContent=d.allowed?(where?('Stored in '+where):'Stored in cluster object storage'):unavailable;
   document.getElementById('miss').hidden=!body.miss;
-  const bodyEl=document.getElementById('stamps');
-  bodyEl.innerHTML='';
-  const rows=body.backups||[];
-  if(!rows.length){
-    bodyEl.innerHTML='<tr><td colspan="2" class="muted">No backups yet.</td></tr>';
-    selected='';
-    return;
-  }
-  if(!rows.some(row=>row.timestamp===selected)) selected=rows[0].timestamp||'';
-  rows.forEach(row=>{
-    const tr=document.createElement('tr');
-    const ts=document.createElement('td');
-    const btn=document.createElement('button');
-    btn.type='button';
-    btn.className='btn btn-sm';
-    btn.textContent=row.timestamp||'';
-    btn.onclick=()=>{ selected=row.timestamp||''; };
-    ts.appendChild(btn);
-    const dbs=document.createElement('td');
-    dbs.textContent=(row.databases||[]).join(', ')||'—';
-    tr.appendChild(ts); tr.appendChild(dbs); bodyEl.appendChild(tr);
-  });
+  paint(body.backups||[]);
 }
 document.getElementById('now').onclick=async()=>{
   const out=document.getElementById('out'); out.textContent='Backing up…';
