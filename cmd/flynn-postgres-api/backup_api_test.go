@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,28 @@ import (
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 )
+
+func TestFileDumpWhenBlobstoreIsNotObjectStorage(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	orig := runDump
+	runDump = func(_ string, w io.Writer) error {
+		_, err := io.WriteString(w, "PGDMP")
+		return err
+	}
+	t.Cleanup(func() { runDump = orig })
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Header().Get("Content-Disposition") == "" || !strings.Contains(rec.Body.String(), "PGDMP") {
+		t.Fatalf("file dump %d %q %s", rec.Code, rec.Header().Get("Content-Disposition"), rec.Body.String())
+	}
+}
 
 func TestDashBackupDoesNotDownloadAFile(t *testing.T) {
 	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")

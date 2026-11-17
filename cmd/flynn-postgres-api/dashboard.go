@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -1912,12 +1914,68 @@ func (h *handler) dumpTarget(sess *dashui.Session) (*postgres.Instance, error) {
 	return primary, nil
 }
 
-func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, _ *dashui.Session) {
-	rejectFileBackup(w)
+func (h *handler) fileBackups() bool {
+	dest, err := h.backupDestination()
+	return err != nil || !dest.Allowed
 }
 
-func (h *handler) dashRestore(w http.ResponseWriter, _ *http.Request, _ *dashui.Session) {
-	rejectFileBackup(w)
+func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
+	if !h.fileBackups() {
+		rejectFileBackup(w)
+		return
+	}
+	inst, err := h.dumpTarget(sess)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var buf bytes.Buffer
+	if err := runDump(inst.MaintenanceURL(), &buf); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="postgres.dump"`)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (h *handler) dashRestore(w http.ResponseWriter, r *http.Request, sess *dashui.Session) {
+	if !h.fileBackups() {
+		rejectFileBackup(w)
+		return
+	}
+	inst, err := h.dumpTarget(sess)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	src, err := openPostgresDump(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer src.Close()
+	if err := runRestore(inst.MaintenanceURL(), src); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	dashui.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func openPostgresDump(r *http.Request) (io.ReadCloser, error) {
+	if r == nil {
+		return nil, fmt.Errorf("missing dump file")
+	}
+	if fh, _, err := r.FormFile("file"); err == nil {
+		return fh, nil
+	}
+	if fh, _, err := r.FormFile("dump"); err == nil {
+		return fh, nil
+	}
+	if r.Body == nil {
+		return nil, fmt.Errorf("missing dump file")
+	}
+	return io.NopCloser(r.Body), nil
 }
 
 func overviewHTML(insts []*postgres.Instance) string {
