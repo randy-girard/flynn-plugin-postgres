@@ -9,14 +9,15 @@ import (
 	"github.com/randy-girard/flynn-plugin-postgres/internal/dashui"
 )
 
-// watchCopyProgress publishes progress when a follower's copy fingerprint
-// changes, then stops. An unconfigured dashboard webhook does not start it.
+// watchCopyProgress publishes progress while a new primary is starting or a
+// follower is copying, then stops. An unconfigured dashboard webhook does not
+// start it. The hosted UI follows app:<id>/progress; it does not poll.
 func (h *handler) watchCopyProgress(inst *postgres.Instance) {
-	if h == nil || h.store == nil || inst == nil || inst.Role != postgres.RoleFollower || !dashui.LiveConfigured() {
+	if h == nil || h.store == nil || inst == nil || !dashui.LiveConfigured() {
 		return
 	}
 	id := firstNonEmpty(inst.App, inst.ID)
-	apps := copyProgressApps(inst.Tenant, inst.App, attachmentApps(inst.Attachments))
+	apps := h.expandLiveApps(copyProgressApps(inst.Tenant, inst.App, attachmentApps(inst.Attachments)))
 	go func() {
 		var last string
 		deadline := time.Now().Add(postgres.DefaultUpgradeTimeout)
@@ -25,14 +26,14 @@ func (h *handler) watchCopyProgress(inst *postgres.Instance) {
 			if err != nil {
 				return
 			}
-			fp := p.Phase + ":" + strconv.Itoa(p.Percent) + ":" + strconv.FormatBool(p.Ready)
+			fp := p.Phase + ":" + strconv.Itoa(p.Percent) + ":" + strconv.FormatBool(p.Ready) + ":" + strconv.FormatBool(p.Available)
 			if fp != last {
 				last = fp
 				for _, appID := range apps {
 					dashui.NotifyLive("postgres", appID, "progress", p.Follower)
 				}
 			}
-			if p.Ready || p.Phase == postgres.PhaseFailed {
+			if p.Ready || p.Available || p.Phase == postgres.PhaseFailed {
 				return
 			}
 			time.Sleep(time.Second)
@@ -58,9 +59,25 @@ func (h *handler) notifyInstance(instanceID, kind, id string, extra ...string) {
 			apps = append(apps, attachmentApps(inst.Attachments)...)
 		}
 	}
-	for _, appID := range liveAppIDs(apps...) {
+	for _, appID := range h.expandLiveApps(liveAppIDs(apps...)) {
 		dashui.NotifyLive("postgres", appID, kind, id)
 	}
+}
+
+// expandLiveApps adds the controller app id next to the app name. The
+// resources page subscribes to the id. Provision publishes the name.
+func (h *handler) expandLiveApps(names []string) []string {
+	var extra []string
+	if h != nil && h.client != nil {
+		for _, name := range names {
+			app, err := h.client.GetApp(strings.TrimSpace(name))
+			if err != nil || app == nil {
+				continue
+			}
+			extra = append(extra, app.ID, app.Name)
+		}
+	}
+	return liveAppIDs(append(names, extra...)...)
 }
 
 func liveAppIDs(ids ...string) []string {
