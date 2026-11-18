@@ -85,7 +85,10 @@ is a fallback.
 | `flynn pg:psql` | Open psql against this instance |
 
 The dashboard pages (overview, metrics, databases, users, backup, follow) are
-served by this plugin. A signed-in app sees only its own instances. The Metrics
+served by this plugin. A signed-in app sees only its own instances, and every dashboard action that
+names an instance (settings delete, replication, users, databases, progress)
+resolves it only among that app's own resources; naming another app's instance
+is refused. The Metrics
 tab charts samples the API posts once a minute
 (`active_connections`, `db_size_bytes`, `index_size_bytes`, cache hit rates, `xact_commit`,
 `replay_lag_seconds`, `slow_query_count`, and related series). The dashboard

@@ -302,6 +302,11 @@ func TestDashFollowAdoptsLeaderMissingFromStore(t *testing.T) {
 		return nil
 	}
 	h := newHandler(store)
+	// The leader is only reachable through the session app's own controller
+	// resources, never through a bare store lookup of someone else's ref.
+	h.listResources = func(string) ([]*ct.Resource, error) {
+		return []*ct.Resource{{ID: "res-1", ProviderID: "postgres", Env: map[string]string{"FLYNN_POSTGRES": app, "FLYNN_POSTGRES_ROLE": "primary"}}}, nil
+	}
 	form := strings.NewReader("action=follow&instance=" + app)
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

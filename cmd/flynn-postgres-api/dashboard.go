@@ -809,6 +809,10 @@ func (h *handler) dashDropUser(w http.ResponseWriter, r *http.Request, sess *das
 		writeAPIError(w, fmt.Errorf("choose a primary instance"))
 		return
 	}
+	if id, err = h.ownedRef(sess, id); err != nil {
+		writeAPIError(w, err)
+		return
+	}
 	if err := h.dropUserOnInstance(id, name, database); err != nil {
 		writeAPIError(w, err)
 		return
@@ -835,6 +839,9 @@ func (h *handler) createUserFromRequest(r *http.Request, sess *dashui.Session) (
 	}
 	if id == "" {
 		return "", fmt.Errorf("choose a primary instance")
+	}
+	if id, err = h.ownedRef(sess, id); err != nil {
+		return "", err
 	}
 	if err := h.createUserOnInstance(id, name, password, database); err != nil {
 		return "", err
@@ -1183,7 +1190,7 @@ func (h *handler) dashSettingsResult(sess *dashui.Session, r *http.Request) (str
 	if strings.TrimSpace(r.FormValue("action")) != "delete" {
 		return "", fmt.Errorf("unknown settings action")
 	}
-	inst := h.instanceByRef(sess, r.FormValue("instance"))
+	inst := h.ownedInstance(sess, r.FormValue("instance"))
 	if inst == nil {
 		return "", fmt.Errorf("choose a postgres resource to delete")
 	}
@@ -1193,7 +1200,15 @@ func (h *handler) dashSettingsResult(sess *dashui.Session, r *http.Request) (str
 	return "Deleted resource " + instanceRef(inst), nil
 }
 
-func (h *handler) instanceByRef(sess *dashui.Session, ref string) *postgres.Instance {
+// errNotYourInstance is what a dashboard action returns when the named
+// instance is not one of the session app's own resources.
+var errNotYourInstance = fmt.Errorf("postgres instance not found: it is not attached to this app")
+
+// ownedInstance resolves ref (app name, plugin id, or controller resource id)
+// only among the session app's own resources. It never falls back to the
+// global store, so one tenant's dashboard cannot name another tenant's
+// instance.
+func (h *handler) ownedInstance(sess *dashui.Session, ref string) *postgres.Instance {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil
@@ -1206,15 +1221,17 @@ func (h *handler) instanceByRef(sess *dashui.Session, ref string) *postgres.Inst
 			return inst
 		}
 	}
-	if inst := h.instanceFromResourceRef(sess, ref); inst != nil {
-		return inst
+	return h.instanceFromResourceRef(sess, ref)
+}
+
+// ownedRef is the store key (app name, else id) of the session app's own
+// instance named by ref, or errNotYourInstance.
+func (h *handler) ownedRef(sess *dashui.Session, ref string) (string, error) {
+	inst := h.ownedInstance(sess, ref)
+	if inst == nil {
+		return "", errNotYourInstance
 	}
-	if h.store != nil {
-		if inst, err := h.store.Get(ref); err == nil {
-			return inst
-		}
-	}
-	return nil
+	return instanceRef(inst), nil
 }
 
 // instanceFromResourceRef maps a controller resource id onto the isolated
@@ -1330,6 +1347,13 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 			return "", fmt.Errorf("choose a primary to upgrade")
 		}
 	}
+	if action != "follow" {
+		own, err := h.ownedRef(sess, id)
+		if err != nil {
+			return "", err
+		}
+		id = own
+	}
 	switch action {
 	case "follow":
 		if err := h.dashFollow(sess, id, r.FormValue("runtime"), r.FormValue("auto_failover") == "1" || r.FormValue("auto_failover") == "on"); err != nil {
@@ -1425,10 +1449,7 @@ func (h *handler) resolveFollowLeader(sess *dashui.Session, ref string) *postgre
 	if ref == "" {
 		return nil
 	}
-	inst := h.instanceByRef(sess, ref)
-	if inst == nil && h.store != nil {
-		inst, _ = h.store.Get(ref)
-	}
+	inst := h.ownedInstance(sess, ref)
 	if inst == nil {
 		return nil
 	}
@@ -1868,6 +1889,11 @@ func (h *handler) createDatabaseFromRequest(r *http.Request, sess *dashui.Sessio
 	if id == "" {
 		return "", fmt.Errorf("choose a primary instance")
 	}
+	own, err := h.ownedRef(sess, id)
+	if err != nil {
+		return "", err
+	}
+	id = own
 	if err := h.createLogicalDatabase(id, name); err != nil {
 		return "", err
 	}

@@ -41,8 +41,10 @@ type progressReport struct {
 func (h *handler) progressReport(sess *dashui.Session, instance string) progressReport {
 	out := progressReport{Followers: []postgres.ReplicaProgress{}}
 	if instance != "" {
-		if p, err := h.store.Progress(instance); err == nil {
-			out.Followers = append(out.Followers, p)
+		if ref, err := h.ownedRef(sess, instance); err == nil {
+			if p, err := h.store.Progress(ref); err == nil {
+				out.Followers = append(out.Followers, p)
+			}
 		}
 	} else {
 		seen := map[string]bool{}
