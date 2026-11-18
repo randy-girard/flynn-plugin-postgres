@@ -16,6 +16,7 @@ func dashPost(h *handler, app, path string, form url.Values) *httptest.ResponseR
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", app)
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -84,6 +85,7 @@ func TestDashRejectsInstanceOfAnotherApp(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/progress?instance="+b.ID, nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if strings.Contains(rec.Body.String(), b.App) {

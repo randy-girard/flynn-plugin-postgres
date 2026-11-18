@@ -35,6 +35,13 @@ func (h *handler) mountDashboard() {
 			dashui.Require(fn).ServeHTTP(w, r)
 		}
 	}
+	// wrapWrite is wrap for routes that change state or export data: the session
+	// needs app:resources:write, and an empty permission set is refused.
+	wrapWrite := func(fn func(http.ResponseWriter, *http.Request, *dashui.Session)) httprouter.Handle {
+		return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+			dashui.RequireWrite(fn).ServeHTTP(w, r)
+		}
+	}
 	h.router.GET("/dashboard", wrap(h.dashOverview))
 	h.router.GET("/dashboard/", wrap(h.dashOverview))
 	h.router.GET("/dashboard/card", wrap(h.dashCard))
@@ -42,27 +49,27 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/api/diagnostics", wrap(h.dashDiagnostics))
 	h.router.GET("/dashboard/databases", wrap(h.dashDatabases))
 	h.router.GET("/dashboard/databases/new", wrap(h.dashDatabases))
-	h.router.POST("/dashboard/databases", wrap(h.dashDatabases))
+	h.router.POST("/dashboard/databases", wrapWrite(h.dashDatabases))
 	h.router.GET("/dashboard/users", wrap(h.dashUsers))
-	h.router.POST("/dashboard/users", wrap(h.dashUsers))
+	h.router.POST("/dashboard/users", wrapWrite(h.dashUsers))
 	h.router.GET("/dashboard/backup", wrap(h.dashBackup))
 	h.router.GET("/dashboard/replication", wrap(h.dashReplication))
 	h.router.GET("/dashboard/replication/new", wrap(h.dashReplication))
-	h.router.POST("/dashboard/replication", wrap(h.dashReplication))
-	h.router.POST("/dashboard/replication/new", wrap(h.dashReplication))
+	h.router.POST("/dashboard/replication", wrapWrite(h.dashReplication))
+	h.router.POST("/dashboard/replication/new", wrapWrite(h.dashReplication))
 	h.router.GET("/dashboard/settings", wrap(h.dashSettings))
-	h.router.POST("/dashboard/settings", wrap(h.dashSettings))
+	h.router.POST("/dashboard/settings", wrapWrite(h.dashSettings))
 	h.router.GET("/dashboard/api/databases", wrap(h.dashListDatabases))
-	h.router.POST("/dashboard/api/databases", wrap(h.dashCreateDatabase))
+	h.router.POST("/dashboard/api/databases", wrapWrite(h.dashCreateDatabase))
 	h.router.GET("/dashboard/api/users", wrap(h.dashListUsers))
-	h.router.POST("/dashboard/api/users", wrap(h.dashCreateUser))
-	h.router.POST("/dashboard/api/users/drop", wrap(h.dashDropUser))
-	h.router.GET("/dashboard/api/dump", wrap(h.dashDump))
-	h.router.POST("/dashboard/api/dump", wrap(h.dashDump))
-	h.router.POST("/dashboard/api/restore", wrap(h.dashRestore))
+	h.router.POST("/dashboard/api/users", wrapWrite(h.dashCreateUser))
+	h.router.POST("/dashboard/api/users/drop", wrapWrite(h.dashDropUser))
+	h.router.GET("/dashboard/api/dump", wrapWrite(h.dashDump))
+	h.router.POST("/dashboard/api/dump", wrapWrite(h.dashDump))
+	h.router.POST("/dashboard/api/restore", wrapWrite(h.dashRestore))
 	h.router.GET("/dashboard/api/backups", wrap(h.dashBackupList))
-	h.router.POST("/dashboard/api/backups", wrap(h.dashBackupCreate))
-	h.router.POST("/dashboard/api/backups/restore", wrap(h.dashBackupRestore))
+	h.router.POST("/dashboard/api/backups", wrapWrite(h.dashBackupCreate))
+	h.router.POST("/dashboard/api/backups/restore", wrapWrite(h.dashBackupRestore))
 	h.router.GET("/dashboard/api/progress", wrap(h.dashProgress))
 }
 

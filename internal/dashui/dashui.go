@@ -4,23 +4,21 @@
 package dashui
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/randy-girard/flynn/pkg/pluginui"
 )
 
 // Session is the signed-in dashboard user scoped to one app.
@@ -83,16 +81,17 @@ func FromRequest(r *http.Request) (*Session, error) {
 	if optionalSSO() {
 		if app := strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-App")); app != "" {
 			return &Session{
-				UserID: strings.TrimSpace(first(r.Header.Get("X-Flynn-Dashboard-User"), "dev")),
-				Email:  strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Email")),
-				AppID:  app,
-				Plugin: strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Plugin")),
-				Base:   base,
-				Theme:  theme,
+				UserID:      strings.TrimSpace(first(r.Header.Get("X-Flynn-Dashboard-User"), "dev")),
+				Email:       strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Email")),
+				AppID:       app,
+				Plugin:      strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Plugin")),
+				Permissions: devPermissions(r),
+				Base:        base,
+				Theme:       theme,
 			}, nil
 		}
 		if app := strings.TrimSpace(r.URL.Query().Get("app_id")); app != "" {
-			return &Session{UserID: "dev", AppID: app, Base: base, Theme: theme}, nil
+			return &Session{UserID: "dev", AppID: app, Permissions: devPermissions(r), Base: base, Theme: theme}, nil
 		}
 	}
 	token := bearer(r.Header.Get("Authorization"))
@@ -106,12 +105,29 @@ func FromRequest(r *http.Request) (*Session, error) {
 	sess.Base = base
 	sess.Theme = theme
 	if sess.AppID == "" {
-		sess.AppID = strings.TrimSpace(r.URL.Query().Get("app_id"))
-	}
-	if sess.AppID == "" {
 		return nil, fmt.Errorf("SSO token missing app_id")
 	}
 	return sess, nil
+}
+
+// devPermissions are the permissions of a header-only (DASHBOARD_SSO_OPTIONAL)
+// session: the comma-separated X-Flynn-Dashboard-Permissions header, or full
+// access in the local docker-compose mode (DASHBOARD_DEV). Otherwise none, and
+// write routes refuse an empty permission set.
+func devPermissions(r *http.Request) []string {
+	if v := strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Permissions")); v != "" {
+		var out []string
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	if DevEnabled() {
+		return []string{"*"}
+	}
+	return nil
 }
 
 func optionalSSO() bool {
@@ -144,96 +160,39 @@ func requestTheme(r *http.Request) string {
 	return ""
 }
 
+// PluginName is the manifest name of this plugin. A dashboard SSO token is
+// accepted only when it was minted for this plugin, so a token handed to one
+// plugin cannot be replayed against another. Keep it equal to
+// flynn-plugin.json "name" (a unit test checks).
+var PluginName = "postgres"
+
+var verifiers sync.Map // jwksURL|plugin -> *pluginui.Verifier
+
+func verifier(jwksURL string) *pluginui.Verifier {
+	key := jwksURL + "|" + PluginName
+	if v, ok := verifiers.Load(key); ok {
+		return v.(*pluginui.Verifier)
+	}
+	v, _ := verifiers.LoadOrStore(key, pluginui.NewVerifier(jwksURL, PluginName))
+	return v.(*pluginui.Verifier)
+}
+
+// parseJWT verifies the dashboard SSO token (signature, kid, iss, aud, exp and
+// plugin binding) with the shared pkg/pluginui verifier.
 func parseJWT(raw string) (*Session, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid SSO JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	c, err := verifier(strings.TrimSpace(os.Getenv("DASHBOARD_SSO_JWKS_URL"))).Verify(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid SSO JWT payload")
-	}
-	var claims struct {
-		Aud         string   `json:"aud"`
-		Exp         int64    `json:"exp"`
-		Sub         string   `json:"sub"`
-		Email       string   `json:"email"`
-		AppID       string   `json:"app_id"`
-		AppName     string   `json:"app_name"`
-		Plugin      string   `json:"plugin"`
-		Permissions []string `json:"permissions"`
-		ResourceID  string   `json:"resource_id"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("invalid SSO JWT claims")
-	}
-	if claims.Aud != "" && claims.Aud != "flynn-plugin-ui" {
-		return nil, fmt.Errorf("unexpected SSO audience")
-	}
-	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-		return nil, fmt.Errorf("SSO token expired")
-	}
-	jwksURL := strings.TrimSpace(os.Getenv("DASHBOARD_SSO_JWKS_URL"))
-	if jwksURL == "" {
-		return nil, fmt.Errorf("SSO JWKS is not configured")
-	}
-	if err := verifyES256(jwksURL, parts[0]+"."+parts[1], parts[2]); err != nil {
 		return nil, err
 	}
 	return &Session{
-		UserID:      claims.Sub,
-		Email:       claims.Email,
-		AppID:       claims.AppID,
-		AppName:     claims.AppName,
-		Plugin:      claims.Plugin,
-		Permissions: claims.Permissions,
-		ResourceID:  claims.ResourceID,
+		UserID:      c.Sub,
+		Email:       c.Email,
+		AppID:       c.AppID,
+		AppName:     c.AppName,
+		Plugin:      c.Plugin,
+		Permissions: c.Permissions,
+		ResourceID:  c.ResourceID,
 	}, nil
-}
-
-func verifyES256(jwksURL, signingInput, sigB64 string) error {
-	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
-	if err != nil || len(sig) != 64 {
-		return fmt.Errorf("invalid SSO signature")
-	}
-	req, err := http.NewRequest(http.MethodGet, jwksURL, nil)
-	if err != nil {
-		return err
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("jwks: %w", err)
-	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-	var doc struct {
-		Keys []struct {
-			Kty string `json:"kty"`
-			Crv string `json:"crv"`
-			X   string `json:"x"`
-			Y   string `json:"y"`
-		} `json:"keys"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil || len(doc.Keys) == 0 {
-		return fmt.Errorf("jwks: invalid document")
-	}
-	key := doc.Keys[0]
-	xb, err := base64.RawURLEncoding.DecodeString(key.X)
-	if err != nil {
-		return err
-	}
-	yb, err := base64.RawURLEncoding.DecodeString(key.Y)
-	if err != nil {
-		return err
-	}
-	pub := ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(xb), Y: new(big.Int).SetBytes(yb)}
-	sum := sha256.Sum256([]byte(signingInput))
-	r := new(big.Int).SetBytes(sig[:32])
-	s := new(big.Int).SetBytes(sig[32:])
-	if !ecdsa.Verify(&pub, sum[:], r, s) {
-		return fmt.Errorf("SSO signature mismatch")
-	}
-	return nil
 }
 
 // WriteJSON writes v as application/json.
@@ -610,6 +569,18 @@ func Require(next func(http.ResponseWriter, *http.Request, *Session)) http.Handl
 	}
 }
 
+// RequireWrite is Require for routes that change state or export data: the
+// session needs app:resources:write, and an empty permission set is refused.
+func RequireWrite(next func(http.ResponseWriter, *http.Request, *Session)) http.HandlerFunc {
+	return Require(func(w http.ResponseWriter, r *http.Request, sess *Session) {
+		if !pluginui.CanWrite(sess.Permissions) {
+			pluginui.Forbid(w)
+			return
+		}
+		next(w, r, sess)
+	})
+}
+
 var metricsHTTPClient = &http.Client{Timeout: 8 * time.Second}
 
 // ResolveMetricsEnv copies the dashboard webhook secret/URL from a live
@@ -804,3 +775,6 @@ func PostFlynnEvent(ev FlynnEvent) {
 		fmt.Fprintf(os.Stderr, "dashui: PostFlynnEvent %s: HTTP %d\n", eventsURL(), res.StatusCode)
 	}
 }
+
+// dashuiHTTPClient is the one client for dashboard notifications. It always has a timeout.
+var dashuiHTTPClient = &http.Client{Timeout: 8 * time.Second}

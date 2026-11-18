@@ -330,6 +330,7 @@ func TestDashboardMetricsAndDiagnostics(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/metrics", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -342,6 +343,7 @@ func TestDashboardMetricsAndDiagnostics(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/diagnostics", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {

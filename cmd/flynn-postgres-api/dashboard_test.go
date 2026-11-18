@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -79,6 +80,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 	for _, path := range []string{"/dashboard/", "/dashboard/databases", "/dashboard/users", "/dashboard/backup", "/dashboard/replication", "/dashboard/settings"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+		req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
@@ -116,6 +118,7 @@ func TestDashCardCountsAttachedPostgres(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/card", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -146,6 +149,7 @@ func TestOverviewListsAttachedAppsByName(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -194,6 +198,7 @@ func TestDashReplicationListsControllerFollower(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -208,6 +213,7 @@ func TestDashReplicationListsControllerFollower(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -237,6 +243,7 @@ func TestDashCardCountsControllerResourceWhenStoreEmpty(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/card", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -258,6 +265,7 @@ func TestDashReplicationUpgradeButton(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -276,6 +284,7 @@ func TestDashReplicationUpgradeButton(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -312,6 +321,7 @@ func TestDashFollowAdoptsLeaderMissingFromStore(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -345,6 +355,7 @@ func TestDashFollowResolvesControllerResourceID(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -387,6 +398,7 @@ func TestDashFollowRejectsDeposedPrimary(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 || !strings.Contains(rec.Body.String(), "deposed") {
@@ -407,6 +419,7 @@ func TestDashReplicationJSONFollow(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -432,6 +445,7 @@ func TestDashReplicationAddFollower(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -471,6 +485,7 @@ func TestDashReplicationPromote(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -501,6 +516,7 @@ func TestDashReplicationUnfollow(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -534,6 +550,7 @@ func TestDashReplicationRemoveFollowerWithoutUnfollow(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if strings.Contains(rec.Body.String(), "Follower removed") {
@@ -550,6 +567,7 @@ func TestDashReplicationRemoveFollowerWithoutUnfollow(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/replication", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Follower removed") {
@@ -579,6 +597,7 @@ func TestDashCreateLogicalDatabase(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/dashboard/databases", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -589,6 +608,7 @@ func TestDashCreateLogicalDatabase(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/databases", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"shop_analytics"`) {
@@ -597,6 +617,7 @@ func TestDashCreateLogicalDatabase(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/databases", strings.NewReader(`{"name":"shop_json"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
@@ -607,6 +628,7 @@ func TestDashCreateLogicalDatabase(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 {
@@ -623,6 +645,7 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/databases", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -647,6 +670,7 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases/new", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -659,6 +683,7 @@ func TestDashDatabasesCreateButtonLivesInToolbar(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/databases?new=1", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/databases/new" {
@@ -675,6 +700,7 @@ func TestDashFollowersListIsTable(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/replication", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -706,6 +732,7 @@ func TestDashFollowersListIsTable(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/replication/new", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -721,6 +748,7 @@ func TestDashFollowersListIsTable(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/replication?new=1", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/dashboard/replication/new" {
@@ -743,6 +771,7 @@ func TestDashBackupCommandOmitsRepeatedApp(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/backup", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", name)
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -770,6 +799,7 @@ func TestDashBackupDumpEndpoint(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/backup", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -787,6 +817,7 @@ func TestDashBackupDumpEndpoint(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 || strings.Contains(rec.Body.String(), "flynn postgres dump") || rec.Header().Get("Content-Disposition") != "" {
@@ -809,6 +840,7 @@ func TestDashCreateUserAPI(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"ok"`) {
@@ -816,6 +848,7 @@ func TestDashCreateUserAPI(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
@@ -823,6 +856,7 @@ func TestDashCreateUserAPI(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Create user") || !strings.Contains(rec.Body.String(), "alice") {
@@ -832,6 +866,7 @@ func TestDashCreateUserAPI(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -871,6 +906,7 @@ func TestDashListUsersIncludesStoreUserWhenSessionIsAppUUID(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"name":"alice"`) {
@@ -895,6 +931,7 @@ func TestDashListUsersOnceAcrossFollowers(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -945,6 +982,7 @@ func TestDashListUsersOnceAcrossFollowers(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-b")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -979,6 +1017,7 @@ func TestCollectUsersListsCreatedUserOnceWithTwoDatabases(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/users", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -1013,6 +1052,7 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/settings", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -1029,6 +1069,7 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 && strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
@@ -1041,6 +1082,7 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+fol.App) {
@@ -1053,9 +1095,67 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
 		t.Fatalf("leader delete %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Every mutating dashboard route, and the dump (a full copy of the tenant's
+// data), needs app:resources:write. Postgres used to read no permissions.
+func TestDumpRequiresResourcesWrite(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	routes := []struct{ method, path string }{
+		{http.MethodPost, "/dashboard/databases"},
+		{http.MethodPost, "/dashboard/users"},
+		{http.MethodPost, "/dashboard/replication"},
+		{http.MethodPost, "/dashboard/replication/new"},
+		{http.MethodPost, "/dashboard/settings"},
+		{http.MethodPost, "/dashboard/api/databases"},
+		{http.MethodPost, "/dashboard/api/users"},
+		{http.MethodPost, "/dashboard/api/users/drop"},
+		{http.MethodGet, "/dashboard/api/dump"},
+		{http.MethodPost, "/dashboard/api/dump"},
+		{http.MethodPost, "/dashboard/api/restore"},
+		{http.MethodPost, "/dashboard/api/backups"},
+		{http.MethodPost, "/dashboard/api/backups/restore"},
+	}
+	for _, perms := range []string{"app:resources:read", "app:logs:read", "-"} {
+		for _, rt := range routes {
+			store := postgres.NewStore()
+			if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(rt.method, rt.path, strings.NewReader("name=x&action=delete"))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+			if perms != "-" {
+				req.Header.Set("X-Flynn-Dashboard-Permissions", perms)
+			}
+			rec := httptest.NewRecorder()
+			newHandler(store).ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s %s with perms %q: code %d, want 403", rt.method, rt.path, perms, rec.Code)
+			}
+		}
+	}
+}
+
+func TestDashboardMutatingRoutesUseWrapWrite(t *testing.T) {
+	src, err := os.ReadFile("dashboard.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(src), "\n") {
+		l := strings.TrimSpace(line)
+		isMutating := strings.Contains(l, `"/dashboard/api/dump"`)
+		for _, m := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+			isMutating = isMutating || strings.HasPrefix(l, "h.router."+m+"(")
+		}
+		if isMutating && !strings.Contains(l, "wrapWrite(") {
+			t.Errorf("mutating route is not wrapped by wrapWrite: %s", l)
+		}
 	}
 }

@@ -25,6 +25,7 @@ func TestFileDumpWhenBlobstoreIsNotObjectStorage(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || rec.Header().Get("Content-Disposition") == "" || !strings.Contains(rec.Body.String(), "PGDMP") {
@@ -41,6 +42,7 @@ func TestDashBackupDoesNotDownloadAFile(t *testing.T) {
 	h := newHandler(store)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/backup", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
@@ -49,6 +51,7 @@ func TestDashBackupDoesNotDownloadAFile(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 || strings.Contains(rec.Body.String(), "-- flynn postgres dump") || rec.Header().Get("Content-Disposition") != "" {
@@ -56,6 +59,7 @@ func TestDashBackupDoesNotDownloadAFile(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/restore", strings.NewReader("not-a-file"))
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code == 200 || rec.Header().Get("Content-Disposition") != "" {

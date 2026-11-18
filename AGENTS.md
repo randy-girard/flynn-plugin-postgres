@@ -23,3 +23,7 @@ Cluster, test, and CI steps are the `flynn-environment` skill in the sibling Fly
 ## Tests come first
 
 A behavior change or bug fix starts with a test that fails for the missing behavior. Run that test, then change the code until it and the rest of the unit tests pass.
+
+## Dashboard SSO
+
+SSO verification is `github.com/randy-girard/flynn/pkg/pluginui` called from `internal/dashui` (set `dashui.PluginName` to the manifest name; a test checks it). Tests that use `DASHBOARD_SSO_OPTIONAL=1` pass permissions in `X-Flynn-Dashboard-Permissions`; write checks refuse an empty set. Register state-changing routes with `wrapWrite` (a test enforces it).
