@@ -56,7 +56,11 @@ After a system failover, user followers stay read-only and keep following
 
 A follower is a new resource, not an extra node. It copies the leader with
 streaming replication and must run the same engine version. It is read-only.
-A follower cannot follow another follower. Its `--as` name does not replace
+A follower can only follow a resource owned by or attached to the requesting
+app; another tenant's resource fails with "not found", and the controller
+ignores a caller-supplied `app` or `tenant`. The follower keeps the leader's app
+role credentials, because streaming replication copies the role table. A
+follower cannot follow another follower. Its `--as` name does not replace
 the leader URL. `pg:promote` makes it writable, ends the follow, and rewrites
 the primary attachment `*_URL`. The old leader remains its own resource.
 `pg:unfollow` stops replication and leaves a standalone writable copy that no

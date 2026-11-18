@@ -216,6 +216,8 @@ func TestFollowLoadsMissingLeaderFromLiveApp(t *testing.T) {
 			"POSTGRES_URL":      "postgres://app_live:secret@leader.pg-orchid-xkhthp.discoverd:5432/db_pg_orchid_xkhthp?sslmode=require",
 		})
 	}
+	// An adopted leader names no tenant; the controller says shop owns it.
+	s.TenantOwns = func(l *Instance, app string) bool { return app == "shop" }
 	fol, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: "pg-orchid-xkhthp", As: "FOLLOWER"})
 	if err != nil {
 		t.Fatal(err)
@@ -894,5 +896,57 @@ func TestUnattachedInstanceIsVisibleAsItsOwnApp(t *testing.T) {
 	got := s.ForApp(inst.App)
 	if len(got) != 1 || got[0].ID != inst.ID {
 		t.Fatalf("ForApp(%s) = %+v", inst.App, got)
+	}
+}
+
+func TestProvisionFollowRejectsOtherTenant(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "victim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{leader.ID, leader.App} {
+		for _, req := range []ProvisionRequest{
+			{App: "attacker"},
+			{App: "attacker", Tenant: "attacker"},
+			{},
+		} {
+			req.Follow = ref
+			if _, _, err := s.Provision(req); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("follow %q as %+v: err = %v, want ErrNotFound", ref, req, err)
+			}
+		}
+	}
+	if got := s.FollowerApps(leader.ID); len(got) != 0 {
+		t.Fatalf("leader gained followers: %v", got)
+	}
+	// The owner may still follow. A follower carries the leader's app role
+	// credentials because replication copies the role table with the data.
+	own, _, err := s.Provision(ProvisionRequest{App: "victim", Follow: leader.ID})
+	if err != nil {
+		t.Fatalf("same-tenant follow: %v", err)
+	}
+	if own.AppPassword != leader.AppPassword {
+		t.Fatal("same-tenant follower must keep the replicated app role credentials")
+	}
+	// Internal flows (upgrade, failover) follow without a tenant.
+	if _, _, err := s.ProvisionTrusted(ProvisionRequest{Follow: leader.ID, ForUpgrade: true}); err != nil {
+		t.Fatalf("trusted follow: %v", err)
+	}
+}
+
+func TestProvisionFollowUsesTenantOwnsForAdoptedLeader(t *testing.T) {
+	s := NewStore()
+	// An adopted leader has no Tenant and no Attachments.
+	s.byID["adopted"] = &Instance{ID: "adopted", App: "adopted-app", Role: RolePrimary, EngineVersion: EngineVersion()}
+	if _, _, err := s.Provision(ProvisionRequest{App: "victim", Follow: "adopted"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no hook: err = %v, want ErrNotFound", err)
+	}
+	s.TenantOwns = func(l *Instance, app string) bool { return app == "owner" && l.App == "adopted-app" }
+	if _, _, err := s.Provision(ProvisionRequest{App: "attacker", Follow: "adopted"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("attacker: err = %v, want ErrNotFound", err)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "owner", Follow: "adopted"}); err != nil {
+		t.Fatalf("owner: %v", err)
 	}
 }

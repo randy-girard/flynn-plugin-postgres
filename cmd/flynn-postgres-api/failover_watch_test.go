@@ -85,7 +85,7 @@ func TestConsiderFailoverFencesBeforePromoteAndKeepsURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestJobListErrorDoesNotPromote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestFenceFailureDoesNotPromote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestSystemWatchIgnoresUserFollower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, AutoFailover: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, AutoFailover: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestManualWatchIgnoresPlatformReplica(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestFailoverLeaseFollowerDoesNotReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(postgres.ProvisionRequest{Follow: leader.ID, AutoFailover: true})
+	fol, _, err := s.ProvisionTrusted(postgres.ProvisionRequest{Follow: leader.ID, AutoFailover: true})
 	if err != nil {
 		t.Fatal(err)
 	}

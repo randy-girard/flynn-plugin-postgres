@@ -97,7 +97,7 @@ func (h *handler) recreateFollower(old, primary *postgres.Instance) error {
 	runtime := old.Runtime
 	tenant := firstNonEmptyLocal(old.Tenant, primary.Tenant, primary.App)
 	_ = h.store.SetAutoFailover(old.ID, false)
-	nf, _, err := h.store.Provision(postgres.ProvisionRequest{
+	nf, _, err := h.store.ProvisionTrusted(postgres.ProvisionRequest{
 		Follow:       firstNonEmptyLocal(primary.ID, primary.App),
 		Mode:         postgres.ModeStreaming,
 		Runtime:      runtime,

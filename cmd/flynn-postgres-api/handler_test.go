@@ -591,3 +591,24 @@ func assertRandomDatabaseInURL(t *testing.T, raw string) {
 		t.Fatalf("first database name must be random alphanumeric, got %q in %s", db, raw)
 	}
 }
+
+func TestHTTPProvisionFollowIgnoresCallerTenant(t *testing.T) {
+	store := postgres.NewStore()
+	h := newHandler(store)
+	leader, _, err := store.Provision(postgres.ProvisionRequest{App: "victim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"app":"attacker","tenant":"victim","follow":"` + leader.App + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/databases", strings.NewReader(body)))
+	if rec.Code == 200 {
+		t.Fatalf("cross-tenant follow with forged tenant succeeded: %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), leader.AppPassword) {
+		t.Fatalf("response leaks credentials: %s", rec.Body.String())
+	}
+	if got := store.FollowerApps(leader.ID); len(got) != 0 {
+		t.Fatalf("leader gained followers: %v", got)
+	}
+}

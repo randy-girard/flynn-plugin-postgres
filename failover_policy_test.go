@@ -90,7 +90,7 @@ func TestPromoteKeepingServiceLeavesAttachmentURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fol, _, err := s.Provision(ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	fol, _, err := s.ProvisionTrusted(ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestPromoteKeepingServiceRetargetsUserFollowersAndChainsAlias(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	platform, _, err := s.Provision(ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
+	platform, _, err := s.ProvisionTrusted(ProvisionRequest{Follow: leader.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestPromoteKeepingServiceRetargetsUserFollowersAndChainsAlias(t *testing.T)
 	if !strings.Contains(primary.ReplicationURL(), "leader."+leader.App+".discoverd") {
 		t.Fatalf("replication url %q", primary.ReplicationURL())
 	}
-	next, _, err := s.Provision(ProvisionRequest{Follow: first.Promoted.ID, PlatformReplica: true})
+	next, _, err := s.ProvisionTrusted(ProvisionRequest{Follow: first.Promoted.ID, PlatformReplica: true})
 	if err != nil {
 		t.Fatal(err)
 	}

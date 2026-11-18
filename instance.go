@@ -183,6 +183,11 @@ type Store struct {
 	// LoadMissing loads a live instance (postgresql-concave-48291) after this
 	// process restarts. Follow looks up by app name; the in-memory map is empty.
 	LoadMissing func(idOrApp string) *Instance
+	// TenantOwns, when set, is the second opinion on a follow request when
+	// the in-memory leader does not name the requester (an instance adopted
+	// after a restart has no Tenant or Attachments). It must answer from the
+	// controller's records of the requesting app's own resources.
+	TenantOwns func(leader *Instance, app string) bool
 
 	tasks           map[string]*Task
 	upgradeByLeader map[string]string
@@ -248,16 +253,33 @@ func (s *Store) Contacts() []string {
 }
 
 // Provision creates an isolated instance. Follow copies the leader, then stays caught up.
+//
+// A follow request is tenant-scoped: the leader must be visible to the
+// requesting tenant (req.Tenant, else req.App) or Provision returns
+// ErrNotFound, the same answer as an unknown leader. Plugin-internal flows
+// (upgrade, failover, replica replacement) use ProvisionTrusted.
 func (s *Store) Provision(req ProvisionRequest) (*Instance, map[string]string, error) {
+	return s.provision(req, false)
+}
+
+// ProvisionTrusted is Provision for flows the plugin itself drives against a
+// leader it already owns (upgrade follower, failover re-follow, platform
+// replica). It skips the tenant visibility check. Never call it with a
+// follow target taken from a request body.
+func (s *Store) ProvisionTrusted(req ProvisionRequest) (*Instance, map[string]string, error) {
+	return s.provision(req, true)
+}
+
+func (s *Store) provision(req ProvisionRequest, trusted bool) (*Instance, map[string]string, error) {
 	if err := EndpointAllowed(s.providerURL); err != nil {
 		return nil, nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.provisionLocked(req)
+	return s.provisionLocked(req, trusted)
 }
 
-func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]string, error) {
+func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, map[string]string, error) {
 	s.contacts = append(s.contacts, s.providerURL)
 
 	var leader *Instance
@@ -265,6 +287,12 @@ func (s *Store) provisionLocked(req ProvisionRequest) (*Instance, map[string]str
 		leader = s.lookupLocked(req.Follow)
 		if leader == nil {
 			return nil, nil, ErrNotFound
+		}
+		if !trusted {
+			requester := firstNonEmpty(req.Tenant, req.App)
+			if !leader.visibleTo(requester) && (requester == "" || s.TenantOwns == nil || !s.TenantOwns(leader, requester)) {
+				return nil, nil, ErrNotFound
+			}
 		}
 		if leader.Role == RoleFollower || leader.ReadOnly {
 			return nil, nil, ErrFollowFollower

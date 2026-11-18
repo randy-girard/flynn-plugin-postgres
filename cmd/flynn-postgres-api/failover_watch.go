@@ -477,7 +477,7 @@ func (h *handler) createPlatformReplica(primary *postgres.Instance) error {
 	if h == nil || h.store == nil || primary == nil {
 		return nil
 	}
-	inst, _, err := h.store.Provision(postgres.ProvisionRequest{
+	inst, _, err := h.store.ProvisionTrusted(postgres.ProvisionRequest{
 		Tenant:          firstNonEmptyLocal(primary.Tenant, primary.App),
 		Follow:          firstNonEmptyLocal(primary.ID, primary.App),
 		Runtime:         primary.Runtime,

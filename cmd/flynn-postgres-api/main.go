@@ -38,6 +38,21 @@ func main() {
 	store := postgres.NewStore()
 	h := newHandler(store)
 	h.log = log
+	store.TenantOwns = func(leader *postgres.Instance, app string) bool {
+		if leader == nil || leader.App == "" {
+			return false
+		}
+		resources, err := h.appResources(app)
+		if err != nil {
+			return false
+		}
+		for _, r := range resources {
+			if r != nil && r.Env != nil && strings.TrimSpace(r.Env["FLYNN_POSTGRES"]) == leader.App {
+				return true
+			}
+		}
+		return false
+	}
 	h.imageID = os.Getenv("POSTGRES_IMAGE_ID")
 	if key := os.Getenv("CONTROLLER_KEY"); key != "" && h.imageID != "" {
 		client, err := controller.NewClient("", key)
@@ -166,6 +181,11 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 	if body.Platform || strings.Contains(postgres.ProviderURL(), postgres.PlatformApplianceHost) {
 		writeAPIError(w, postgres.ErrPlatformAppliance)
 		return
+	}
+	// The controller stamps "app" with the requesting app. A caller-supplied
+	// "tenant" must never name a different tenant than that app.
+	if strings.TrimSpace(body.App) != "" {
+		body.Tenant = body.App
 	}
 	inst, env, err := h.store.Provision(postgres.ProvisionRequest{
 		Tenant:       body.Tenant,

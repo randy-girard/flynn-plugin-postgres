@@ -325,7 +325,7 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 	s.mu.Unlock()
 
 	s.markUpgrade(leaderID, TaskFollowing, "", "")
-	fol, _, err := s.Provision(ProvisionRequest{
+	fol, _, err := s.ProvisionTrusted(ProvisionRequest{
 		Follow:     leaderID,
 		Mode:       mode,
 		Runtime:    runtime,
@@ -391,7 +391,7 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 			cur.AutoFailover = false
 		}
 		s.mu.Unlock()
-		nf, _, err := s.Provision(ProvisionRequest{
+		nf, _, err := s.ProvisionTrusted(ProvisionRequest{
 			Follow:       newPrimary.ID,
 			Mode:         ModeStreaming,
 			Runtime:      followRuntime,
