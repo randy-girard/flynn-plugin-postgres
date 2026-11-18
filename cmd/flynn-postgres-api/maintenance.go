@@ -106,6 +106,7 @@ type nameAdopter interface {
 	GetApp(string) (*ct.App, error)
 	UpdateApp(*ct.App) error
 	GetAppRelease(string) (*ct.Release, error)
+	GetFormation(appID, releaseID string) (*ct.Formation, error)
 	CreateRelease(string, *ct.Release) error
 	SetAppRelease(string, string) error
 	ScaleAppRelease(string, string, ct.ScaleOptions) error
@@ -123,7 +124,7 @@ func (h *handler) adoptInstanceName(previous, next *postgres.Instance) (string, 
 	return adoptAppName(h.client, previous, next)
 }
 
-func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (string, error) {
+func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (retired string, err error) {
 	if c == nil || previous == nil || next == nil {
 		return "", nil
 	}
@@ -153,12 +154,24 @@ func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (string, err
 		}
 		return "", err
 	}
-	retired := original + "-retired1"
+	retired = original + "-retired1"
 	if existing, lookupErr := c.GetApp(retired); lookupErr == nil && existing != nil {
 		retired = fmt.Sprintf("%s-retired1-%d", original, time.Now().Unix()%100000)
 	}
 	stop := 60 * time.Second
+	// Remember how each side was scaled so a failure, or the switch itself,
+	// can bring it back. A replacement left at zero processes is an outage.
+	var restore []func()
+	defer func() {
+		if err == nil {
+			return
+		}
+		for i := len(restore) - 1; i >= 0; i-- {
+			restore[i]()
+		}
+	}()
 	if oldRel, relErr := c.GetAppRelease(oldApp.ID); relErr == nil && oldRel != nil && oldRel.ID != "" {
+		up := originalScale(c, oldApp.ID, oldRel.ID)
 		zeros := map[string]int{}
 		for name := range oldRel.Processes {
 			zeros[name] = 0
@@ -166,10 +179,12 @@ func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (string, err
 		if len(zeros) == 0 {
 			zeros[postgres.ProcessName] = 0
 		}
-		if err := c.ScaleAppRelease(oldApp.ID, oldRel.ID, ct.ScaleOptions{Processes: zeros, Timeout: &stop}); err != nil {
+		if err = c.ScaleAppRelease(oldApp.ID, oldRel.ID, ct.ScaleOptions{Processes: zeros, Timeout: &stop}); err != nil {
 			return "", err
 		}
+		restore = append(restore, func() { _ = c.ScaleAppRelease(oldApp.ID, oldRel.ID, up) })
 	}
+	tempUp := originalScale(c, tempApp.ID, running.ID)
 	tempZeros := map[string]int{}
 	for name := range running.Processes {
 		tempZeros[name] = 0
@@ -177,22 +192,39 @@ func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (string, err
 	if len(tempZeros) == 0 {
 		tempZeros[postgres.ProcessName] = 0
 	}
-	if err := c.ScaleAppRelease(tempApp.ID, running.ID, ct.ScaleOptions{Processes: tempZeros, Timeout: &stop}); err != nil {
+	if err = c.ScaleAppRelease(tempApp.ID, running.ID, ct.ScaleOptions{Processes: tempZeros, Timeout: &stop}); err != nil {
 		return "", err
 	}
+	restore = append(restore, func() { _ = c.ScaleAppRelease(tempApp.ID, running.ID, tempUp) })
 	oldApp.Name = retired
-	if err := c.UpdateApp(oldApp); err != nil {
+	if err = c.UpdateApp(oldApp); err != nil {
+		oldApp.Name = original
 		return "", err
 	}
+	restore = append(restore, func() {
+		oldApp.Name = original
+		_ = c.UpdateApp(oldApp)
+	})
 	rewritten := rewriteReleaseIdentity(running, temp, original)
-	if err := c.CreateRelease(tempApp.ID, rewritten); err != nil {
+	if err = c.CreateRelease(tempApp.ID, rewritten); err != nil {
 		return "", err
 	}
-	if err := c.SetAppRelease(tempApp.ID, rewritten.ID); err != nil {
+	if err = c.SetAppRelease(tempApp.ID, rewritten.ID); err != nil {
 		return "", err
 	}
+	restore = append(restore, func() { _ = c.SetAppRelease(tempApp.ID, running.ID) })
 	tempApp.Name = original
-	if err := c.UpdateApp(tempApp); err != nil {
+	if err = c.UpdateApp(tempApp); err != nil {
+		tempApp.Name = temp
+		return "", err
+	}
+	restore = append(restore, func() {
+		tempApp.Name = temp
+		_ = c.UpdateApp(tempApp)
+	})
+	// The replacement was stopped above and the new release has no formation
+	// yet, so bring it up on the rewritten release.
+	if err = c.ScaleAppRelease(tempApp.ID, rewritten.ID, tempUp); err != nil {
 		return "", err
 	}
 	previous.App = retired
@@ -203,6 +235,30 @@ func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (string, err
 		next.ServiceHost = strings.ReplaceAll(next.ServiceHost, temp, original)
 	}
 	return retired, nil
+}
+
+// originalScale is the scale to restore for an app's release: its current
+// formation when it has running processes, else one instance process.
+func originalScale(c nameAdopter, appID, releaseID string) ct.ScaleOptions {
+	opts := instanceScaleOptions()
+	f, err := c.GetFormation(appID, releaseID)
+	if err != nil || f == nil {
+		return opts
+	}
+	procs := make(map[string]int, len(f.Processes))
+	total := 0
+	for name, n := range f.Processes {
+		procs[name] = n
+		total += n
+	}
+	if total == 0 {
+		return opts
+	}
+	opts.Processes = procs
+	if len(f.Tags) > 0 {
+		opts.Tags = f.Tags
+	}
+	return opts
 }
 
 func rewriteReleaseIdentity(rel *ct.Release, from, to string) *ct.Release {

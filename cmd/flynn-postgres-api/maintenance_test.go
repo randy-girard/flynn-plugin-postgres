@@ -146,3 +146,7 @@ func (f *fakeNameAdopter) ScaleAppRelease(appID, releaseID string, _ ct.ScaleOpt
 	f.scaled = append(f.scaled, appID+":"+releaseID)
 	return nil
 }
+
+func (f *fakeNameAdopter) GetFormation(string, string) (*ct.Formation, error) {
+	return nil, ct.ErrNotFound
+}

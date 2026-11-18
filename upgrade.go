@@ -366,6 +366,8 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		if err := opts.AfterPromote(promo); err != nil {
 			return nil, err
 		}
+		s.syncAdoptedName(newPrimary)
+		s.syncAdoptedName(promo.PreviousLeader)
 	}
 	res := &UpgradeResult{
 		Follower:       fol,
@@ -415,6 +417,7 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 			if err := opts.AfterReplace(old, nf); err != nil {
 				return nil, err
 			}
+			s.syncAdoptedName(nf)
 		} else if opts.AfterDrop != nil {
 			if err := opts.AfterDrop(old); err != nil {
 				return nil, err
@@ -455,5 +458,26 @@ func (s *Store) markUpgrade(leaderID, status, errMsg, followerID string) {
 	s.ensureTaskMaps()
 	if tid := s.upgradeByLeader[leaderID]; tid != "" {
 		s.setTaskLocked(tid, status, errMsg, followerID)
+	}
+}
+
+// syncAdoptedName copies the app name and service host a hook gave a snapshot
+// back into the store. A name adoption renames the live app, so replicas
+// started afterwards must follow the adopted service, not the temporary one.
+func (s *Store) syncAdoptedName(snap *Instance) {
+	if snap == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.byID[snap.ID]
+	if cur == nil {
+		return
+	}
+	if app := strings.TrimSpace(snap.App); app != "" {
+		cur.App = app
+	}
+	if host := strings.TrimSpace(snap.ServiceHost); host != "" {
+		cur.ServiceHost = host
 	}
 }

@@ -68,7 +68,10 @@ longer receives leader writes.
 
 There is no in-place resize or upgrade. `flynn pg:upgrade` (and dashboard
 Upgrade) uses logical replication, promotes a new primary, then recreates
-each follower against that primary. Runtime sizing is a name string.
+each follower against that primary. The new follower takes over the old
+follower's name and is scaled back up to its original process count; if the
+switch fails, both apps are restored to their previous names and scale.
+Runtime sizing is a name string.
 
 The colon form (`flynn pg:psql`) is canonical. The space form (`flynn pg psql`)
 is a fallback.

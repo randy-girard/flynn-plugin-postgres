@@ -333,3 +333,42 @@ func TestUpgradeDropsReplicaWhenStartFails(t *testing.T) {
 		t.Fatalf("replica still in store: %v", err)
 	}
 }
+
+// RES-08: AfterPromote and AfterReplace move apps onto the original resource
+// name. The store has to follow, or replicas started afterwards still point at
+// the temporary leader.<temp>.discoverd service that no longer exists.
+func TestUpgradeSyncsAdoptedNamesIntoStore(t *testing.T) {
+	s := NewStore()
+	leader, _, err := s.Provision(ProvisionRequest{App: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{App: "shop", Follow: leader.ID}); err != nil {
+		t.Fatal(err)
+	}
+	origApp := leader.App
+	res, err := s.Upgrade(context.Background(), leader.ID, UpgradeOptions{
+		AfterPromote: func(p *PromoteResult) error {
+			p.PreviousLeader.App = origApp + "-retired1"
+			p.Promoted.App = origApp
+			p.Promoted.ServiceHost = "leader." + origApp + ".discoverd"
+			return nil
+		},
+		AfterReplace: func(old, nf *Instance) error {
+			nf.App = old.App
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "leader." + origApp + ".discoverd"
+	cur, err := s.Get(res.Promoted.ID)
+	if err != nil || cur.App != origApp || cur.ServiceHost != want {
+		t.Fatalf("store primary = %+v err=%v, want app %s host %s", cur, err, origApp, want)
+	}
+	nfCur, err := s.Get(res.ReplacedFollowers[0].New.ID)
+	if err != nil || nfCur.App != res.ReplacedFollowers[0].New.App {
+		t.Fatalf("store follower app %q, want %q (err=%v)", nfCur.App, res.ReplacedFollowers[0].New.App, err)
+	}
+}
