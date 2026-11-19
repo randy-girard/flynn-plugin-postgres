@@ -453,7 +453,9 @@ func TestServeRegistersAfterPostgresListens(t *testing.T) {
 		t.Fatal("SetLeader must follow RegisterInstance so the instance id exists")
 	}
 	regDepth := braceDepthAt(src, strings.Index(src, "RegisterInstance("))
-	claimDepth := braceDepthAt(src, strings.Index(src, ".SetLeader("))
+	// SetLeader runs inside the claimServiceLeader retry closure; the claim
+	// call itself must sit at the registration depth.
+	claimDepth := braceDepthAt(src, strings.Index(src, "claimServiceLeader(func() error { return disc.Service(service).SetLeader(inst.ID) })"))
 	if regDepth != claimDepth {
 		t.Fatal("every instance must claim leader.<FLYNN_POSTGRES>.discoverd, including a follower; a follower registers its own service, and without that claim image-swap cannot read its replay LSN")
 	}

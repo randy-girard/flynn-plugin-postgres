@@ -76,7 +76,7 @@ func servePostgres() error {
 	// FLYNN_POSTGRES is this job's own service. A follower must claim it too:
 	// image-swap reads replay from leader.<follower>.discoverd. That claim
 	// does not point leader.<primary>.discoverd at the replica.
-	if err := ignoreLeaderElectionError(disc.Service(service).SetLeader(inst.ID)); err != nil {
+	if err := claimServiceLeader(func() error { return disc.Service(service).SetLeader(inst.ID) }); err != nil {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		return postgres.WrapDiscoverdAuth(err)
 	}
@@ -98,7 +98,7 @@ func servePostgres() error {
 			return postgres.WrapDiscoverdAuth(err)
 		}
 		shutdown.BeforeExit(func() { hbAlias.Close() })
-		if err := ignoreLeaderElectionError(disc.Service(name).SetLeader(inst.ID)); err != nil {
+		if err := claimServiceLeader(func() error { return disc.Service(name).SetLeader(inst.ID) }); err != nil {
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			return postgres.WrapDiscoverdAuth(err)
 		}
@@ -108,6 +108,29 @@ func servePostgres() error {
 	logInstanceTopology()
 	return <-exited
 }
+
+// claimServiceLeader sets this instance as the manual leader. discoverd checks
+// the leader type on whichever peer takes the request, and a peer that has not
+// applied AddService yet answers "not manual". Retry that answer for a while;
+// only a service that stays non-manual (it elects its own leader) is ignored.
+func claimServiceLeader(set func() error) error {
+	deadline := time.Now().Add(leaderClaimTimeout)
+	for {
+		err := set()
+		if err == nil || ignoreLeaderElectionError(err) != nil {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(leaderClaimDelay)
+	}
+}
+
+var (
+	leaderClaimDelay   = 500 * time.Millisecond
+	leaderClaimTimeout = 15 * time.Second
+)
 
 // ignoreLeaderElectionError drops SetLeader failures from services that elect
 // their own leader. A manual service has no leader until the primary claims it.

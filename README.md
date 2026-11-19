@@ -65,6 +65,11 @@ modes. Automatic failover of a user follower applies only while the setting is
 After a system failover, user followers stay read-only and keep following
 `leader.<original>.discoverd`. A later failover keeps that same name.
 
+Each instance claims `leader.<instance>.discoverd` itself when it starts (a
+manual-leader discoverd service). A discoverd peer that has not yet replicated
+the new service answers "not manual"; the instance retries that answer for up
+to 15 seconds instead of running without a leader name.
+
 A follower is a new resource, not an extra node. It copies the leader with
 streaming replication and must run the same engine version. It is read-only.
 A follower can only follow a resource owned by or attached to the requesting
