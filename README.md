@@ -45,6 +45,17 @@ Inside one instance the owner can add databases and users. Those roles exist
 only in that instance. Two resources do not share an app, volume, superuser,
 or any credential that can read the other instance.
 
+No database on an instance lets PUBLIC connect. `flynn pg:create`, the
+dashboard Databases tab, and a restore that creates its database revoke
+PUBLIC CONNECT right after `CREATE DATABASE` and grant CONNECT to the owner;
+if the revoke fails the new database is dropped. A user added with a database
+gets CONNECT on that database only. A database the app makes with its own SQL
+starts with the Postgres default (PUBLIC may connect) until the instance next
+starts: every start sweeps `pg_database`, revokes PUBLIC CONNECT on each
+database, and grants CONNECT to its owner and the instance login. After a
+crash the sweep waits (up to 10 minutes) while Postgres replays WAL and is not
+yet accepting connections, instead of exiting and crash-looping.
+
 `flynn-host postgres:availability` is `manual` or `system` for the whole cluster.
 Hosted and self-hosted use the same values. `system` keeps one platform replica
 per primary when another host can take the volume. That replica is not an

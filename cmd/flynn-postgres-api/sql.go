@@ -56,15 +56,24 @@ var runRestore = func(connURL string, r io.Reader) error {
 }
 
 func createDatabaseOnInstance(inst *postgres.Instance, name string) error {
-	sql, err := postgres.CreateDatabaseSQL(name)
+	stmts, err := postgres.CreateDatabaseSQL(name)
 	if err != nil {
 		return err
 	}
 	if inst == nil {
 		return postgres.ErrNotFound
 	}
-	_, err = runSQL(inst.MaintenanceURL(), sql)
-	return err
+	if _, err := runSQL(inst.MaintenanceURL(), stmts[0]); err != nil {
+		return err
+	}
+	// A database still open to PUBLIC is worse than no database: drop it.
+	for _, sql := range stmts[1:] {
+		if _, err := runSQL(inst.MaintenanceURL(), sql); err != nil {
+			_, _ = runSQL(inst.MaintenanceURL(), "DROP DATABASE IF EXISTS "+name)
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *handler) createLogicalDatabase(id, name string) error {

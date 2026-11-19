@@ -43,6 +43,11 @@ func isolationIdentOK(s string) bool {
 // ConnectIsolationSQL revokes PUBLIC CONNECT on the instance, then grants the
 // app role CONNECT only on its database. postgres and template1 stay reachable
 // for the OS superuser (CONNECT is not checked for superusers).
+//
+// A database made after bootstrap starts with the default ACL, which lets
+// PUBLIC connect. Every start therefore sweeps pg_database: each other
+// database that accepts connections loses PUBLIC CONNECT, and its owner and
+// the instance login keep CONNECT so backups still reach it.
 func ConnectIsolationSQL(user, db string) (string, error) {
 	user = strings.TrimSpace(user)
 	db = strings.TrimSpace(db)
@@ -53,17 +58,36 @@ func ConnectIsolationSQL(user, db string) (string, error) {
 		"REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;\n"+
 			"REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;\n"+
 			"REVOKE CONNECT ON DATABASE %s FROM PUBLIC;\n"+
-			"GRANT CONNECT ON DATABASE %s TO %s;\n",
-		db, db, user,
+			"GRANT CONNECT ON DATABASE %s TO %s;\n"+
+			"DO $flynn_isolation$\n"+
+			"DECLARE d record;\n"+
+			"BEGIN\n"+
+			"  FOR d IN SELECT datname, pg_get_userbyid(datdba) AS owner FROM pg_database\n"+
+			"      WHERE datallowconn AND datname NOT IN ('postgres', 'template1') LOOP\n"+
+			"    EXECUTE format('REVOKE CONNECT ON DATABASE %%I FROM PUBLIC', d.datname);\n"+
+			"    EXECUTE format('GRANT CONNECT ON DATABASE %%I TO %%I', d.datname, d.owner);\n"+
+			"    EXECUTE format('GRANT CONNECT ON DATABASE %%I TO %s', d.datname);\n"+
+			"  END LOOP;\n"+
+			"END\n"+
+			"$flynn_isolation$;\n",
+		db, db, user, user,
 	), nil
 }
 
-// CreateDatabaseSQL is CREATE DATABASE for a validated logical database name.
-func CreateDatabaseSQL(name string) (string, error) {
+// CreateDatabaseSQL is CREATE DATABASE for a validated logical database name,
+// followed by the statements that close it to PUBLIC. A new database gets the
+// default ACL, which lets every role on the instance connect. Run each
+// statement on its own: CREATE DATABASE cannot share a multi-statement string.
+// The creating login owns the database and keeps CONNECT.
+func CreateDatabaseSQL(name string) ([]string, error) {
 	if err := ValidDatabaseName(name); err != nil {
-		return "", err
+		return nil, err
 	}
-	return "CREATE DATABASE " + name, nil
+	return []string{
+		"CREATE DATABASE " + name,
+		"REVOKE CONNECT ON DATABASE " + name + " FROM PUBLIC",
+		"GRANT CONNECT ON DATABASE " + name + " TO CURRENT_USER",
+	}, nil
 }
 
 // ValidUserName is a CREATE ROLE name: letters, digits, underscore.

@@ -307,12 +307,42 @@ func ensureConnectIsolation(postgresBin string) error {
 	}
 	sql = sql + admin
 	psql := filepath.Join(filepath.Dir(postgresBin), "psql")
+	// After a crash the port opens while Postgres still replays WAL. Wait for
+	// it to accept connections instead of exiting and crash-looping.
+	deadline := time.Now().Add(isolationRetryTimeout)
+	for {
+		err := runIsolationPsql(psql, sql)
+		if err == nil {
+			return nil
+		}
+		if !postgresStillStarting(err) || time.Now().After(deadline) {
+			return fmt.Errorf("postgres CONNECT isolation: %w", err)
+		}
+		time.Sleep(isolationRetryDelay)
+	}
+}
+
+var (
+	isolationRetryDelay   = time.Second
+	isolationRetryTimeout = 10 * time.Minute
+)
+
+func postgresStillStarting(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not yet accepting connections") ||
+		strings.Contains(msg, "the database system is starting up") ||
+		strings.Contains(msg, "the database system is in recovery mode")
+}
+
+// runIsolationPsql runs the isolation SQL as the OS superuser. Tests replace it.
+var runIsolationPsql = func(psql, sql string) error {
 	cmd := exec.Command("setpriv", "--reuid=postgres", "--regid=postgres", "--init-groups", "--inh-caps=-all",
 		psql, "-h", "/tmp", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql)
+	var stderr strings.Builder
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("postgres CONNECT isolation: %w", err)
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }

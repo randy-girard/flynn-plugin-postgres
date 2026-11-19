@@ -41,7 +41,7 @@ func TestValidDatabaseName(t *testing.T) {
 
 func TestCreateDatabaseSQL(t *testing.T) {
 	got, err := CreateDatabaseSQL("shop_analytics")
-	if err != nil || got != "CREATE DATABASE shop_analytics" {
+	if err != nil || len(got) == 0 || got[0] != "CREATE DATABASE shop_analytics" {
 		t.Fatalf("%q %v", got, err)
 	}
 	if _, err := CreateDatabaseSQL("bad-name"); err == nil {
@@ -101,5 +101,46 @@ func TestCleanupUserSQL(t *testing.T) {
 		if !strings.Contains(got, needle) {
 			t.Fatalf("missing %q in %s", needle, got)
 		}
+	}
+}
+
+func TestCreateDatabaseSQLRevokesPublicConnect(t *testing.T) {
+	got, err := CreateDatabaseSQL("shop_analytics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"CREATE DATABASE shop_analytics",
+		"REVOKE CONNECT ON DATABASE shop_analytics FROM PUBLIC",
+		"GRANT CONNECT ON DATABASE shop_analytics TO CURRENT_USER",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("CreateDatabaseSQL statements:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	for _, stmt := range got {
+		if strings.Contains(stmt, ";") {
+			t.Fatalf("CREATE DATABASE cannot share a multi-statement string: %q", stmt)
+		}
+	}
+}
+
+func TestConnectIsolationSQLSweepsEveryDatabase(t *testing.T) {
+	got, err := ConnectIsolationSQL("app_abc", "db_abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{
+		`FROM pg_database`,
+		`REVOKE CONNECT ON DATABASE %I FROM PUBLIC`,
+		`GRANT CONNECT ON DATABASE %I TO %I`,
+		`pg_get_userbyid(datdba)`,
+		`GRANT CONNECT ON DATABASE %I TO app_abc`,
+	} {
+		if !strings.Contains(got, needle) {
+			t.Fatalf("start-up sweep missing %q in %s", needle, got)
+		}
+	}
+	if strings.Contains(got, "template0") && !strings.Contains(got, "datallowconn") {
+		t.Fatalf("sweep must skip databases that refuse connections: %s", got)
 	}
 }

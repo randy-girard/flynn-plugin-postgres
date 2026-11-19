@@ -53,15 +53,27 @@ func (execDump) RestoreDatabase(ctx context.Context, connURL, database string, r
 	if err != nil {
 		return err
 	}
-	sql, err := postgres.CreateDatabaseSQL(database)
+	stmts, err := postgres.CreateDatabaseSQL(database)
 	if err != nil {
 		return err
 	}
-	create, err := postgres.PsqlStatement(connURL, db, "-c", sql)
+	create, err := postgres.PsqlStatement(connURL, db, "-c", stmts[0])
 	if err != nil {
 		return err
 	}
 	if err := runPG(ctx, create, nil, io.Discard); err != nil && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+		return err
+	}
+	// Close the database to PUBLIC whether this call or an earlier one made it.
+	var isolate []string
+	for _, sql := range stmts[1:] {
+		isolate = append(isolate, "-c", sql)
+	}
+	revoke, err := postgres.PsqlStatement(connURL, db, isolate...)
+	if err != nil {
+		return err
+	}
+	if err := runPG(ctx, revoke, nil, io.Discard); err != nil {
 		return err
 	}
 	cmd, err := postgres.PgRestoreCommand(connURL, database)
@@ -83,7 +95,8 @@ func connDatabase(connURL string) (string, error) {
 	return db, nil
 }
 
-func runPG(ctx context.Context, cmd postgres.PGCommand, stdin io.Reader, stdout io.Writer) error {
+// runPG runs one psql, pg_dump, or pg_restore command. Tests replace it.
+var runPG = func(ctx context.Context, cmd postgres.PGCommand, stdin io.Reader, stdout io.Writer) error {
 	if len(cmd.Args) == 0 {
 		return fmt.Errorf("missing postgres command")
 	}
