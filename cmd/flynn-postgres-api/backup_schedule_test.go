@@ -89,3 +89,17 @@ func (r *recordingBackups) Restore(_, timestamp string) error {
 	}
 	return nil
 }
+
+func TestPlanBackupPassSkipsRecentlyFailedResource(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	res := []*ct.Resource{{ID: "b", Env: map[string]string{"FLYNN_POSTGRES_ROLE": "primary", "FLYNN_POSTGRES": "pg-b"}}}
+	host := func(*ct.Resource) string { return "h" }
+	failed := map[string]postgres.BackupStatus{"b": {AttemptState: "failed", AttemptFinishedAt: now.Add(-time.Minute)}}
+	if got := planBackupPass(now, res, failed, nil, host); len(got) != 0 {
+		t.Fatalf("retried a minute after failure: %v", got)
+	}
+	failed["b"] = postgres.BackupStatus{AttemptState: "failed", AttemptFinishedAt: now.Add(-postgres.BackupRetryMax - time.Minute)}
+	if got := planBackupPass(now, res, failed, nil, host); len(got) != 1 {
+		t.Fatalf("never retried: %v", got)
+	}
+}

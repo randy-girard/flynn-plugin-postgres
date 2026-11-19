@@ -88,16 +88,10 @@ func TestPgDumpCommandKeepsPasswordOffArgv(t *testing.T) {
 	}
 }
 
-func TestFilterBackupDatabasesSkipsCatalogAndRejectsOddNames(t *testing.T) {
-	got, err := FilterBackupDatabases([]string{"postgres", "template0", "template1", "shop", "appdb", "shop", ""})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(got, ",") != "appdb,shop" {
-		t.Fatalf("got %v", got)
-	}
-	if _, err := FilterBackupDatabases([]string{"shop", "bad-name"}); err == nil {
-		t.Fatal("odd database name was skipped instead of failing the backup")
+func TestFilterBackupDatabasesSkipsCatalogAndTemplates(t *testing.T) {
+	got, skipped := FilterBackupDatabases([]string{"postgres", "template0", "template1", "shop", "appdb", "shop", ""})
+	if strings.Join(got, ",") != "appdb,shop" || len(skipped) != 0 {
+		t.Fatalf("got %v skipped %v", got, skipped)
 	}
 }
 

@@ -178,11 +178,13 @@ func CleanupUserSQL(name string) (string, error) {
 }
 
 // AdminPrivilegesSQL lets the instance login CREATE DATABASE and CREATE ROLE
-// so the plugin API can manage logical databases and users over TCP.
+// so the plugin API can manage logical databases and users over TCP. It also
+// joins pg_read_all_data so the backup's pg_dump reads tables owned by other
+// roles instead of failing on permission denied.
 func AdminPrivilegesSQL(user string) (string, error) {
 	user = strings.TrimSpace(user)
 	if !isolationIdentOK(user) {
 		return "", fmt.Errorf("postgres isolation identifiers must be alphanumeric")
 	}
-	return fmt.Sprintf("ALTER ROLE %s CREATEDB CREATEROLE;", user), nil
+	return fmt.Sprintf("ALTER ROLE %s CREATEDB CREATEROLE; GRANT pg_read_all_data TO %s;", user, user), nil
 }

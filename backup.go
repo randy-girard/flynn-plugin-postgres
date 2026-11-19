@@ -85,6 +85,7 @@ type BackupDump struct {
 type BackupResult struct {
 	Timestamp      string
 	Databases      []string
+	Skipped        []string
 	RetentionError error
 }
 
@@ -257,11 +258,12 @@ func BackupObjectKey(owner, resourceID, timestamp, database string) (string, err
 	return "backups/" + ownerSeg + "/" + resSeg + "/" + timestamp + "/" + database, nil
 }
 
-// FilterBackupDatabases drops the catalog database and templates. Any other
-// name that is not a Flynn database identifier fails the backup.
-func FilterBackupDatabases(names []string) ([]string, error) {
+// FilterBackupDatabases drops the catalog database and templates. A name that
+// is not a Flynn database identifier is returned in skipped so one odd
+// database does not abort the dump of the rest.
+func FilterBackupDatabases(names []string) ([]string, []string) {
 	seen := map[string]bool{}
-	var out []string
+	var out, skipped []string
 	for _, n := range names {
 		n = strings.TrimSpace(n)
 		if n == "" {
@@ -272,7 +274,11 @@ func FilterBackupDatabases(names []string) ([]string, error) {
 			continue
 		}
 		if err := ValidDatabaseName(n); err != nil {
-			return nil, fmt.Errorf("database %q cannot be backed up: %w", n, err)
+			if !seen[n] {
+				seen[n] = true
+				skipped = append(skipped, n)
+			}
+			continue
 		}
 		if seen[n] {
 			continue
@@ -281,7 +287,52 @@ func FilterBackupDatabases(names []string) ([]string, error) {
 		out = append(out, n)
 	}
 	sort.Strings(out)
-	return out, nil
+	sort.Strings(skipped)
+	return out, skipped
+}
+
+// BackupRetryMin and BackupRetryMax bound the wait after a failed attempt.
+const (
+	BackupRetryMin = 5 * time.Minute
+	BackupRetryMax = 6 * time.Hour
+)
+
+// BackupRetryDelay is how long to wait after a failed attempt. It is the time
+// the resource has been failing, clamped to [BackupRetryMin, BackupRetryMax],
+// so each retry waits about twice as long as the one before. Failing starts
+// when the success window opened, or at created when nothing ever succeeded.
+func BackupRetryDelay(st BackupStatus, created time.Time) time.Duration {
+	since := created
+	if !st.LastSuccessAt.IsZero() {
+		since = st.LastSuccessAt.Add(BackupInterval - BackupGrace)
+	}
+	if since.IsZero() || st.AttemptFinishedAt.IsZero() {
+		return BackupRetryMin
+	}
+	gap := st.AttemptFinishedAt.Sub(since)
+	if gap < BackupRetryMin {
+		return BackupRetryMin
+	}
+	if gap > BackupRetryMax {
+		return BackupRetryMax
+	}
+	return gap
+}
+
+// BackupDueFor is BackupDue plus backoff after a failed attempt, measured
+// from AttemptFinishedAt. A failure older than the last success, or any
+// attempt that did not fail, does not delay the next dump.
+func BackupDueFor(st BackupStatus, now time.Time, resourceID string, created time.Time) bool {
+	if !BackupDue(st.LastSuccessAt, now, resourceID) {
+		return false
+	}
+	if st.AttemptState != "failed" || st.AttemptFinishedAt.IsZero() {
+		return true
+	}
+	if !st.LastSuccessAt.IsZero() && !st.AttemptFinishedAt.After(st.LastSuccessAt) {
+		return true
+	}
+	return !now.UTC().Before(st.AttemptFinishedAt.UTC().Add(BackupRetryDelay(st, created)))
 }
 
 // DumpBackendAllowed is false for an empty default, the name postgres, or a
@@ -566,10 +617,7 @@ func RunBackup(ctx context.Context, in BackupInput) (BackupResult, error) {
 	if err != nil {
 		return failBackup(ctx, in, ts, nil, err)
 	}
-	names, err = FilterBackupDatabases(names)
-	if err != nil {
-		return failBackup(ctx, in, ts, nil, err)
-	}
+	names, skipped := FilterBackupDatabases(names)
 	if len(names) == 0 {
 		return failBackup(ctx, in, ts, nil, fmt.Errorf("no databases to back up"))
 	}
@@ -601,7 +649,7 @@ func RunBackup(ctx context.Context, in BackupInput) (BackupResult, error) {
 	if err := in.Status.Finish(in.Target.ResourceID, ts, "succeeded", "", names, now); err != nil {
 		return failBackup(ctx, in, ts, written, err)
 	}
-	result := BackupResult{Timestamp: ts, Databases: names}
+	result := BackupResult{Timestamp: ts, Databases: names, Skipped: skipped}
 	result.RetentionError = pruneBackups(ctx, in, ts)
 	return result, nil
 }

@@ -131,7 +131,11 @@ func (h *handler) writeBackupCreate(w http.ResponseWriter, ref string) {
 		writeBackupError(w, err)
 		return
 	}
-	dashui.WriteJSON(w, 200, map[string]any{"timestamp": got.Timestamp, "databases": got.Databases})
+	out := map[string]any{"timestamp": got.Timestamp, "databases": got.Databases}
+	if len(got.Skipped) > 0 {
+		out["skipped"] = got.Skipped
+	}
+	dashui.WriteJSON(w, 200, out)
 }
 
 func (h *handler) writeBackupRestore(w http.ResponseWriter, ref, timestamp string) {

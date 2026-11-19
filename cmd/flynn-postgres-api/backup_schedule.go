@@ -115,8 +115,12 @@ func (h *handler) runBackupPass(now time.Time) {
 		}
 		go func(resourceID string) {
 			defer h.backupInflight.Delete(resourceID)
-			if _, err := h.currentBackups().Create(resourceID); err != nil && h.log != nil {
+			res, err := h.currentBackups().Create(resourceID)
+			if err != nil && h.log != nil {
 				h.log.Error("scheduled tenant backup", "err", err, "resource", resourceID)
+			}
+			if len(res.Skipped) > 0 && h.log != nil {
+				h.log.Warn("scheduled tenant backup skipped databases", "skipped", res.Skipped, "resource", resourceID)
 			}
 		}(id)
 	}
@@ -151,11 +155,18 @@ func planBackupPass(now time.Time, resources []*ct.Resource, statuses map[string
 		cands = append(cands, postgres.BackupCandidate{
 			ResourceID: res.ID,
 			HostID:     host,
-			Due:        postgres.BackupDue(st.LastSuccessAt, now, res.ID),
+			Due:        postgres.BackupDueFor(st, now, res.ID, resourceCreated(res)),
 			Running:    extraRunning[res.ID] || postgres.RunningFresh(st, now),
 		})
 	}
 	return postgres.AdmitBackups(cands, postgres.BackupHostCap)
+}
+
+func resourceCreated(res *ct.Resource) time.Time {
+	if res == nil || res.CreatedAt == nil {
+		return time.Time{}
+	}
+	return *res.CreatedAt
 }
 
 func resourceIsPrimary(res *ct.Resource) bool {
