@@ -1371,7 +1371,7 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		if err := h.rejectPlatformReplicaControl(id); err != nil {
 			return "", err
 		}
-		res, err := h.store.Promote(id)
+		res, err := h.promoteFenced(id)
 		if err != nil {
 			return "", err
 		}
@@ -1382,7 +1382,6 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 			h.syncResourceEnv(sess, res.Promoted)
 			if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
 				_ = h.stampIsolatedRole(res.PreviousLeader)
-				_ = h.fenceIsolatedApp(res.PreviousLeader.App)
 				h.syncResourceEnv(sess, res.PreviousLeader)
 				_ = h.ensureAutoFailoverReplica(res.Promoted)
 				return "Follower promoted. It is now the primary. The previous leader is fenced and a replacement replica is created when another node is available.", nil

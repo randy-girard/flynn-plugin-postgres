@@ -61,7 +61,9 @@ app; another tenant's resource fails with "not found", and the controller
 ignores a caller-supplied `app` or `tenant`. The follower keeps the leader's app
 role credentials, because streaming replication copies the role table. A
 follower cannot follow another follower. Its `--as` name does not replace
-the leader URL. `pg:promote` makes it writable, ends the follow, and rewrites
+the leader URL. Promoting an auto-failover follower first fences (scales to 0 and waits for) the
+current primary; if the fence fails, the promote is refused and nothing changes.
+`pg:promote` makes it writable, ends the follow, and rewrites
 the primary attachment `*_URL`. The old leader remains its own resource.
 `pg:unfollow` stops replication and leaves a standalone writable copy that no
 longer receives leader writes.

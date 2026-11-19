@@ -522,12 +522,29 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string, autoF
 	return env, nil
 }
 
+// promoteFenced promotes a follower. When the promotion will depose the old
+// leader (auto-failover followers), the leader is fenced first and a fence
+// failure refuses the promotion, so two writable primaries never run.
+func (h *handler) promoteFenced(id string) (*postgres.PromoteResult, error) {
+	fol, err := h.store.Get(id)
+	if err == nil && fol != nil && fol.Role == postgres.RoleFollower && fol.LeaderID != "" && (fol.AutoFailover || fol.PlatformReplica) {
+		leader, lerr := h.store.Get(fol.LeaderID)
+		if lerr != nil || leader == nil {
+			return nil, fmt.Errorf("promote: cannot find the current primary to fence")
+		}
+		if err := h.fenceIsolatedApp(leader.App); err != nil {
+			return nil, fmt.Errorf("promote refused: could not fence the current primary: %w", err)
+		}
+	}
+	return h.store.Promote(id)
+}
+
 func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
 	if err := h.rejectPlatformReplicaControl(p.ByName("id")); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	res, err := h.store.Promote(p.ByName("id"))
+	res, err := h.promoteFenced(p.ByName("id"))
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -548,7 +565,6 @@ func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.P
 		if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
 			h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=manual")
 			_ = h.stampIsolatedRole(res.PreviousLeader)
-			_ = h.fenceIsolatedApp(res.PreviousLeader.App)
 			h.syncResourceEnv(nil, res.PreviousLeader)
 			_ = h.ensureAutoFailoverReplica(res.Promoted)
 		}
