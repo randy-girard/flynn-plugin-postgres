@@ -535,13 +535,37 @@ func PgRestoreCommand(connURL, database string) (PGCommand, error) {
 	}, nil
 }
 
+// PsqlURLStatement runs psql against connURL's own database, which may be the
+// catalog database postgres (maintenance and metrics SQL). connURL must be the
+// plugin's own instance URL. The password is not placed on argv.
+func PsqlURLStatement(connURL string, extra ...string) (PGCommand, error) {
+	u, password, err := splitLibpqPassword(connURL)
+	if err != nil {
+		return PGCommand{}, err
+	}
+	args := []string{"psql", u.String(), "-v", "ON_ERROR_STOP=1"}
+	args = append(args, extra...)
+	return PGCommand{Args: args, Password: password}, nil
+}
+
 func libpqCommandURL(connURL, database string) (string, string, error) {
 	if err := ValidDatabaseName(database); err != nil {
 		return "", "", err
 	}
+	u, password, err := splitLibpqPassword(connURL)
+	if err != nil {
+		return "", "", err
+	}
+	u.Path = "/" + database
+	return u.String(), password, nil
+}
+
+// splitLibpqPassword parses connURL and moves its password out of the URL.
+// libpq reads it from PGPASSWORD instead.
+func splitLibpqPassword(connURL string) (*url.URL, string, error) {
 	u, err := url.Parse(strings.TrimSpace(connURL))
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", "", fmt.Errorf("missing postgres URL")
+		return nil, "", fmt.Errorf("missing postgres URL")
 	}
 	var password string
 	if u.User != nil {
@@ -553,8 +577,7 @@ func libpqCommandURL(connURL, database string) (string, string, error) {
 			u.User = nil
 		}
 	}
-	u.Path = "/" + database
-	return u.String(), password, nil
+	return u, password, nil
 }
 
 // RedactSecret removes secret from msg. An empty secret leaves msg as it is.

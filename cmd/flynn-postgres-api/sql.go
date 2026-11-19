@@ -1,58 +1,61 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/url"
-	"os/exec"
 	"strings"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 )
 
-// runSQL runs a single statement against a postgres URL. Tests replace it.
+// runSQL runs a single statement against a postgres URL. The password goes
+// to psql in PGPASSWORD, never on argv. Tests replace it.
 var runSQL = func(connURL, query string) (string, error) {
 	connURL = strings.TrimSpace(connURL)
 	query = strings.TrimSpace(query)
 	if connURL == "" || query == "" {
 		return "", fmt.Errorf("missing postgres URL or query")
 	}
-	cmd := exec.Command("psql", connURL, "-v", "ON_ERROR_STOP=1", "-t", "-A", "-c", query)
-	out, err := cmd.CombinedOutput()
+	cmd, err := postgres.PsqlURLStatement(connURL, "-t", "-A", "-c", query)
 	if err != nil {
-		return "", fmt.Errorf("psql: %s: %s", err, strings.TrimSpace(string(out)))
+		return "", err
 	}
-	return string(out), nil
+	var out bytes.Buffer
+	if err := runPG(context.Background(), cmd, nil, &out); err != nil {
+		return "", err
+	}
+	return out.String(), nil
 }
 
+// runDump is the dashboard dump of the instance URL's database
+// (PgDumpCommand: password in PGPASSWORD, not on argv).
 var runDump = func(connURL string, w io.Writer) error {
-	connURL = strings.TrimSpace(connURL)
-	if connURL == "" {
-		return fmt.Errorf("missing postgres URL")
+	db, err := connDatabase(connURL)
+	if err != nil {
+		return err
 	}
-	cmd := exec.Command("pg_dump", "--no-owner", "--format=custom", connURL)
-	cmd.Stdout = w
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_dump: %s: %s", err, strings.TrimSpace(stderr.String()))
+	cmd, err := postgres.PgDumpCommand(connURL, db)
+	if err != nil {
+		return err
 	}
-	return nil
+	return runPG(context.Background(), cmd, nil, w)
 }
 
+// runRestore is the dashboard restore into the instance URL's database
+// (PgRestoreCommand: password in PGPASSWORD, not on argv).
 var runRestore = func(connURL string, r io.Reader) error {
-	connURL = strings.TrimSpace(connURL)
-	if connURL == "" {
-		return fmt.Errorf("missing postgres URL")
+	db, err := connDatabase(connURL)
+	if err != nil {
+		return err
 	}
-	cmd := exec.Command("pg_restore", "--no-owner", "--clean", "--if-exists", "--dbname", connURL)
-	cmd.Stdin = r
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("pg_restore: %s: %s", err, strings.TrimSpace(stderr.String()))
+	cmd, err := postgres.PgRestoreCommand(connURL, db)
+	if err != nil {
+		return err
 	}
-	return nil
+	return runPG(context.Background(), cmd, r, io.Discard)
 }
 
 func createDatabaseOnInstance(inst *postgres.Instance, name string) error {

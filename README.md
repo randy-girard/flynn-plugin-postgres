@@ -152,6 +152,14 @@ controller release, never from the network. When a replacement adopts the
 original instance name, the plugin issues a new CA and certificate for that
 name.
 
+Those connections never put the instance password on a command line. Every
+`psql`, `pg_dump` and `pg_restore` the plugin API runs gets the URL without
+its password and the password in `PGPASSWORD`, and error text is redacted.
+The dashboard dump and restore target the instance's first database, with the
+same `pg_restore --clean --if-exists --exit-on-error` flags as a scheduled
+restore; an instance with no database of its own (only the catalog
+`postgres`) has nothing to dump or restore from the dashboard.
+
 ### Instance metrics endpoint
 
 Every instance release has `FLYNN_METRICS_PORT=9180`. The postgres job serves
