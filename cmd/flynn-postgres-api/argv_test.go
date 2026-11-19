@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,4 +128,73 @@ func TestRunSQLRedactsPasswordInErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed") {
 		t.Errorf("error lost psql output: %v", err)
 	}
+}
+
+// fakeRestoreTools: pg_restore -l prints an instance dump TOC; a real restore
+// records its argv, its -L list and its stdin; psql records its argv.
+func fakeRestoreTools(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	toc := "4; 3079 16434 EXTENSION - pg_stat_statements \n" +
+		"3479; 0 0 COMMENT - EXTENSION pg_stat_statements \n" +
+		"2; 3079 16386 EXTENSION - uuid-ossp \n" +
+		"3481; 0 0 COMMENT - EXTENSION \"uuid-ossp\" \n" +
+		"220; 1259 16465 TABLE public r19 app\n" +
+		"3472; 0 16465 TABLE DATA public r19 app\n"
+	if err := os.WriteFile(filepath.Join(dir, "toc"), []byte(toc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	restore := "#!/bin/sh\n" +
+		"if [ \"$1\" = -l ]; then cat '" + dir + "/toc'; exit 0; fi\n" +
+		"printf '%s\\n' \"$@\" > '" + dir + "/restore.argv'\n" +
+		"while [ $# -gt 0 ]; do if [ \"$1\" = -L ]; then cp \"$2\" '" + dir + "/restore.list'; fi; shift; done\n" +
+		"cat > '" + dir + "/restore.stdin'\n"
+	psql := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '" + dir + "/psql.argv'\n"
+	for name, body := range map[string]string{"pg_restore": restore, "psql": psql} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
+
+func checkRestoreSkipsExtensions(t *testing.T, dir string) {
+	t.Helper()
+	argv, err := os.ReadFile(filepath.Join(dir, "restore.argv"))
+	if err != nil {
+		t.Fatalf("pg_restore never ran a restore: %v", err)
+	}
+	if !strings.Contains(string(argv), "-L\n") || !strings.Contains(string(argv), "--exit-on-error\n") {
+		t.Errorf("restore without a filtered list: %q", argv)
+	}
+	list, _ := os.ReadFile(filepath.Join(dir, "restore.list"))
+	if strings.Contains(string(list), "EXTENSION") || !strings.Contains(string(list), "TABLE DATA public r19 app") {
+		t.Errorf("list %q", list)
+	}
+	if in, _ := os.ReadFile(filepath.Join(dir, "restore.stdin")); string(in) != "PGDMP-archive" {
+		t.Errorf("restore stdin %q", in)
+	}
+	psql, _ := os.ReadFile(filepath.Join(dir, "psql.argv"))
+	for _, want := range []string{`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`, `CREATE EXTENSION IF NOT EXISTS "pg_stat_statements"`} {
+		if !strings.Contains(string(psql), want) {
+			t.Errorf("psql never ran %s: %q", want, psql)
+		}
+	}
+}
+
+func TestRunRestoreSkipsInstanceExtensions(t *testing.T) {
+	dir := fakeRestoreTools(t)
+	if err := runRestore(argvURL("appdb"), strings.NewReader("PGDMP-archive")); err != nil {
+		t.Fatal(err)
+	}
+	checkRestoreSkipsExtensions(t, dir)
+}
+
+func TestRestoreDatabaseSkipsInstanceExtensions(t *testing.T) {
+	dir := fakeRestoreTools(t)
+	if err := (execDump{}).RestoreDatabase(context.Background(), argvURL("appdb"), "shop", strings.NewReader("PGDMP-archive")); err != nil {
+		t.Fatal(err)
+	}
+	checkRestoreSkipsExtensions(t, dir)
 }

@@ -186,6 +186,16 @@ Cluster `flynn-host backup` does **not** include tenant instance volumes
 (`pg_dumpall` is the platform appliance only). Use the dashboard Backup page
 or `flynn pg:dump` / `flynn pg:restore` against this instance. Scheduled dumps run once a day, at a fixed time of day per resource (a hash of the resource id). A dump that finishes late does not move the next run: it is due again at the same time the next day, and a dump older than 25 hours is retried at once. After a failed dump the next scheduled try waits for a backoff measured from the failure time: 5 minutes at first, doubling with the time spent failing, up to 6 hours. A database whose name is not a plain identifier is skipped and listed as `skipped` in the dump response and the scheduler log; the other databases are still dumped. The instance login is a member of `pg_read_all_data`, so the dump reads tables owned by every database user.
 
+A restore (dashboard file or `pg:restore`) skips the dump's `EXTENSION` entries
+and their comments. Every instance database gets `uuid-ossp`, `pgcrypto` and
+`pg_stat_statements` from the OS `postgres` role, so the instance login can
+neither drop them (`--clean`) nor comment on them, and `--exit-on-error` would
+stop the restore at the first one. Each skipped extension is created with
+`CREATE EXTENSION IF NOT EXISTS` first (a no-op when the database has it); one
+the login may not create fails the restore only if a restored object needs it.
+The restore spools the dump to a temporary file, because it reads the table of
+contents before the data.
+
 ## State machine
 
 Unit tests drive an in-memory state machine. They do not start a Postgres

@@ -548,6 +548,76 @@ func PsqlURLStatement(connURL string, extra ...string) (PGCommand, error) {
 	return PGCommand{Args: args, Password: password}, nil
 }
 
+// PgRestoreListCommand prints the table of contents of a dump file. It reads
+// only the file, so it needs no URL and no password.
+func PgRestoreListCommand(archive string) PGCommand {
+	return PGCommand{Args: []string{"pg_restore", "-l", archive}}
+}
+
+// RestoreTOCList drops the EXTENSION entries and their comments from a
+// pg_restore -l listing and returns the extension names. Every instance
+// database has uuid-ossp, pgcrypto and pg_stat_statements created by the OS
+// postgres role, so the instance login can neither DROP (--clean) nor COMMENT
+// on them, and --exit-on-error would stop the restore at the first one.
+func RestoreTOCList(toc string) (string, []string) {
+	var b strings.Builder
+	var exts []string
+	for _, line := range strings.Split(toc, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ";") {
+			if name, ok := tocExtension(line); ok {
+				exts = append(exts, name)
+				continue
+			}
+			if tocDescribes(line, "COMMENT - EXTENSION ") {
+				continue
+			}
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String(), exts
+}
+
+// tocDescribes reports whether a TOC line ("<id>; <tableoid> <oid> <desc>")
+// starts its description with prefix.
+func tocDescribes(line, prefix string) bool {
+	_, rest, ok := strings.Cut(line, "; ")
+	if !ok {
+		return false
+	}
+	fields := strings.SplitN(rest, " ", 3)
+	return len(fields) == 3 && strings.HasPrefix(fields[2], prefix)
+}
+
+func tocExtension(line string) (string, bool) {
+	if !tocDescribes(line, "EXTENSION - ") {
+		return "", false
+	}
+	_, rest, _ := strings.Cut(line, "; ")
+	desc := strings.SplitN(rest, " ", 3)[2]
+	return strings.TrimSpace(strings.TrimPrefix(desc, "EXTENSION - ")), true
+}
+
+// CreateExtensionSQL re-creates an extension skipped by RestoreTOCList when
+// the target database lacks it. IF NOT EXISTS makes it a no-op (without an
+// ownership check) for one the instance already has.
+func CreateExtensionSQL(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("extension name is required")
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' || c == '-' {
+			continue
+		}
+		return "", fmt.Errorf("unsupported extension name %q", name)
+	}
+	return `CREATE EXTENSION IF NOT EXISTS "` + name + `"`, nil
+}
+
 func libpqCommandURL(connURL, database string) (string, string, error) {
 	if err := ValidDatabaseName(database); err != nil {
 		return "", "", err

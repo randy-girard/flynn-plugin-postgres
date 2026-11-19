@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
@@ -76,11 +77,65 @@ func (execDump) RestoreDatabase(ctx context.Context, connURL, database string, r
 	if err := runPG(ctx, revoke, nil, io.Discard); err != nil {
 		return err
 	}
-	cmd, err := postgres.PgRestoreCommand(connURL, database)
+	return restoreArchive(ctx, connURL, database, r)
+}
+
+// restoreArchive runs pg_restore (PgRestoreCommand) into database without the
+// dump's EXTENSION entries, which the instance login cannot drop or comment
+// on. The dump is spooled to a temporary file because it is read twice (TOC,
+// then data). Skipped extensions are created IF NOT EXISTS first; one the
+// login may not create is left to fail the restore if anything needs it.
+func restoreArchive(ctx context.Context, connURL, database string, r io.Reader) error {
+	restore, err := postgres.PgRestoreCommand(connURL, database)
 	if err != nil {
 		return err
 	}
-	return runPG(ctx, cmd, r, io.Discard)
+	dir, err := os.MkdirTemp("", "flynn-postgres-restore-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	archive := filepath.Join(dir, "dump")
+	f, err := os.OpenFile(archive, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if r != nil {
+		if _, err := io.Copy(f, r); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	var toc bytes.Buffer
+	if err := runPG(ctx, postgres.PgRestoreListCommand(archive), nil, &toc); err != nil {
+		return err
+	}
+	list, exts := postgres.RestoreTOCList(toc.String())
+	listPath := filepath.Join(dir, "list")
+	if err := os.WriteFile(listPath, []byte(list), 0600); err != nil {
+		return err
+	}
+	for _, name := range exts {
+		sql, err := postgres.CreateExtensionSQL(name)
+		if err != nil {
+			continue
+		}
+		create, err := postgres.PsqlStatement(connURL, database, "-c", sql)
+		if err != nil {
+			return err
+		}
+		_ = runPG(ctx, create, nil, io.Discard)
+	}
+	in, err := os.Open(archive)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	restore.Args = append(restore.Args, "-L", listPath)
+	return runPG(ctx, restore, in, io.Discard)
 }
 
 func connDatabase(connURL string) (string, error) {

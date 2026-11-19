@@ -45,17 +45,13 @@ var runDump = func(connURL string, w io.Writer) error {
 }
 
 // runRestore is the dashboard restore into the instance URL's database
-// (PgRestoreCommand: password in PGPASSWORD, not on argv).
+// (restoreArchive: PgRestoreCommand, password in PGPASSWORD, not on argv).
 var runRestore = func(connURL string, r io.Reader) error {
 	db, err := connDatabase(connURL)
 	if err != nil {
 		return err
 	}
-	cmd, err := postgres.PgRestoreCommand(connURL, db)
-	if err != nil {
-		return err
-	}
-	return runPG(context.Background(), cmd, r, io.Discard)
+	return restoreArchive(context.Background(), connURL, db, r)
 }
 
 func createDatabaseOnInstance(inst *postgres.Instance, name string) error {
