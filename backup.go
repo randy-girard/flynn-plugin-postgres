@@ -626,6 +626,8 @@ func beatUntil(ctx context.Context, status StatusStore, resourceID, timestamp st
 }
 
 func putDatabase(ctx context.Context, in BackupInput, key, database string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
@@ -634,12 +636,18 @@ func putDatabase(ctx context.Context, in BackupInput, key, database string) erro
 		errCh <- err
 	}()
 	putErr := in.Blobs.Put(ctx, key, pr)
+	if putErr != nil {
+		// Put may have stopped reading. Unblock the dump's writes and cancel
+		// its context, or <-errCh below waits on it forever.
+		_ = pr.CloseWithError(putErr)
+		cancel()
+	}
 	dumpErr := <-errCh
 	_ = pr.Close()
-	if dumpErr != nil {
-		return dumpErr
+	if putErr != nil {
+		return putErr
 	}
-	return putErr
+	return dumpErr
 }
 
 func failBackup(ctx context.Context, in BackupInput, ts string, keys []string, cause error) (BackupResult, error) {
