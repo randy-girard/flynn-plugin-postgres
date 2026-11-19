@@ -205,7 +205,13 @@ func adoptAppName(c nameAdopter, previous, next *postgres.Instance) (retired str
 		oldApp.Name = original
 		_ = c.UpdateApp(oldApp)
 	})
-	rewritten := rewriteReleaseIdentity(running, temp, original)
+	rewritten, err := rewriteReleaseIdentity(running, temp, original)
+	if err != nil {
+		return "", err
+	}
+	if ca := strings.TrimSpace(rewritten.Env[postgres.EnvTLSCACert]); ca != "" {
+		next.TLSCA = ca
+	}
 	if err = c.CreateRelease(tempApp.ID, rewritten); err != nil {
 		return "", err
 	}
@@ -261,7 +267,7 @@ func originalScale(c nameAdopter, appID, releaseID string) ct.ScaleOptions {
 	return opts
 }
 
-func rewriteReleaseIdentity(rel *ct.Release, from, to string) *ct.Release {
+func rewriteReleaseIdentity(rel *ct.Release, from, to string) (*ct.Release, error) {
 	next := *rel
 	next.ID = ""
 	next.Env = make(map[string]string, len(rel.Env))
@@ -282,5 +288,17 @@ func rewriteReleaseIdentity(rel *ct.Release, from, to string) *ct.Release {
 		}
 		next.Processes[name] = proc
 	}
-	return &next
+	// The server certificate names the temporary app. The plugin verifies the
+	// host it dials (leader.<original>.discoverd), so issue a new CA and
+	// certificate for the adopted name. The job restarts on this release.
+	if strings.TrimSpace(next.Env[postgres.EnvTLSServerCert]) != "" {
+		bundle, err := postgres.GenerateTLSBundle(postgres.TLSHosts(to))
+		if err != nil {
+			return nil, err
+		}
+		next.Env[postgres.EnvTLSCACert] = bundle.CACert
+		next.Env[postgres.EnvTLSServerCert] = bundle.ServerCert
+		next.Env[postgres.EnvTLSServerKey] = bundle.ServerKey
+	}
+	return &next, nil
 }

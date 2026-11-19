@@ -379,7 +379,7 @@ func backupConnURL(env map[string]string) string {
 		Path:     "/" + db,
 		RawQuery: "sslmode=require",
 	}
-	return u.String()
+	return postgres.VerifyFullURL(u.String(), env[postgres.EnvTLSCACert])
 }
 
 func backupHostID(jobs []*ct.Job) string {

@@ -398,16 +398,16 @@ func (h *handler) targetPromotable(fol, leader *postgres.Instance) bool {
 	if fol == nil || leader == nil {
 		return false
 	}
-	recovering, replay, ok := readReplicaRecovery(fol.ConnectionURL())
+	recovering, replay, ok := readReplicaRecovery(fol.MaintenanceURL())
 	if !ok {
 		return false
 	}
-	wal, wok := readPrimaryWAL(leader.ConnectionURL())
+	wal, wok := readPrimaryWAL(leader.MaintenanceURL())
 	lag := wal - replay
 	if lag < 0 {
 		lag = 0
 	}
-	active, bok := readBasebackupActive(leader.ConnectionURL())
+	active, bok := readBasebackupActive(leader.MaintenanceURL())
 	if !bok {
 		return false
 	}
@@ -556,7 +556,7 @@ func (h *handler) ensureAutoFailoverReplica(primary *postgres.Instance) error {
 			_ = h.store.SetReplicaPending(primary.ID, false)
 			return nil
 		}
-		recovering, _, ok := queryFollowerReplay(fol.ConnectionURL())
+		recovering, _, ok := queryFollowerReplay(fol.MaintenanceURL())
 		if ok && !recovering {
 			return h.recreateFollower(fol, primary)
 		}

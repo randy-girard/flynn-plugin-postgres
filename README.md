@@ -115,6 +115,27 @@ its own app with the instance ID. A failed scrape posts only
 `errors=1` and `service_available=0`. Dashboard page views do not post
 samples. Both API replicas may post; the dashboard keeps one sample per minute.
 
+### TLS
+
+Each instance has its own private CA. At provision the API issues a server
+certificate for `leader.<instance>.discoverd` (and `<instance>.discoverd`,
+`localhost`) and stores `POSTGRES_TLS_CA_CERT`, `POSTGRES_TLS_SERVER_CERT` and
+`POSTGRES_TLS_SERVER_KEY` on the instance app's release. `start.sh` runs
+`flynn-postgres install-tls /data` on every start, so a follower replaces the
+files its `pg_basebackup` copied from the primary. The CA key is not kept.
+
+The plugin's own connections (dashboard queries, dump and restore, metrics,
+scheduled backups, and the replica checks behind failover) use
+`sslmode=verify-full` with that instance's CA as `sslrootcert`, so the server
+must present a certificate from that CA that names the dialed host. Tenant
+`DATABASE_URL` values keep `sslmode=require`. An instance whose release has no
+`POSTGRES_TLS_CA_CERT` (created before this change) keeps its self-signed
+certificate and is reached with `sslmode=require`; `pg:maintenance` replaces
+it with an instance that has a CA. Whether a CA exists is read from the
+controller release, never from the network. When a replacement adopts the
+original instance name, the plugin issues a new CA and certificate for that
+name.
+
 ### Instance metrics endpoint
 
 Every instance release has `FLYNN_METRICS_PORT=9180`. The postgres job serves

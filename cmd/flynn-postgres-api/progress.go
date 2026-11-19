@@ -120,8 +120,8 @@ func replicaCopyProgress(inst, leader *postgres.Instance) *postgres.ReplicaProgr
 		p.Leader = inst.LeaderID
 	}
 	p.Message = postgres.FormatProgress(p)
-	if inst != nil && inst.ConnectionURL() != "" {
-		recovering, replay, ok := queryFollowerReplay(inst.ConnectionURL())
+	if inst != nil && inst.MaintenanceURL() != "" {
+		recovering, replay, ok := queryFollowerReplay(inst.MaintenanceURL())
 		if ok {
 			if !recovering {
 				// Accepting writes: promoted, or initdb without standby.
@@ -133,10 +133,10 @@ func replicaCopyProgress(inst, leader *postgres.Instance) *postgres.ReplicaProgr
 				p.Message = "running writable (not in recovery)"
 				return &p
 			}
-			if leader == nil || strings.TrimSpace(leader.ConnectionURL()) == "" {
+			if leader == nil || strings.TrimSpace(leader.MaintenanceURL()) == "" {
 				return replicaWaitingForPrimary(&p, firstNonEmpty(inst.LeaderID, p.Leader))
 			}
-			wal, wok := queryWalBytes(leader.ConnectionURL())
+			wal, wok := queryWalBytes(leader.MaintenanceURL())
 			if !wok {
 				return replicaWaitingForPrimary(&p, firstNonEmpty(leader.App, inst.LeaderID, p.Leader))
 			}
@@ -147,8 +147,8 @@ func replicaCopyProgress(inst, leader *postgres.Instance) *postgres.ReplicaProgr
 			return streamingOrReady(&p, lag)
 		}
 	}
-	if leader != nil && leader.ConnectionURL() != "" {
-		if copied, total, phase, ok := queryBasebackup(leader.ConnectionURL()); ok {
+	if leader != nil && leader.MaintenanceURL() != "" {
+		if copied, total, phase, ok := queryBasebackup(leader.MaintenanceURL()); ok {
 			p.Phase = postgres.PhaseBasebackup
 			p.BytesCopied = copied
 			p.BytesTotal = total

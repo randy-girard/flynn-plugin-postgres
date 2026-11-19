@@ -54,7 +54,11 @@ fi
 if ! grep -q "host replication" /data/pg_hba.conf; then
   printf '%s\n' "host replication all 0.0.0.0/0 md5" "host replication all ::/0 md5" >> /data/pg_hba.conf
 fi
-# sslmode=require encrypts but does not verify the CA. A local cert is enough.
+# The release carries this instance's own CA-signed certificate; the plugin
+# verifies it (sslmode=verify-full). Install it on every start: a follower's
+# pg_basebackup copied the primary's files. An instance whose release has no
+# bundle keeps a local self-signed certificate (sslmode=require).
+/bin/flynn-postgres install-tls /data
 if [[ ! -s /data/server.crt || ! -s /data/server.key ]]; then
   openssl req -new -x509 -days 3650 -nodes -text \
     -out /data/server.crt -keyout /data/server.key \

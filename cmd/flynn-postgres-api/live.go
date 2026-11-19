@@ -348,13 +348,23 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		db = inst.Databases[0].Name
 	}
 	service := inst.App
+	// Each instance has its own CA. The plugin's own connections verify the
+	// server against it (verify-full); the CA key is not kept.
+	bundle, err := postgres.GenerateTLSBundle(postgres.TLSHosts(service))
+	if err != nil {
+		return err
+	}
+	inst.TLSCA = bundle.CACert
 	env := map[string]string{
-		"FLYNN_POSTGRES":    service,
-		"POSTGRES_USER":     inst.AppUser,
-		"POSTGRES_PASSWORD": inst.AppPassword,
-		"POSTGRES_DB":       db,
-		"ENGINE_VERSION":    postgres.EngineVersion(),
-		"POSTGRES_VERSION":  postgres.EngineVersion(),
+		postgres.EnvTLSCACert:     bundle.CACert,
+		postgres.EnvTLSServerCert: bundle.ServerCert,
+		postgres.EnvTLSServerKey:  bundle.ServerKey,
+		"FLYNN_POSTGRES":          service,
+		"POSTGRES_USER":           inst.AppUser,
+		"POSTGRES_PASSWORD":       inst.AppPassword,
+		"POSTGRES_DB":             db,
+		"ENGINE_VERSION":          postgres.EngineVersion(),
+		"POSTGRES_VERSION":        postgres.EngineVersion(),
 	}
 	if inst.ID != "" {
 		env[postgres.ResourceIDEnv] = inst.ID

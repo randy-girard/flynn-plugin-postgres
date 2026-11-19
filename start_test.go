@@ -526,3 +526,26 @@ func TestCIPushCoverageBadgeRetriesRejectedPush(t *testing.T) {
 		}
 	}
 }
+
+// RES-14: the start script installs the release certificate before it falls
+// back to a self-signed one, and before postgres reads ssl_cert_file.
+func TestStartScriptInstallsReleaseTLS(t *testing.T) {
+	b, err := os.ReadFile("start.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	install := strings.Index(src, "/bin/flynn-postgres install-tls /data")
+	fallback := strings.Index(src, "openssl req -new -x509")
+	basebackup := strings.Index(src, "pg_basebackup")
+	if install < 0 || fallback < 0 || install > fallback || install < basebackup {
+		t.Fatalf("install-tls at %d, self-signed fallback at %d, basebackup at %d", install, fallback, basebackup)
+	}
+	main, err := os.ReadFile("cmd/flynn-postgres/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(main), `case "install-tls":`) || !strings.Contains(string(main), "InstallTLSFiles") {
+		t.Fatal("flynn-postgres must implement install-tls with InstallTLSFiles")
+	}
+}

@@ -126,8 +126,11 @@ type Instance struct {
 	// ServiceAlias is an extra discoverd name the promoted job registers
 	// (the previous primary's app) so existing DATABASE_URL hosts keep resolving.
 	ServiceAlias string
-	seq          int64
-	applied      int64
+	// TLSCA is this instance's CA PEM (POSTGRES_TLS_CA_CERT). The plugin's
+	// own connections verify the server against it (sslmode=verify-full).
+	TLSCA   string
+	seq     int64
+	applied int64
 }
 
 // Info is the pg:info view.
@@ -431,6 +434,9 @@ func mergeLiveInstance(dst, src *Instance) {
 	}
 	if dst.ServiceHost == "" {
 		dst.ServiceHost = src.ServiceHost
+	}
+	if src.TLSCA != "" {
+		dst.TLSCA = src.TLSCA
 	}
 	if dst.App == "" {
 		dst.App = src.App
@@ -1147,7 +1153,7 @@ func (i *Instance) ConnectionURL() string { return i.appURL() }
 // CREATE ROLE, and DROP ROLE. Isolated instances revoke CONNECT on the
 // postgres catalog database, so this is the tenant database — not /postgres.
 func (i *Instance) MaintenanceURL() string {
-	return i.appURL()
+	return VerifyFullURL(i.appURL(), i.TLSCA)
 }
 
 // InstanceFromEnv rebuilds a live isolated instance from its Flynn app release.
@@ -1213,6 +1219,7 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 		Role:          RolePrimary,
 		ServiceHost:   host,
 		EngineVersion: firstNonEmpty(env["ENGINE_VERSION"], env["POSTGRES_VERSION"]),
+		TLSCA:         strings.TrimSpace(env[EnvTLSCACert]),
 	}
 	if db != "" {
 		inst.Databases = []Database{{Name: db}}

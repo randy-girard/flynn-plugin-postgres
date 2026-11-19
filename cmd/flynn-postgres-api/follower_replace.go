@@ -72,10 +72,10 @@ func (h *handler) upgradeInProgress(id string) bool {
 }
 
 func (h *handler) followerStreaming(fol *postgres.Instance) bool {
-	if fol == nil || strings.TrimSpace(fol.ConnectionURL()) == "" {
+	if fol == nil || strings.TrimSpace(fol.MaintenanceURL()) == "" {
 		return false
 	}
-	recovering, _, ok := queryFollowerReplay(fol.ConnectionURL())
+	recovering, _, ok := queryFollowerReplay(fol.MaintenanceURL())
 	return ok && recovering
 }
 
@@ -147,7 +147,7 @@ func (h *handler) replaceBrokenFollowers() {
 		if skip := h.skipFollowerReplace(fol); skip != "" {
 			continue
 		}
-		recovering, _, ok := queryFollowerReplay(fol.ConnectionURL())
+		recovering, _, ok := queryFollowerReplay(fol.MaintenanceURL())
 		if !ok || recovering {
 			continue
 		}
