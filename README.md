@@ -139,7 +139,7 @@ flynn -a postgresql-harbor-12345 log | grep metrics
 
 Cluster `flynn-host backup` does **not** include tenant instance volumes
 (`pg_dumpall` is the platform appliance only). Use the dashboard Backup page
-or `flynn pg:dump` / `flynn pg:restore` against this instance.
+or `flynn pg:dump` / `flynn pg:restore` against this instance. Scheduled dumps run once a day, at a fixed time of day per resource (a hash of the resource id). A dump that finishes late does not move the next run: it is due again at the same time the next day, and a dump older than 25 hours is retried at once.
 
 ## State machine
 

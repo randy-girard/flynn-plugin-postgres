@@ -583,3 +583,26 @@ func (f *fakeDump) RestoreDatabase(_ context.Context, _, database string, r io.R
 	f.restores = append(f.restores, database)
 	return nil
 }
+
+// A dump that finishes late must not push the next run past its phase slot:
+// the next run is due at the next day's slot, not once the grace has expired.
+func TestBackupDueHoldsPhaseAfterLateFinish(t *testing.T) {
+	id := "22222222-2222-2222-2222-222222222222"
+	slot := NextBackupSlot(time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC), id)
+	last := slot.Add(10 * time.Minute) // started on the slot, finished late
+	next := slot.Add(BackupInterval)
+	if BackupDue(last, next.Add(-time.Minute), id) {
+		t.Fatal("due a minute before the next phase slot")
+	}
+	if !BackupDue(last, next, id) {
+		t.Fatalf("not due at the next phase slot %s (last success %s); the schedule drifts into a late catch-up", next, last)
+	}
+	// Following the slot forever keeps the phase.
+	for i := 0; i < 5; i++ {
+		last = next.Add(10 * time.Minute)
+		next = next.Add(BackupInterval)
+		if !BackupDue(last, next, id) || BackupDue(last, next.Add(-time.Minute), id) {
+			t.Fatalf("phase lost on run %d", i)
+		}
+	}
+}

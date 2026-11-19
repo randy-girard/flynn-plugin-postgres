@@ -150,7 +150,10 @@ func BackupMiss(lastSuccess, now time.Time) bool {
 }
 
 // BackupDue is true for a first dump, for the daily phase slot, and for a
-// catch-up once the last success is older than 24h plus grace.
+// catch-up once the last success is older than 24h plus grace. The slot is
+// the first phase boundary at or after last+24h-grace, so a dump that
+// finished up to one grace period late still has its next run due on the
+// next day's slot and the phase holds instead of sliding into catch-up.
 func BackupDue(lastSuccess, now time.Time, resourceID string) bool {
 	now = now.UTC()
 	if lastSuccess.IsZero() {
@@ -160,10 +163,7 @@ func BackupDue(lastSuccess, now time.Time, resourceID string) bool {
 	if now.Sub(last) > BackupInterval+BackupGrace {
 		return true
 	}
-	if now.Sub(last) < BackupInterval {
-		return false
-	}
-	slot := NextBackupSlot(last.Add(BackupInterval), resourceID)
+	slot := NextBackupSlot(last.Add(BackupInterval-BackupGrace), resourceID)
 	return !now.Before(slot)
 }
 
