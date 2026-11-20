@@ -1,11 +1,11 @@
 {
   "name": "postgres",
   "kind": "resource-provider",
-  "tenant_safe": true,
   "github_repo": "randy-girard/flynn-plugin-postgres",
   "provider": {
     "name": "postgres",
-    "url": "http://postgres-plugin.discoverd/databases"
+    "url": "http://postgres-plugin.discoverd/databases",
+    "tenant_safe": true
   },
   "app": {
     "name": "postgres-plugin",
