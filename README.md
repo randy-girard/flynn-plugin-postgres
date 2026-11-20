@@ -239,5 +239,5 @@ OS layer stay the same. `GOCACHE` lives in `.plugin-build-cache/`. Set
 The SSO token must be signed with a key in the dashboard JWKS (matching `kid`), carry
 `iss=flynn-dashboard`, `aud=flynn-plugin-ui` and an `exp`, and name this plugin
 (`plugin=postgres`), so a token handed to another plugin cannot be replayed here
-(`github.com/randy-girard/flynn/pkg/pluginui`). Every route that changes state, including replication, settings, the dump and restore, needs `app:resources:write`; a session with no permissions is refused. Local tests may set
+(`github.com/randy-girard/flynn/pkg/pluginui`). Every route that changes state, including replication, settings, the dump and restore, needs `app:resources:write`; a session with no permissions is refused. The dump (`/dashboard/api/dump`) is POST only; GET gets 405. Local tests may set
 `DASHBOARD_SSO_OPTIONAL=1` and pass permissions in `X-Flynn-Dashboard-Permissions`.

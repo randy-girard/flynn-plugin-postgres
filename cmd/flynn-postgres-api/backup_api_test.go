@@ -23,7 +23,7 @@ func TestFileDumpWhenBlobstoreIsNotObjectStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHandler(store)
-	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
+	req := httptest.NewRequest(http.MethodPost, "/dashboard/api/dump", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
 	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
 	rec := httptest.NewRecorder()
@@ -123,5 +123,43 @@ func TestDumpTaskRejectsAFileFlag(t *testing.T) {
 	err := runPluginTask([]string{"dump", "postgresql-oak-10000", "-f", "postgres.dump"})
 	if err == nil || !strings.Contains(err.Error(), "blobstore") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// NEW-03: the dump is a full copy of tenant data; GET is refused with 405 so a
+// link, prefetch or image tag cannot trigger it. POST with write still works.
+func TestDashboardDumpIsPostOnly(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	orig := runDump
+	calls := 0
+	runDump = func(_ string, w io.Writer) error {
+		calls++
+		_, err := io.WriteString(w, "PGDMP")
+		return err
+	}
+	t.Cleanup(func() { runDump = orig })
+	store := postgres.NewStore()
+	if _, _, err := store.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h := newHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/dump", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed || calls != 0 || strings.Contains(rec.Body.String(), "PGDMP") {
+		t.Fatalf("GET dump: %d calls=%d %s", rec.Code, calls, rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("Allow"), http.MethodPost) {
+		t.Fatalf("GET dump Allow = %q, want POST", rec.Header().Get("Allow"))
+	}
+	req = httptest.NewRequest(http.MethodPost, "/dashboard/api/dump", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || calls != 1 || !strings.Contains(rec.Body.String(), "PGDMP") {
+		t.Fatalf("POST dump: %d calls=%d %s", rec.Code, calls, rec.Body.String())
 	}
 }

@@ -1116,7 +1116,6 @@ func TestDumpRequiresResourcesWrite(t *testing.T) {
 		{http.MethodPost, "/dashboard/api/databases"},
 		{http.MethodPost, "/dashboard/api/users"},
 		{http.MethodPost, "/dashboard/api/users/drop"},
-		{http.MethodGet, "/dashboard/api/dump"},
 		{http.MethodPost, "/dashboard/api/dump"},
 		{http.MethodPost, "/dashboard/api/restore"},
 		{http.MethodPost, "/dashboard/api/backups"},
@@ -1150,6 +1149,12 @@ func TestDashboardMutatingRoutesUseWrapWrite(t *testing.T) {
 	}
 	for _, line := range strings.Split(string(src), "\n") {
 		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, `h.router.GET("/dashboard/api/dump"`) {
+			if !strings.Contains(l, "refuseDumpGET") {
+				t.Errorf("GET dump must be refused: %s", l)
+			}
+			continue
+		}
 		isMutating := strings.Contains(l, `"/dashboard/api/dump"`)
 		for _, m := range []string{"POST", "PUT", "DELETE", "PATCH"} {
 			isMutating = isMutating || strings.HasPrefix(l, "h.router."+m+"(")

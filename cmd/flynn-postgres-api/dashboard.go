@@ -64,7 +64,7 @@ func (h *handler) mountDashboard() {
 	h.router.GET("/dashboard/api/users", wrap(h.dashListUsers))
 	h.router.POST("/dashboard/api/users", wrapWrite(h.dashCreateUser))
 	h.router.POST("/dashboard/api/users/drop", wrapWrite(h.dashDropUser))
-	h.router.GET("/dashboard/api/dump", wrapWrite(h.dashDump))
+	h.router.GET("/dashboard/api/dump", refuseDumpGET)
 	h.router.POST("/dashboard/api/dump", wrapWrite(h.dashDump))
 	h.router.POST("/dashboard/api/restore", wrapWrite(h.dashRestore))
 	h.router.GET("/dashboard/api/backups", wrap(h.dashBackupList))
@@ -1949,6 +1949,14 @@ func (h *handler) dumpTarget(sess *dashui.Session) (*postgres.Instance, error) {
 func (h *handler) fileBackups() bool {
 	dest, err := h.backupDestination()
 	return err != nil || !dest.Allowed
+}
+
+// refuseDumpGET answers GET on the dump with 405. The dump is a full copy of
+// the tenant's data, so only POST (with app:resources:write) runs it: a link,
+// prefetch or image tag cannot start one.
+func refuseDumpGET(w http.ResponseWriter, _ *http.Request, _ httprouter.Params) {
+	w.Header().Set("Allow", http.MethodPost)
+	http.Error(w, "dump needs POST", http.StatusMethodNotAllowed)
 }
 
 func (h *handler) dashDump(w http.ResponseWriter, _ *http.Request, sess *dashui.Session) {
