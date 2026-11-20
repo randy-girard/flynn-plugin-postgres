@@ -157,3 +157,46 @@ func TestStartFollowerInheritsLeaderVolumeSize(t *testing.T) {
 		t.Fatalf("follower volumes %#v, want size %d", vols, fiveGiB)
 	}
 }
+
+// addons:create --follow sends the default runtime (small). The replica
+// still needs room for the leader's data, so it gets the leader's size.
+func TestStartFollowerSmallerRuntimeGetsLeaderVolumeSize(t *testing.T) {
+	ctl := newSizeCtl(t, false)
+	small, _ := ctl.cat.Find(dbruntime.EnginePostgres, "small")
+	bigLeader := 3 * small.Disk
+	ctl.apps = append(ctl.apps, &ct.App{ID: "postgresql-leader-11111", Name: "postgresql-leader-11111"})
+	lead := &ct.Release{ID: "lead", Processes: map[string]ct.ProcessType{
+		postgres.ProcessName: {Volumes: []ct.VolumeReq{{Path: postgres.VolumePath, Size: bigLeader}}},
+	}}
+	ctl.releases = append(ctl.releases, lead)
+	ctl.current["postgresql-leader-11111"] = lead
+	leader := &postgres.Instance{App: "postgresql-leader-11111", Runtime: "custom", ServiceHost: "leader.postgresql-leader-11111.discoverd"}
+	fol := &postgres.Instance{App: "postgresql-follow-33333", Role: postgres.RoleFollower, LeaderID: leader.App, Runtime: "small"}
+	if err := startIsolatedInstance(ctl, "00000000-0000-0000-0000-0000000000aa", fol, leader, nil, func(string, time.Duration) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	want := bigLeader
+	if vols := ctl.lastVolumes(t); len(vols) != 1 || vols[0].Size != want {
+		t.Fatalf("follower volumes %#v, want size %d", vols, want)
+	}
+}
+
+// A follower on a bigger runtime than its leader keeps its own disk.
+func TestStartFollowerLargerRuntimeKeepsItsOwnSize(t *testing.T) {
+	ctl := newSizeCtl(t, false)
+	ctl.apps = append(ctl.apps, &ct.App{ID: "postgresql-leader-11111", Name: "postgresql-leader-11111"})
+	lead := &ct.Release{ID: "lead", Processes: map[string]ct.ProcessType{
+		postgres.ProcessName: {Volumes: []ct.VolumeReq{{Path: postgres.VolumePath, Size: fiveGiB}}},
+	}}
+	ctl.releases = append(ctl.releases, lead)
+	ctl.current["postgresql-leader-11111"] = lead
+	leader := &postgres.Instance{App: "postgresql-leader-11111", Runtime: "custom", ServiceHost: "leader.postgresql-leader-11111.discoverd"}
+	fol := &postgres.Instance{App: "postgresql-follow-33333", Role: postgres.RoleFollower, LeaderID: leader.App, Runtime: "large"}
+	if err := startIsolatedInstance(ctl, "00000000-0000-0000-0000-0000000000aa", fol, leader, nil, func(string, time.Duration) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	want := func() int64 { r, _ := ctl.cat.Find(dbruntime.EnginePostgres, "large"); return r.Disk }()
+	if vols := ctl.lastVolumes(t); len(vols) != 1 || vols[0].Size != want {
+		t.Fatalf("follower volumes %#v, want size %d", vols, want)
+	}
+}

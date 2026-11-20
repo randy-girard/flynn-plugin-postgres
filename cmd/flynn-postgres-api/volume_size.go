@@ -9,8 +9,9 @@ import (
 
 // instanceVolumeSize is the data volume size for a new instance: the
 // provider config disk or the published runtime's disk
-// (dbruntime.VolumeSize), else the leader's volume size so a follower of a
-// custom-sized leader matches it. Zero is the host default (20 GiB).
+// (dbruntime.VolumeSize). A follower gets at least its leader's volume size,
+// so a replica never has less room than the data it copies. Zero is the
+// host default (20 GiB).
 func instanceVolumeSize(c any, engine, runtime string, disk int64, leaderApp string) (int64, error) {
 	type cataloguer interface {
 		ListDBRuntimes() (*dbruntime.Catalog, error)
@@ -23,7 +24,7 @@ func instanceVolumeSize(c any, engine, runtime string, disk int64, leaderApp str
 		}
 	}
 	size, err := dbruntime.VolumeSize(cat, engine, runtime, disk)
-	if err != nil || size > 0 || strings.TrimSpace(leaderApp) == "" {
+	if err != nil || strings.TrimSpace(leaderApp) == "" {
 		return size, err
 	}
 	type releaser interface {
@@ -31,10 +32,12 @@ func instanceVolumeSize(c any, engine, runtime string, disk int64, leaderApp str
 	}
 	if g, ok := c.(releaser); ok {
 		if rel, err := g.GetAppRelease(leaderApp); err == nil && rel != nil {
-			return releaseVolumeSize(rel), nil
+			if lead := releaseVolumeSize(rel); lead > size {
+				return lead, nil
+			}
 		}
 	}
-	return 0, nil
+	return size, nil
 }
 
 // releaseVolumeSize is the first sized volume in rel.
