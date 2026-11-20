@@ -54,6 +54,14 @@ var (
 
 const EnvAutoFailover = "FLYNN_POSTGRES_AUTO_FAILOVER"
 
+// EnvReaderUser and EnvReaderPassword are a follower's own tenant login in
+// its isolated (plugin-owned) release, so the API can rebuild it after a
+// restart. They never go to the tenant resource env.
+const (
+	EnvReaderUser     = "FLYNN_POSTGRES_READER_USER"
+	EnvReaderPassword = "FLYNN_POSTGRES_READER_PASSWORD"
+)
+
 // User is a role that exists only in one instance's state.
 type User struct {
 	Name     string `json:"name"`
@@ -103,8 +111,14 @@ type Instance struct {
 	SuperuserPassword string
 	AppUser           string
 	AppPassword       string
-	Nodes             int
-	Runtime           string
+	// ReaderUser and ReaderPassword are a follower's own read-only login.
+	// Tenants attached to the follower use it; AppUser stays the replicated
+	// leader app role the plugin and replication use. Empty for primaries,
+	// upgrade copies, and followers made before NEW-06.
+	ReaderUser     string
+	ReaderPassword string
+	Nodes          int
+	Runtime        string
 	// Disk is the data volume size in bytes from the provider config
 	// (addons:create --disk or the runtime's disk). Zero sizes the volume
 	// from the published runtime, or the leader's volume for a follower.
@@ -171,6 +185,11 @@ type ProvisionRequest struct {
 	ForUpgrade      bool
 	AutoFailover    bool
 	PlatformReplica bool
+	// ReaderUser and ReaderPassword, when set, are kept as the follower's
+	// login instead of a new one: a replacement follower inherits the login
+	// its predecessor's tenants already use.
+	ReaderUser     string
+	ReaderPassword string
 }
 
 // PromoteResult is a promoted follower plus the previous leader, which remains.
@@ -363,8 +382,22 @@ func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, 
 		inst.ReadOnly = true
 		inst.LeaderID = leader.ID
 		inst.Mode = mode
+		// Replication copies pg_authid, so the instance login stays the
+		// leader's app role. A follower tenants can attach to also gets its
+		// own read-only login (NEW-06), created on the leader before the
+		// follower starts. An upgrade copy is promoted with an attachment
+		// rewrite and is never attached as a follower, and a platform
+		// replica is not an add-on, so neither needs one.
 		inst.AppUser = leader.AppUser
 		inst.AppPassword = leader.AppPassword
+		if !req.ForUpgrade && !req.PlatformReplica {
+			inst.ReaderUser = "ro_" + id
+			inst.ReaderPassword = "ropw_" + newID()
+			if ru, rp := strings.TrimSpace(req.ReaderUser), strings.TrimSpace(req.ReaderPassword); ru != "" && rp != "" {
+				inst.ReaderUser = ru
+				inst.ReaderPassword = rp
+			}
+		}
 		inst.Databases = append([]Database(nil), leader.Databases...)
 		inst.Users = append([]User(nil), leader.Users...)
 		inst.Rows = append([]Row(nil), leader.Rows...)
@@ -437,6 +470,10 @@ func mergeLiveInstance(dst, src *Instance) {
 	}
 	if dst.AppPassword == "" {
 		dst.AppPassword = src.AppPassword
+	}
+	if dst.ReaderUser == "" && src.ReaderUser != "" {
+		dst.ReaderUser = src.ReaderUser
+		dst.ReaderPassword = src.ReaderPassword
 	}
 	if dst.ServiceHost == "" {
 		dst.ServiceHost = src.ServiceHost
@@ -784,6 +821,9 @@ func (s *Store) DropUser(id, name string) error {
 	if inst.AppUser != "" && strings.EqualFold(inst.AppUser, name) {
 		return fmt.Errorf("cannot drop the instance login %s", name)
 	}
+	if s.followerReaderLocked(name) {
+		return fmt.Errorf("cannot drop %s: it is a follower's login", name)
+	}
 	kept := inst.Users[:0]
 	found := false
 	for _, u := range inst.Users {
@@ -1062,7 +1102,7 @@ func (s *Store) CheckEnvSet(id, app string, updates map[string]*string) error {
 func (s *Store) attachLocked(inst *Instance, app, as string, newProvision bool) map[string]string {
 	for i := range inst.Attachments {
 		if inst.Attachments[i].App == app {
-			url := inst.appURL()
+			url := inst.attachURL()
 			inst.Attachments[i].URL = url
 			for k := range inst.Attachments[i].Env {
 				inst.Attachments[i].Env[k] = url
@@ -1073,7 +1113,7 @@ func (s *Store) attachLocked(inst *Instance, app, as string, newProvision bool) 
 			return AttachmentEnv(inst.Attachments[i].As, url)
 		}
 	}
-	env := AttachmentKeys(as, "DATABASE_URL", inst.App, inst.appURL(), func(k string) bool {
+	env := AttachmentKeys(as, "DATABASE_URL", inst.App, inst.attachURL(), func(k string) bool {
 		return s.urlKeyTaken(app, k)
 	}, newProvision)
 	stem := ""
@@ -1086,7 +1126,7 @@ func (s *Store) attachLocked(inst *Instance, app, as string, newProvision bool) 
 	if stem == "" {
 		stem = attachmentName(as)
 	}
-	inst.Attachments = append(inst.Attachments, Attachment{App: app, As: stem, URL: inst.appURL(), Env: env})
+	inst.Attachments = append(inst.Attachments, Attachment{App: app, As: stem, URL: inst.attachURL(), Env: env})
 	return cloneEnv(env)
 }
 
@@ -1152,8 +1192,19 @@ func (i *Instance) visibleTo(app string) bool {
 	return false
 }
 
-// ConnectionURL is the app role URL for this instance.
-func (i *Instance) ConnectionURL() string { return i.appURL() }
+// ConnectionURL is the URL a tenant attachment gets: the follower's own
+// reader login while it follows, otherwise the instance login.
+func (i *Instance) ConnectionURL() string { return i.attachURL() }
+
+func (i *Instance) attachURL() string {
+	if i != nil && i.Role == RoleFollower && strings.TrimSpace(i.ReaderUser) != "" && strings.TrimSpace(i.ReaderPassword) != "" {
+		clone := *i
+		clone.AppUser = i.ReaderUser
+		clone.AppPassword = i.ReaderPassword
+		return clone.appURL()
+	}
+	return i.appURL()
+}
 
 // MaintenanceURL is the TCP URL the plugin API uses for CREATE DATABASE,
 // CREATE ROLE, and DROP ROLE. Isolated instances revoke CONNECT on the
@@ -1249,6 +1300,10 @@ func InstanceFromEnv(id, app string, env map[string]string) *Instance {
 	inst.PlatformReplica = inst.PlatformReplica || envBool(env[EnvPlatformReplica])
 	inst.ServiceAlias = strings.TrimSpace(env[EnvServiceAlias])
 	inst.ReplicaPending = envBool(env["FLYNN_POSTGRES_REPLICA_PENDING"])
+	if ru, rp := strings.TrimSpace(env[EnvReaderUser]), strings.TrimSpace(env[EnvReaderPassword]); ru != "" && rp != "" {
+		inst.ReaderUser = ru
+		inst.ReaderPassword = rp
+	}
 	if inst.Role == RolePrimary {
 		inst.AutoFailover = false
 	}
@@ -1322,7 +1377,7 @@ func (i *Instance) ReplicationURL() string {
 	}
 	host := i.StableServiceHost()
 	if host == "" || host == strings.TrimSpace(i.ServiceHost) {
-		return i.ConnectionURL()
+		return i.appURL()
 	}
 	clone := *i
 	clone.ServiceHost = host
@@ -1358,7 +1413,7 @@ func (i *Instance) HasCredential(secret string) bool {
 	if secret == "" {
 		return false
 	}
-	if i.SuperuserPassword == secret || i.AppPassword == secret {
+	if i.SuperuserPassword == secret || i.AppPassword == secret || i.ReaderPassword == secret {
 		return true
 	}
 	for _, u := range i.Users {
@@ -1437,4 +1492,25 @@ func newID() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// IsFollowerReader reports whether name is a follower's own login (NEW-06).
+// The role lives on the leader too, so the dashboard must not drop it there.
+func (s *Store) IsFollowerReader(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.followerReaderLocked(name)
+}
+
+func (s *Store) followerReaderLocked(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, inst := range s.byID {
+		if inst != nil && strings.EqualFold(inst.ReaderUser, name) {
+			return true
+		}
+	}
+	return false
 }

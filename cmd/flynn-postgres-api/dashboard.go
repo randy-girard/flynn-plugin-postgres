@@ -715,6 +715,11 @@ func (h *handler) collectUsers(sess *dashui.Session) []userView {
 		if u.Name == "" {
 			return
 		}
+		// A follower's own login lives on its leader too (replication
+		// copies roles). It belongs to the follower, not this list.
+		if h.store != nil && h.store.IsFollowerReader(u.Name) {
+			return
+		}
 		key := strings.ToLower(u.Name)
 		if i, ok := seen[key]; ok {
 			if strings.TrimSpace(out[i].Database) == "" && strings.TrimSpace(u.Database) != "" {

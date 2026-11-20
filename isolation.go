@@ -212,3 +212,65 @@ func AdminPrivilegesSQL(user string) (string, error) {
 	}
 	return fmt.Sprintf("ALTER ROLE %s CREATEDB CREATEROLE; GRANT pg_read_all_data TO %s;", user, user), nil
 }
+
+// readerPasswordOK keeps a reader password safe inside a quoted literal in a
+// DO block: plugin-generated passwords are letters, digits and underscores.
+func readerPasswordOK(p string) bool {
+	return p != "" && isolationIdentOK(p)
+}
+
+// FollowerReaderRoleSQL creates a follower's own login on the leader, or
+// resets its password when the role already exists (a retried follow). The
+// role is a plain login with no attributes; reads come from
+// FollowerReaderGrantSQL. Streaming replication copies it to the follower.
+func FollowerReaderRoleSQL(name, password string) (string, error) {
+	if err := ValidUserName(name); err != nil {
+		return "", err
+	}
+	if !readerPasswordOK(password) {
+		return "", fmt.Errorf("reader password must be letters, digits, and underscores")
+	}
+	return fmt.Sprintf(
+		"DO $flynn_reader$\n"+
+			"BEGIN\n"+
+			"  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN\n"+
+			"    ALTER ROLE %s LOGIN PASSWORD %s;\n"+
+			"  ELSE\n"+
+			"    CREATE ROLE %s LOGIN PASSWORD %s CONNECTION LIMIT 20 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;\n"+
+			"  END IF;\n"+
+			"END\n"+
+			"$flynn_reader$",
+		quoteLiteral(name), name, quoteLiteral(password), name, quoteLiteral(password),
+	), nil
+}
+
+// FollowerReaderGrantSQL is run inside each leader database. It grants read
+// on what exists now and, through default privileges, on what the leader's
+// app role (owner) creates later. It never grants a write privilege.
+func FollowerReaderGrantSQL(name, owner string) (string, error) {
+	if err := ValidUserName(name); err != nil {
+		return "", err
+	}
+	if !isolationIdentOK(owner) {
+		return "", fmt.Errorf("owner role must be letters, digits, and underscores")
+	}
+	return fmt.Sprintf(
+		"GRANT USAGE ON SCHEMA public TO %[1]s;\n"+
+			"GRANT SELECT ON ALL TABLES IN SCHEMA public TO %[1]s;\n"+
+			"GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO %[1]s;\n"+
+			"ALTER DEFAULT PRIVILEGES FOR ROLE %[2]s IN SCHEMA public GRANT SELECT ON TABLES TO %[1]s;\n"+
+			"ALTER DEFAULT PRIVILEGES FOR ROLE %[2]s IN SCHEMA public GRANT SELECT ON SEQUENCES TO %[1]s",
+		name, owner,
+	), nil
+}
+
+// GrantReaderDatabaseSQL lets the reader connect to one leader database.
+func GrantReaderDatabaseSQL(name, database string) (string, error) {
+	if err := ValidUserName(name); err != nil {
+		return "", err
+	}
+	if err := ValidDatabaseName(database); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", database, name), nil
+}

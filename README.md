@@ -74,9 +74,30 @@ A follower is a new resource, not an extra node. It copies the leader with
 streaming replication and must run the same engine version. It is read-only.
 A follower can only follow a resource owned by or attached to the requesting
 app; another tenant's resource fails with "not found", and the controller
-ignores a caller-supplied `app` or `tenant`. The follower keeps the leader's app
-role credentials, because streaming replication copies the role table. A
-follower cannot follow another follower. Its `--as` name does not replace
+ignores a caller-supplied `app` or `tenant`.
+
+Each follower gets its own login (`ro_<id>`), different from the leader's app
+role (platform replicas and the temporary `pg:upgrade` copy are never attached
+and have none). Apps attached to the follower get only that login in their `*_URL`. It
+can read every table and sequence in `public` (now and later ones the app role
+creates) and cannot write. Streaming replication copies the role table, so the
+plugin creates this role on the leader before the follower's base backup; it
+exists on both instances and is read-only on both. The leader's app role stays
+the follower's instance login and its replication login, but only in the
+follower's own release: the tenant resource env has `FLYNN_POSTGRES_ROLE` and
+`FLYNN_POSTGRES_LEADER`, never `FLYNN_POSTGRES_PRIMARY_URL`. Deleting the
+follower drops its role from the leader (best effort; a leader that is down
+never blocks the delete). The dashboard Users tab does not list or drop it. A
+replacement follower (`pg:upgrade`, broken-follower replacement) keeps the
+same login, so its apps' URLs keep working. Followers created before this
+change keep the leader's app role login until they are replaced.
+
+`pg:promote` rewrites the leader's apps to the promoted host with the leader's
+app role (it exists there through replication). Apps attached to the follower
+itself keep its read-only login after a promote, unfollow or failover; attach
+the promoted resource again for a writable URL.
+
+A follower cannot follow another follower. Its `--as` name does not replace
 the leader URL. Promoting an auto-failover follower first fences (scales to 0 and waits for) the
 current primary; if the fence fails, the promote is refused and nothing changes.
 `pg:promote` makes it writable, ends the follow, and rewrites

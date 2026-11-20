@@ -920,14 +920,15 @@ func TestProvisionFollowRejectsOtherTenant(t *testing.T) {
 	if got := s.FollowerApps(leader.ID); len(got) != 0 {
 		t.Fatalf("leader gained followers: %v", got)
 	}
-	// The owner may still follow. A follower carries the leader's app role
-	// credentials because replication copies the role table with the data.
+	// The owner may still follow. The follower's tenant login is its own
+	// read-only role (NEW-06); only its instance login is the replicated
+	// leader app role.
 	own, _, err := s.Provision(ProvisionRequest{App: "victim", Follow: leader.ID})
 	if err != nil {
 		t.Fatalf("same-tenant follow: %v", err)
 	}
-	if own.AppPassword != leader.AppPassword {
-		t.Fatal("same-tenant follower must keep the replicated app role credentials")
+	if own.ReaderPassword == "" || own.ReaderPassword == leader.AppPassword || strings.Contains(own.ConnectionURL(), leader.AppPassword) {
+		t.Fatal("same-tenant follower must get its own login")
 	}
 	// Internal flows (upgrade, failover) follow without a tenant.
 	if _, _, err := s.ProvisionTrusted(ProvisionRequest{Follow: leader.ID, ForUpgrade: true}); err != nil {

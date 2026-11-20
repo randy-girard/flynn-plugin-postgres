@@ -269,6 +269,9 @@ func (h *handler) dropUserOnInstance(id, name, database string) error {
 	if inst.ReadOnly || inst.Role == postgres.RoleFollower {
 		return postgres.ErrReadOnly
 	}
+	if h.store.IsFollowerReader(name) {
+		return fmt.Errorf("cannot drop %s: it is a follower's login", name)
+	}
 	if h.live() {
 		if err := dropUserOnInstance(inst, name, database); err != nil {
 			return err
@@ -279,4 +282,82 @@ func (h *handler) dropUserOnInstance(id, name, database string) error {
 		return nil
 	}
 	return h.store.DropUser(id, name)
+}
+
+// createFollowerReader creates the follower's own read-only login on its
+// leader (NEW-06). Streaming replication copies pg_authid, so the role must
+// exist on the leader; it is created before the follower's base backup so the
+// copy already has it. It runs as the leader's app role (CREATEROLE), which
+// then holds ADMIN on the new role and can drop it later.
+func createFollowerReader(leader, fol *postgres.Instance) error {
+	if leader == nil || fol == nil {
+		return postgres.ErrNotFound
+	}
+	role, err := postgres.FollowerReaderRoleSQL(fol.ReaderUser, fol.ReaderPassword)
+	if err != nil {
+		return err
+	}
+	if _, err := runSQL(leader.MaintenanceURL(), role); err != nil {
+		return fmt.Errorf("create follower login on %s: %w", leader.App, err)
+	}
+	for _, db := range leaderDatabases(leader) {
+		connect, err := postgres.GrantReaderDatabaseSQL(fol.ReaderUser, db)
+		if err != nil {
+			return err
+		}
+		if _, err := runSQL(leader.MaintenanceURL(), connect); err != nil {
+			return fmt.Errorf("grant follower login on %s/%s: %w", leader.App, db, err)
+		}
+		grant, err := postgres.FollowerReaderGrantSQL(fol.ReaderUser, leader.AppUser)
+		if err != nil {
+			return err
+		}
+		if _, err := runSQL(instanceDatabaseURL(leader, db), grant); err != nil {
+			return fmt.Errorf("grant follower reads on %s/%s: %w", leader.App, db, err)
+		}
+	}
+	return nil
+}
+
+// leaderDatabases is every tenant database on the leader: the store's list
+// plus what the instance reports.
+func leaderDatabases(leader *postgres.Instance) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] || postgres.ValidDatabaseName(name) != nil {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, db := range leader.Databases {
+		add(db.Name)
+	}
+	for _, db := range listDatabasesOnInstance(leader) {
+		add(db)
+	}
+	return out
+}
+
+// dropFollowerReader removes a deleted follower's login from its leader. It
+// is best effort and never blocks the delete: the leader may be down.
+func (h *handler) dropFollowerReader(fol, leader *postgres.Instance) {
+	if fol == nil || leader == nil || strings.TrimSpace(fol.ReaderUser) == "" {
+		return
+	}
+	if h != nil && h.store != nil {
+		// A replacement follower may still use this login.
+		for _, other := range h.store.All() {
+			if other != nil && other.ID != fol.ID && other.App != fol.App && strings.EqualFold(other.ReaderUser, fol.ReaderUser) {
+				return
+			}
+		}
+	}
+	leaderCopy := *leader
+	name := fol.ReaderUser
+	go func() {
+		_ = dropUserOnInstance(&leaderCopy, name, "")
+	}()
 }

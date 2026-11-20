@@ -353,6 +353,14 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if err != nil {
 		return err
 	}
+	reader := inst.Role == postgres.RoleFollower && leader != nil && strings.TrimSpace(inst.ReaderUser) != "" && strings.TrimSpace(inst.ReaderPassword) != ""
+	if reader {
+		// NEW-06: the follower's own login must exist on the leader before
+		// pg_basebackup copies the role table.
+		if err := createFollowerReader(leader, inst); err != nil {
+			return err
+		}
+	}
 	db := "postgres"
 	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
 		db = inst.Databases[0].Name
@@ -378,6 +386,10 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	}
 	if inst.ID != "" {
 		env[postgres.ResourceIDEnv] = inst.ID
+	}
+	if reader {
+		env[postgres.EnvReaderUser] = inst.ReaderUser
+		env[postgres.EnvReaderPassword] = inst.ReaderPassword
 	}
 	copyClusterDiscoverdEnv(env)
 	stampInstanceMetricsPort(env)
@@ -494,7 +506,7 @@ func stampIsolatedRole(c isolatedReleaseClient, inst *postgres.Instance, leader 
 	for k, v := range rel.Env {
 		env[k] = v
 	}
-	applyPostgresResourceEnv(inst, env, leader)
+	applyPostgresIsolatedEnv(inst, env, leader)
 	stampInstanceMetricsPort(env)
 	if inst.Role == postgres.RolePrimary && strings.TrimSpace(inst.ServiceAlias) != "" {
 		env[postgres.EnvServiceAlias] = inst.ServiceAlias

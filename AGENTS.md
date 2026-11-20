@@ -4,6 +4,10 @@ Tenant provider `postgres` at `postgres-plugin.discoverd`. Never call
 `postgres-api.discoverd` or copy the platform appliance superuser into tenant env.
 
 Each resource is one app, one volume, one node. Followers are separate resources.
+A follower's tenant login is its own read-only role (`ReaderUser`, created on
+the leader before the base backup, since replication copies roles); its
+`AppUser` stays the replicated leader app role for the plugin and replication.
+Tenant resource env never carries `FLYNN_POSTGRES_PRIMARY_URL`.
 No in-place resize: pg:upgrade follows, waits, then promotes.
 
 Unit tests are an in-memory state machine. Do not require a running Postgres.

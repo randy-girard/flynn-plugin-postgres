@@ -394,11 +394,13 @@ func (s *Store) Upgrade(ctx context.Context, id string, opts UpgradeOptions) (*U
 		}
 		s.mu.Unlock()
 		nf, _, err := s.ProvisionTrusted(ProvisionRequest{
-			Follow:       newPrimary.ID,
-			Mode:         ModeStreaming,
-			Runtime:      followRuntime,
-			AutoFailover: auto,
-			Tenant:       old.Tenant,
+			Follow:         newPrimary.ID,
+			Mode:           ModeStreaming,
+			Runtime:        followRuntime,
+			AutoFailover:   auto,
+			Tenant:         old.Tenant,
+			ReaderUser:     old.ReaderUser,
+			ReaderPassword: old.ReaderPassword,
 		})
 		if err != nil {
 			return nil, err

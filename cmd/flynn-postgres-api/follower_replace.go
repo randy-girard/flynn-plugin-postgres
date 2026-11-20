@@ -103,6 +103,10 @@ func (h *handler) recreateFollower(old, primary *postgres.Instance) error {
 		Runtime:      runtime,
 		AutoFailover: auto,
 		Tenant:       tenant,
+		// cutoverAttachedApps rewrites only the host; the old follower's
+		// tenants keep authenticating with the same reader login.
+		ReaderUser:     old.ReaderUser,
+		ReaderPassword: old.ReaderPassword,
 	})
 	if err != nil {
 		_ = h.store.SetAutoFailover(old.ID, auto)

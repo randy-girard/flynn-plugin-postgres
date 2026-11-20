@@ -270,6 +270,11 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 	}
 	if h.live() && h.client != nil && strings.TrimSpace(inst.App) != "" {
 		h.purgeTenantBackups(inst)
+		if inst.Role == postgres.RoleFollower && inst.LeaderID != "" {
+			if leader, err := h.store.Get(inst.LeaderID); err == nil {
+				h.dropFollowerReader(inst, leader)
+			}
+		}
 		startIsolatedAppDeletion(h.client, inst.App)
 	}
 	h.store.Forget(inst.ID)
@@ -659,6 +664,11 @@ var libpqCredentialKeys = []string{
 // app does not need. The isolated instance release still has POSTGRES_USER/DB.
 var tenantPostgresCredentialKeys = []string{
 	"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "POSTGRES_HOST", "POSTGRES_PORT",
+	// The replication URL logs in as the leader's app role, and the reader
+	// pair is the follower's own release bookkeeping (NEW-06). A tenant
+	// attached to a follower gets only its own *_URL.
+	"FLYNN_POSTGRES_PRIMARY_URL", "POSTGRES_PRIMARY_URL",
+	postgres.EnvReaderUser, postgres.EnvReaderPassword,
 }
 
 // applyPostgresResourceEnv is the controller resource env the dashboard lists.
@@ -677,12 +687,14 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 	delete(env, "POSTGRES_URL")
 	if inst.Role == postgres.RoleFollower {
 		env["FLYNN_POSTGRES_ROLE"] = "follower"
+		// No FLYNN_POSTGRES_PRIMARY_URL here: it carries the leader's app
+		// role login. Only the follower's own release has it
+		// (applyPostgresIsolatedEnv).
+		delete(env, "FLYNN_POSTGRES_PRIMARY_URL")
+		delete(env, "POSTGRES_PRIMARY_URL")
 		leaderApp := ""
 		if leader != nil {
 			leaderApp = strings.TrimSpace(leader.App)
-			if u := strings.TrimSpace(leader.ReplicationURL()); u != "" {
-				env["FLYNN_POSTGRES_PRIMARY_URL"] = u
-			}
 		}
 		if leaderApp == "" && postgres.IsolatedInstanceApp(inst.LeaderID) {
 			leaderApp = strings.TrimSpace(inst.LeaderID)
@@ -714,6 +726,36 @@ func applyPostgresResourceEnv(inst *postgres.Instance, env map[string]string, le
 		env["FLYNN_POSTGRES_REPLICA_PENDING"] = "true"
 	} else {
 		delete(env, "FLYNN_POSTGRES_REPLICA_PENDING")
+	}
+}
+
+// applyPostgresIsolatedEnv is applyPostgresResourceEnv for the instance's
+// own (plugin-owned) release: a follower keeps the replication URL there, from
+// the current leader when known, else the one it already had.
+func applyPostgresIsolatedEnv(inst *postgres.Instance, env map[string]string, leader *postgres.Instance) {
+	if inst == nil || env == nil {
+		return
+	}
+	prev := strings.TrimSpace(env["FLYNN_POSTGRES_PRIMARY_URL"])
+	if prev == "" {
+		prev = strings.TrimSpace(env["POSTGRES_PRIMARY_URL"])
+	}
+	legacy, hadLegacy := env["POSTGRES_PRIMARY_URL"]
+	applyPostgresResourceEnv(inst, env, leader)
+	if inst.Role != postgres.RoleFollower {
+		return
+	}
+	if hadLegacy {
+		env["POSTGRES_PRIMARY_URL"] = legacy
+	}
+	if leader != nil {
+		if u := strings.TrimSpace(leader.ReplicationURL()); u != "" {
+			env["FLYNN_POSTGRES_PRIMARY_URL"] = u
+			return
+		}
+	}
+	if prev != "" {
+		env["FLYNN_POSTGRES_PRIMARY_URL"] = prev
 	}
 }
 
