@@ -105,24 +105,28 @@ type Instance struct {
 	AppPassword       string
 	Nodes             int
 	Runtime           string
-	EngineVersion     string
-	Role              Role
-	LeaderID          string
-	Mode              ReplicationMode
-	ReadOnly          bool
-	LagBytes          int64
-	BackupCopied      int64
-	BackupTotal       int64
-	CatchupMax        int64
-	ServiceHost       string
-	Databases         []Database
-	Users             []User
-	Rows              []Row
-	Attachments       []Attachment
-	Followers         []string
-	AutoFailover      bool
-	PlatformReplica   bool
-	ReplicaPending    bool
+	// Disk is the data volume size in bytes from the provider config
+	// (addons:create --disk or the runtime's disk). Zero sizes the volume
+	// from the published runtime, or the leader's volume for a follower.
+	Disk            int64
+	EngineVersion   string
+	Role            Role
+	LeaderID        string
+	Mode            ReplicationMode
+	ReadOnly        bool
+	LagBytes        int64
+	BackupCopied    int64
+	BackupTotal     int64
+	CatchupMax      int64
+	ServiceHost     string
+	Databases       []Database
+	Users           []User
+	Rows            []Row
+	Attachments     []Attachment
+	Followers       []string
+	AutoFailover    bool
+	PlatformReplica bool
+	ReplicaPending  bool
 	// ServiceAlias is an extra discoverd name the promoted job registers
 	// (the previous primary's app) so existing DATABASE_URL hosts keep resolving.
 	ServiceAlias string
@@ -163,6 +167,7 @@ type ProvisionRequest struct {
 	Follow          string
 	Mode            ReplicationMode
 	Runtime         string
+	Disk            int64
 	ForUpgrade      bool
 	AutoFailover    bool
 	PlatformReplica bool
@@ -326,6 +331,7 @@ func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, 
 		AppPassword:       "apppw_" + newID(),
 		Nodes:             DefaultNodes,
 		Runtime:           defaultRuntime(req.Runtime),
+		Disk:              req.Disk,
 		EngineVersion:     EngineVersion(),
 		Role:              RolePrimary,
 	}

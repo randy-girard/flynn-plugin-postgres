@@ -168,6 +168,7 @@ type provisionBody struct {
 	As           string `json:"as"`
 	Follow       string `json:"follow"`
 	Runtime      string `json:"runtime"`
+	Disk         int64  `json:"disk,omitempty"`
 	Replication  string `json:"replication"`
 	AutoFailover bool   `json:"auto_failover"`
 }
@@ -194,6 +195,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		Follow:       body.Follow,
 		Mode:         postgres.ReplicationMode(body.Replication),
 		Runtime:      body.Runtime,
+		Disk:         body.Disk,
 		AutoFailover: body.AutoFailover,
 	})
 	if err != nil {
@@ -202,6 +204,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 	}
 	if h.live() {
 		if err := h.startInstance(inst); err != nil {
+			h.store.Forget(inst.ID)
 			writeAPIError(w, err)
 			return
 		}

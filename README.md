@@ -196,6 +196,10 @@ the login may not create fails the restore only if a restored object needs it.
 The restore spools the dump to a temporary file, because it reads the table of
 contents before the data.
 
+### Volume size
+
+The `/data` volume is sized from the database runtime's disk (`--runtime`, default `small`; see `flynn-host db-runtime`), or from a raw `--disk` when a cluster admin has run `flynn-host db-runtime:allow-custom`. A raw disk sent without that switch is rejected by the provider too, not only by the CLI. A follower gets its own runtime's disk, or its leader's volume size when that runtime is not published (a custom-sized leader). The size is the volume's ZFS refquota, set when the volume is created. Existing volumes keep their size: instances created before this have the 20 GiB host default. There is no in-place resize.
+
 ## State machine
 
 Unit tests drive an in-memory state machine. They do not start a Postgres

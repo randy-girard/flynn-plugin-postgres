@@ -343,6 +343,16 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 	if !postgres.IsolatedInstanceApp(inst.App) {
 		return fmt.Errorf("postgres plugin must not start tenant app %q as a datastore instance", inst.App)
 	}
+	leaderApp := ""
+	if leader != nil {
+		leaderApp = leader.App
+	} else if inst.Role == postgres.RoleFollower {
+		leaderApp = inst.LeaderID
+	}
+	volSize, err := instanceVolumeSize(c, dbruntime.EnginePostgres, inst.Runtime, inst.Disk, leaderApp)
+	if err != nil {
+		return err
+	}
 	db := "postgres"
 	if len(inst.Databases) > 0 && inst.Databases[0].Name != "" {
 		db = inst.Databases[0].Name
@@ -396,7 +406,7 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		Args:    []string{"/bin/start-flynn-postgres", "postgres"},
 		Service: service,
 		Ports:   []ct.Port{{Port: 5432, Proto: "tcp"}},
-		Volumes: []ct.VolumeReq{{Path: postgres.VolumePath}},
+		Volumes: []ct.VolumeReq{{Path: postgres.VolumePath, Size: volSize}},
 	}
 	applyRuntimeResources(c, dbruntime.EnginePostgres, inst.Runtime, &proc)
 	release := &ct.Release{
