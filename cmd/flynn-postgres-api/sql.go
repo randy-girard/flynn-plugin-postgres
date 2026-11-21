@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 )
@@ -186,15 +188,22 @@ func dropUserOnInstance(inst *postgres.Instance, name, database string) error {
 }
 
 func listDatabasesOnInstance(inst *postgres.Instance) []string {
+	names, _ := queryDatabasesOnInstance(inst)
+	return names
+}
+
+// queryDatabasesOnInstance lists the instance's tenant databases and reports
+// whether the listing itself failed, so a caller can tell "none" from "unknown".
+func queryDatabasesOnInstance(inst *postgres.Instance) ([]string, error) {
 	if inst == nil {
-		return nil
+		return nil, postgres.ErrNotFound
 	}
 	out, err := runSQL(inst.MaintenanceURL(),
 		`SELECT datname FROM pg_database
 WHERE datallowconn AND datname NOT IN ('template0','template1','postgres')
 ORDER BY 1`)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var names []string
 	for _, line := range strings.Split(out, "\n") {
@@ -204,7 +213,7 @@ ORDER BY 1`)
 		}
 		names = append(names, name)
 	}
-	return names
+	return names, nil
 }
 
 func listUsersOnInstance(inst *postgres.Instance) []postgres.User {
@@ -289,10 +298,28 @@ func (h *handler) dropUserOnInstance(id, name, database string) error {
 // exist on the leader; it is created before the follower's base backup so the
 // copy already has it. It runs as the leader's app role (CREATEROLE), which
 // then holds ADMIN on the new role and can drop it later.
+//
+// Every statement is idempotent, so a leader that cannot be reached (psql
+// connection failure) is retried for followerReaderRetryTimeout; after that
+// the error wraps errLeaderUnavailable and the API answers a retryable 503.
 func createFollowerReader(leader, fol *postgres.Instance) error {
 	if leader == nil || fol == nil {
 		return postgres.ErrNotFound
 	}
+	deadline := time.Now().Add(followerReaderRetryTimeout)
+	for {
+		err := createFollowerReaderOnce(leader, fol)
+		if err == nil || !pgConnectionFailed(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: %w", errLeaderUnavailable, err)
+		}
+		time.Sleep(followerReaderRetryDelay)
+	}
+}
+
+func createFollowerReaderOnce(leader, fol *postgres.Instance) error {
 	role, err := postgres.FollowerReaderRoleSQL(fol.ReaderUser, fol.ReaderPassword)
 	if err != nil {
 		return err
@@ -300,12 +327,19 @@ func createFollowerReader(leader, fol *postgres.Instance) error {
 	if _, err := runSQL(leader.MaintenanceURL(), role); err != nil {
 		return fmt.Errorf("create follower login on %s: %w", leader.App, err)
 	}
-	for _, db := range leaderDatabases(leader) {
+	dbs, err := leaderDatabases(leader)
+	if err != nil {
+		return fmt.Errorf("list databases on %s: %w", leader.App, err)
+	}
+	for _, db := range dbs {
 		connect, err := postgres.GrantReaderDatabaseSQL(fol.ReaderUser, db)
 		if err != nil {
 			return err
 		}
 		if _, err := runSQL(leader.MaintenanceURL(), connect); err != nil {
+			if pgDatabaseMissing(err, db) {
+				continue
+			}
 			return fmt.Errorf("grant follower login on %s/%s: %w", leader.App, db, err)
 		}
 		grant, err := postgres.FollowerReaderGrantSQL(fol.ReaderUser, leader.AppUser)
@@ -313,15 +347,64 @@ func createFollowerReader(leader, fol *postgres.Instance) error {
 			return err
 		}
 		if _, err := runSQL(instanceDatabaseURL(leader, db), grant); err != nil {
+			if pgDatabaseMissing(err, db) {
+				continue
+			}
 			return fmt.Errorf("grant follower reads on %s/%s: %w", leader.App, db, err)
 		}
 	}
 	return nil
 }
 
-// leaderDatabases is every tenant database on the leader: the store's list
-// plus what the instance reports.
-func leaderDatabases(leader *postgres.Instance) []string {
+// errLeaderUnavailable marks a leader that stayed unreachable; writeAPIError
+// answers it with a retryable 503.
+var errLeaderUnavailable = errors.New("leader unreachable")
+
+var (
+	followerReaderRetryDelay   = time.Second
+	followerReaderRetryTimeout = 60 * time.Second
+)
+
+// pgConnectionFailed is a psql run that never reached a working session:
+// psql exits 2 when the connection fails, and a server that is starting or
+// stopping refuses with one of these messages. "database does not exist"
+// also exits 2 and is not a connection problem.
+func pgConnectionFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "does not exist") || strings.Contains(msg, "password authentication failed") {
+		return false
+	}
+	for _, s := range []string{
+		"exit status 2",
+		"connection refused",
+		"could not connect",
+		"no route to host",
+		"timeout expired",
+		"the database system is starting up",
+		"the database system is shutting down",
+		"not yet accepting connections",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// pgDatabaseMissing is postgres saying the named database is gone (dropped
+// with plain SQL, or between the listing and the grant).
+func pgDatabaseMissing(err error, db string) bool {
+	return err != nil && strings.Contains(err.Error(), fmt.Sprintf("database \"%s\" does not exist", db))
+}
+
+// leaderDatabases is every tenant database the leader has now. The store's
+// list is only a fallback for a leader that answered the role statement but
+// not the listing: a database dropped with plain SQL (pg:psql) stays in the
+// store, and granting on it fails the follow.
+func leaderDatabases(leader *postgres.Instance) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	add := func(name string) {
@@ -332,13 +415,20 @@ func leaderDatabases(leader *postgres.Instance) []string {
 		seen[name] = true
 		out = append(out, name)
 	}
-	for _, db := range leader.Databases {
-		add(db.Name)
+	live, err := queryDatabasesOnInstance(leader)
+	if err != nil {
+		if pgConnectionFailed(err) {
+			return nil, err
+		}
+		for _, db := range leader.Databases {
+			add(db.Name)
+		}
+		return out, nil
 	}
-	for _, db := range listDatabasesOnInstance(leader) {
+	for _, db := range live {
 		add(db)
 	}
-	return out
+	return out, nil
 }
 
 // dropFollowerReader removes a deleted follower's login from its leader. It

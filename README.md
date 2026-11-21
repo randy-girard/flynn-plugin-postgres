@@ -82,7 +82,12 @@ and have none). Apps attached to the follower get only that login in their `*_UR
 can read every table and sequence in `public` (now and later ones the app role
 creates) and cannot write. Streaming replication copies the role table, so the
 plugin creates this role on the leader before the follower's base backup; it
-exists on both instances and is read-only on both. The leader's app role stays
+exists on both instances and is read-only on both. The grants cover the
+databases the leader has when you follow, read from the leader itself, so a
+database you dropped with plain SQL (`pg:psql -- -c 'DROP DATABASE ...'`) is
+skipped. If the leader is unreachable (for example right after it starts or a
+network blip on its host), the plugin retries for up to 60 seconds, then fails
+`pg:follow` with a retryable 503 `service_unavailable`; run it again. The leader's app role stays
 the follower's instance login and its replication login, but only in the
 follower's own release: the tenant resource env has `FLYNN_POSTGRES_ROLE` and
 `FLYNN_POSTGRES_LEADER`, never `FLYNN_POSTGRES_PRIMARY_URL`. Deleting the

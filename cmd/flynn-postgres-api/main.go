@@ -772,7 +772,20 @@ func stripTenantPostgresCredentials(env map[string]string) {
 	delete(env, "POSTGRES_URL")
 }
 
+// writeAPIError answers most failures as a 400 validation error. A leader
+// that stayed unreachable, or a retryable error relayed by the controller
+// (pg:follow provisions through it), stays a retryable 503 so callers retry
+// instead of reporting a bad request.
 func writeAPIError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errLeaderUnavailable) {
+		httphelper.Error(w, httphelper.JSONError{Code: httphelper.ServiceUnavailableErrorCode, Message: err.Error(), Retry: true})
+		return
+	}
+	var relayed httphelper.JSONError
+	if errors.As(err, &relayed) && relayed.Retry && relayed.Code == httphelper.ServiceUnavailableErrorCode {
+		httphelper.Error(w, relayed)
+		return
+	}
 	httphelper.ValidationError(w, "postgres", err.Error())
 }
 

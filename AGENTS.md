@@ -7,6 +7,8 @@ Each resource is one app, one volume, one node. Followers are separate resources
 A follower's tenant login is its own read-only role (`ReaderUser`, created on
 the leader before the base backup, since replication copies roles); its
 `AppUser` stays the replicated leader app role for the plugin and replication.
+The store is per API process (web scales to 2), so its database list can be
+stale: SQL against an instance uses the instance's own listing, not the store.
 Tenant resource env never carries `FLYNN_POSTGRES_PRIMARY_URL`.
 No in-place resize: pg:upgrade follows, waits, then promotes.
 

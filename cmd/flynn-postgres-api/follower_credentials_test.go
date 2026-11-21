@@ -58,6 +58,9 @@ func TestStartIsolatedFollowerCreatesReaderOnLeader(t *testing.T) {
 	runSQL = func(connURL, query string) (string, error) {
 		user, db := urlUserDB(connURL)
 		calls = append(calls, sqlCall{user: user, db: db, query: query, releases: len(ctrl.releases)})
+		if strings.Contains(query, pgDatabaseListQuery) {
+			return "db_extra\ndb_shop\n", nil
+		}
 		return "", nil
 	}
 	if err := startIsolatedInstance(ctrl, "img-1", fol, leader, nil, func(string, time.Duration) error { return nil }); err != nil {
