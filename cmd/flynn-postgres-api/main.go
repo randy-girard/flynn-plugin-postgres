@@ -547,57 +547,28 @@ func (h *handler) promoteFenced(id string) (*postgres.PromoteResult, error) {
 	return h.store.Promote(id)
 }
 
-func (h *handler) promote(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
-	if err := h.rejectPlatformReplicaControl(p.ByName("id")); err != nil {
+func (h *handler) promote(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	var body struct {
+		Force bool `json:"force"`
+	}
+	if err := decode(r, &body); err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	res, err := h.promoteFenced(p.ByName("id"))
+	res, err := h.promoteFollower(p.ByName("id"), promoteOptions{Force: body.Force})
 	if err != nil {
 		writeAPIError(w, err)
 		return
-	}
-	if res != nil {
-		fromApp, toApp := "", ""
-		if res.PreviousLeader != nil {
-			fromApp = res.PreviousLeader.App
-		}
-		if res.Promoted != nil {
-			toApp = res.Promoted.App
-		}
-		h.emitTopology(postgres.CodePromoted, res.Promoted, fromApp, toApp, "reason=manual")
-		if err := h.stampIsolatedRole(res.Promoted); err != nil {
-			writeAPIError(w, err)
-			return
-		}
-		if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
-			h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=manual")
-			_ = h.stampIsolatedRole(res.PreviousLeader)
-			h.syncResourceEnv(nil, res.PreviousLeader)
-			_ = h.ensureAutoFailoverReplica(res.Promoted)
-		}
-		h.syncResourceEnv(nil, res.Promoted)
 	}
 	httphelper.JSON(w, 200, res)
 }
 
 func (h *handler) unfollow(w http.ResponseWriter, _ *http.Request, p httprouter.Params) {
-	if err := h.rejectPlatformReplicaControl(p.ByName("id")); err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	before, _ := h.store.Get(p.ByName("id"))
-	inst, err := h.store.Unfollow(p.ByName("id"))
+	inst, err := h.unfollowFollower(p.ByName("id"))
 	if err != nil {
 		writeAPIError(w, err)
 		return
 	}
-	h.emitFollowerRemoved(before, "reason=unfollow")
-	if err := h.stampIsolatedRole(inst); err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	h.syncResourceEnv(nil, inst)
 	httphelper.JSON(w, 200, inst)
 }
 

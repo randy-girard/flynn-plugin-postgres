@@ -1373,39 +1373,19 @@ func (h *handler) dashReplicationResult(r *http.Request, sess *dashui.Session) (
 		}
 		return "Follower started with streaming replication. It is read-only until you promote or unfollow it.", nil
 	case "promote":
-		if err := h.rejectPlatformReplicaControl(id); err != nil {
-			return "", err
-		}
-		res, err := h.promoteFenced(id)
+		res, err := h.promoteFollower(id, promoteOptions{})
 		if err != nil {
 			return "", err
 		}
-		if res != nil {
-			if err := h.stampIsolatedRole(res.Promoted); err != nil {
-				return "", err
-			}
-			h.syncResourceEnv(sess, res.Promoted)
-			if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
-				_ = h.stampIsolatedRole(res.PreviousLeader)
-				h.syncResourceEnv(sess, res.PreviousLeader)
-				_ = h.ensureAutoFailoverReplica(res.Promoted)
-				return "Follower promoted. It is now the primary. The previous leader is fenced and a replacement replica is created when another node is available.", nil
-			}
+		if res != nil && res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
+			return "Follower promoted. It was restarted as the primary and accepted a write. The previous leader is stopped and a replacement replica is created when another node is available.", nil
 		}
-		return "Follower promoted. It is now the primary. The previous leader remains as its own resource.", nil
+		return "Follower promoted. It was restarted as the primary and accepted a write. The previous leader remains as its own resource.", nil
 	case "unfollow":
-		if err := h.rejectPlatformReplicaControl(id); err != nil {
+		if _, err := h.unfollowFollower(id); err != nil {
 			return "", err
 		}
-		inst, err := h.store.Unfollow(id)
-		if err != nil {
-			return "", err
-		}
-		if err := h.stampIsolatedRole(inst); err != nil {
-			return "", err
-		}
-		h.syncResourceEnv(sess, inst)
-		return "Replication stopped. This instance is a standalone writable copy.", nil
+		return "Replication stopped. This instance was restarted as a standalone writable copy.", nil
 	case "remove":
 		if err := h.removeFollower(id); err != nil {
 			return "", err

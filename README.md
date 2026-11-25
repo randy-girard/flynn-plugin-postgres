@@ -97,18 +97,47 @@ replacement follower (`pg:upgrade`, broken-follower replacement) keeps the
 same login, so its apps' URLs keep working. Followers created before this
 change keep the leader's app role login until they are replaced.
 
-`pg:promote` rewrites the leader's apps to the promoted host with the leader's
-app role (it exists there through replication). Apps attached to the follower
-itself keep its read-only login after a promote, unfollow or failover; attach
-the promoted resource again for a writable URL.
+Apps attached to the follower itself keep its read-only login after a
+promote, unfollow or failover; attach the promoted resource again for a
+writable URL. The leader's app role exists on the promoted host through
+replication.
 
 A follower cannot follow another follower. Its `--as` name does not replace
-the leader URL. Promoting an auto-failover follower first fences (scales to 0 and waits for) the
-current primary; if the fence fails, the promote is refused and nothing changes.
-`pg:promote` makes it writable, ends the follow, and rewrites
-the primary attachment `*_URL`. The old leader remains its own resource.
-`pg:unfollow` stops replication and leaves a standalone writable copy that no
-longer receives leader writes.
+the leader URL.
+
+`pg:promote <follower>` (the CLI, the API and the dashboard run the same
+steps) restarts the follower's job as a primary; the release alone does not
+change the running process:
+
+1. Read the primary's WAL position and wait up to 20 seconds for the
+   follower to replay it. A follower that is still behind, not streaming,
+   or already out of recovery is refused and nothing changes; run
+   `pg:wait <follower>` first. If the primary cannot be read, the promote is
+   refused unless you pass `--force`, which skips that proof and loses any
+   write the follower has not received.
+2. An auto-failover follower: stop the current primary (scale to 0, wait
+   for the job to exit, stamp it `deposed` so it cannot start writable) and
+   wait until the follower has applied the WAL it received. If the stop
+   fails, the promote is refused and nothing changes.
+3. Restart the follower's job with role `primary` (no `standby.signal`), and
+   check within 3 minutes that it left recovery, accepts a write (a temp
+   table dropped at commit, never a tenant table) and is at or past the
+   primary's position.
+4. Only then record the new roles and update the resource env.
+
+If step 2 or 3 fails, the follower goes back to its previous release as a
+follower and an auto-failover primary is started again; the error says so.
+A promoted auto-failover follower claims the old primary's discoverd name,
+so `DATABASE_URL` (`leader.<original>.discoverd`) keeps working, the user
+followers are restarted against it, and a replacement replica is created.
+A plain follower's old primary keeps running as its own writable resource
+and its apps keep their URL. Running `pg:promote` again after it finished
+is a no-op.
+
+`pg:unfollow` restarts the follower as a standalone writable copy (no
+`standby.signal`, no `primary_conninfo`), checks it accepts a write, and only
+then records it; if the check fails it stays a follower. The upstream is not
+touched, and the copy no longer receives its writes.
 
 There is no in-place resize or upgrade. `flynn pg:upgrade` (and dashboard
 Upgrade) uses logical replication, promotes a new primary, then recreates
@@ -127,8 +156,8 @@ is a fallback.
 | `flynn pg:create <name>` | Create a logical database on this instance |
 | `flynn pg:follow` | Create a streaming read-only follower |
 | `flynn pg:wait` | Print live copy progress and block until follower lag is zero |
-| `flynn pg:promote` | Make a follower writable and rewrite the primary URL |
-| `flynn pg:unfollow` | Stop replication and leave a standalone writable copy |
+| `flynn pg:promote [--force] <follower>` | Refuse unless the follower has the primary's position, restart it as the primary, verify it accepts a write (`--force`: the primary cannot be read; unreceived writes are lost) |
+| `flynn pg:unfollow <follower>` | Restart the follower as a standalone writable copy and verify it accepts a write |
 | `flynn pg:upgrade` | Follow, wait with live progress, promote, then recreate followers |
 | `flynn pg:dump` | When remote object storage is configured, write each logical database there and print the timestamp. While the cluster blobstore is still the built-in store, the dashboard Backup tab downloads and restores a file instead. Pass the instance name when the app has more than one Postgres resource |
 | `flynn pg:backups [<resource>]` | List backup timestamps. Pass the instance name when the app has more than one Postgres resource |

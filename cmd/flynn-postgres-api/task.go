@@ -65,9 +65,22 @@ func runPluginTask(args []string) error {
 		return runBackupTask(args)
 	case "promote", "unfollow":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: flynn-postgres-api task %s <resource>", args[0])
+			return fmt.Errorf("usage: flynn-postgres-api task %s <resource> [--force]", args[0])
 		}
-		return runInstanceActionTask(args[0], strings.TrimSpace(args[1]))
+		force := false
+		for _, a := range args[2:] {
+			switch strings.TrimSpace(a) {
+			case "--force", "force":
+				if args[0] != "promote" {
+					return fmt.Errorf("unfollow does not take --force")
+				}
+				force = true
+			case "":
+			default:
+				return fmt.Errorf("unknown %s argument %q", args[0], a)
+			}
+		}
+		return runInstanceActionTask(args[0], strings.TrimSpace(args[1]), force)
 	default:
 		return fmt.Errorf("unknown task %q", args[0])
 	}
@@ -335,13 +348,18 @@ func fetchProgress(resource string) (postgres.ReplicaProgress, error) {
 	return p, nil
 }
 
-func runInstanceActionTask(action, resource string) error {
+func runInstanceActionTask(action, resource string, force bool) error {
 	action = strings.TrimSpace(action)
 	resource = strings.TrimSpace(resource)
 	if resource == "" {
 		return fmt.Errorf("%s requires a postgres resource name", action)
 	}
-	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/"+action, "application/json", strings.NewReader("{}"))
+	body := "{}"
+	if force {
+		body = `{"force":true}`
+		fmt.Fprintf(os.Stderr, "WARNING: --force promotes %s without proving it has the primary's last writes. Writes it has not received are lost.\n", resource)
+	}
+	resp, err := pluginAPIRequest(http.MethodPost, pluginAPIBase()+"/databases/"+resource+"/"+action, "application/json", strings.NewReader(body))
 	if err != nil {
 		return err
 	}
