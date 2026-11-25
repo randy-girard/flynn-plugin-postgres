@@ -596,3 +596,64 @@ func TestPromoteTaskSendsForceOnlyWhenAsked(t *testing.T) {
 		t.Fatalf("bodies %q, want %q", bodies, want)
 	}
 }
+
+// The other API process still has the follower in its store after a
+// promote or unfollow finished elsewhere. A retry there must not restart
+// the job again; it records what the release and the server already say.
+func TestPromoteAndUnfollowRetryOnStaleProcessDoNotRestart(t *testing.T) {
+	for _, action := range []string{"promote", "unfollow"} {
+		t.Run(action, func(t *testing.T) {
+			rig, _, fol := newPromoteRig(t, false)
+			// Done elsewhere: the release says primary and the job left recovery.
+			rel := rig.ctl.currentRelease(t, fol.App)
+			rel.Env["FLYNN_POSTGRES_ROLE"] = "primary"
+			delete(rel.Env, "FLYNN_POSTGRES_PRIMARY_URL")
+			delete(rel.Env, "FLYNN_POSTGRES_LEADER")
+			if err := rig.ctl.CreateRelease(fol.App, rel); err != nil {
+				t.Fatal(err)
+			}
+			_ = rig.ctl.SetAppRelease(fol.App, rel.ID)
+			rig.node(fol.App).recovery = false
+			rig.ops = nil
+			rec := rig.post("/databases/"+fol.ID+"/"+action, "{}")
+			if rec.Code != 200 {
+				t.Fatalf("%s retry %d %s", action, rec.Code, rec.Body.String())
+			}
+			if got := rig.opsWith("scale "); len(got) != 0 {
+				t.Fatalf("%s retry restarted jobs: %v", action, got)
+			}
+			got, _ := rig.store.Get(fol.ID)
+			if got.Role == postgres.RoleFollower {
+				t.Fatalf("store still says follower after %s retry", action)
+			}
+		})
+	}
+}
+
+// A second promote or unfollow of the same instance on this process while
+// the first is restarting it is refused, not run on top of it.
+func TestPromoteRefusesWhileAnotherRunsOnTheSameInstance(t *testing.T) {
+	rig, _, fol := newPromoteRig(t, false)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	waitInstanceReady = func(string, time.Duration) error {
+		first := false
+		once.Do(func() { first = true; close(entered) })
+		if first {
+			<-release
+		}
+		return nil
+	}
+	done := make(chan int)
+	go func() { done <- rig.post("/databases/"+fol.ID+"/promote", "{}").Code }()
+	<-entered
+	rec := rig.post("/databases/"+fol.ID+"/unfollow", "{}")
+	close(release)
+	if code := <-done; code != 200 {
+		t.Fatalf("first promote %d", code)
+	}
+	if rec.Code == 200 || !strings.Contains(rec.Body.String(), "already running") {
+		t.Fatalf("concurrent unfollow: %d %s", rec.Code, rec.Body.String())
+	}
+}

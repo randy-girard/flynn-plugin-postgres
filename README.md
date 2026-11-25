@@ -131,8 +131,11 @@ A promoted auto-failover follower claims the old primary's discoverd name,
 so `DATABASE_URL` (`leader.<original>.discoverd`) keeps working, the user
 followers are restarted against it, and a replacement replica is created.
 A plain follower's old primary keeps running as its own writable resource
-and its apps keep their URL. Running `pg:promote` again after it finished
-is a no-op.
+and its apps keep their URL. Running `pg:promote` or `pg:unfollow` again
+after it finished is a no-op, also on the API process that did not run it
+(it records the release and the server it finds). A second promote or
+unfollow of the same instance while one is running on that process is
+refused.
 
 `pg:unfollow` restarts the follower as a standalone writable copy (no
 `standby.signal`, no `primary_conninfo`), checks it accepts a write, and only

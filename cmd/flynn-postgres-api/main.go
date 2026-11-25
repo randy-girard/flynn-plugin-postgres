@@ -105,15 +105,17 @@ type handler struct {
 	backupStatuses   func() (map[string]postgres.BackupStatus, error)
 	backupHost       func(*ct.Resource) string
 	backupInflight   sync.Map
-	availability     func() (string, error)
-	failoverLeader   func() bool
-	jobs             func(string) ([]*ct.Job, error)
-	scaleRelease     func(app, release string, opts ct.ScaleOptions) error
-	getRelease       func(string) (*ct.Release, error)
-	hostFits         func() ([]postgres.HostFit, error)
-	hostsCached      bool
-	hostFit          []postgres.HostFit
-	hostFitErr       error
+	// switching holds instance IDs with a promote or unfollow running.
+	switching      sync.Map
+	availability   func() (string, error)
+	failoverLeader func() bool
+	jobs           func(string) ([]*ct.Job, error)
+	scaleRelease   func(app, release string, opts ct.ScaleOptions) error
+	getRelease     func(string) (*ct.Release, error)
+	hostFits       func() ([]postgres.HostFit, error)
+	hostsCached    bool
+	hostFit        []postgres.HostFit
+	hostFitErr     error
 }
 
 func newHandler(store *postgres.Store) *handler {

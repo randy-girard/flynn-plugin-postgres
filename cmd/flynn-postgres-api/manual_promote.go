@@ -73,6 +73,17 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 		}
 		return nil, postgres.ErrNotFollower
 	}
+	if !h.beginSwitch(fol.ID) {
+		return nil, fmt.Errorf("a promote or unfollow of %s is already running; retry when it finishes", fol.App)
+	}
+	defer h.switching.Delete(fol.ID)
+	if alias, done := h.finishedElsewhere(fol); done {
+		// Another API process already promoted it; record that here.
+		if alias != "" {
+			return h.store.PromoteKeepingService(fol.ID)
+		}
+		return h.store.Promote(fol.ID)
+	}
 	leader, err := h.store.Get(fol.LeaderID)
 	if err != nil || leader == nil {
 		return nil, fmt.Errorf("promote refused: primary %s of %s is not known to the plugin; nothing was changed", fol.LeaderID, fol.App)
@@ -172,6 +183,13 @@ func (h *handler) unfollowFollower(id string) (*postgres.Instance, error) {
 		return nil, postgres.ErrNotFollower
 	}
 	if h.live() && before != nil {
+		if !h.beginSwitch(before.ID) {
+			return nil, fmt.Errorf("a promote or unfollow of %s is already running; retry when it finishes", before.App)
+		}
+		defer h.switching.Delete(before.ID)
+		if _, done := h.finishedElsewhere(before); done {
+			return h.store.Unfollow(id)
+		}
 		prev, err := h.client.GetAppRelease(before.App)
 		if err != nil || prev == nil {
 			if err == nil {
@@ -241,6 +259,30 @@ func (h *handler) alreadyWritable(inst *postgres.Instance) bool {
 	}
 	recovering, _, ok := readReplicaRecovery(inst.MaintenanceURL())
 	return ok && !recovering
+}
+
+func (h *handler) beginSwitch(id string) bool {
+	_, running := h.switching.LoadOrStore(id, struct{}{})
+	return !running
+}
+
+// finishedElsewhere is a store follower whose release already says primary
+// and whose job is out of recovery: the other API process (web runs two,
+// each with its own store) promoted or unfollowed it. alias is the
+// release's service alias (a failover-style promote).
+func (h *handler) finishedElsewhere(inst *postgres.Instance) (string, bool) {
+	if h == nil || h.client == nil || inst == nil {
+		return "", false
+	}
+	rel, err := h.client.GetAppRelease(inst.App)
+	if err != nil || rel == nil || !strings.EqualFold(strings.TrimSpace(rel.Env["FLYNN_POSTGRES_ROLE"]), "primary") {
+		return "", false
+	}
+	recovering, _, ok := readReplicaRecovery(inst.MaintenanceURL())
+	if !ok || recovering {
+		return "", false
+	}
+	return strings.TrimSpace(rel.Env[postgres.EnvServiceAlias]), true
 }
 
 // followerCaughtUp reads the primary's WAL position and waits until the
