@@ -254,6 +254,18 @@ the login may not create fails the restore only if a restored object needs it.
 The restore spools the dump to a temporary file, because it reads the table of
 contents before the data.
 
+### Running maintenance
+
+`flynn pg:maintenance [--all] [<instances>]` upgrades the resources attached
+to the current app (with one, the name is optional) and `flynn-host
+pg:maintenance <name>|<list>|--all` any resource on the cluster. Both run
+`/bin/flynn-postgres-api task maintenance` in the plugin's current image with only the plugin API key:
+the `flynn` form on your app (it reads the key from the `postgres-plugin` release, so it
+needs a cluster admin login; the plugin app itself is a datastore app, where
+one-off jobs are refused), the `flynn-host` form on `postgres-plugin`. A resource that is already current is reported and left
+running. `flynn-*-api` refuses any subcommand it does not know (exit 2) instead
+of starting the API server.
+
 ### Volume size
 
 The `/data` volume is sized from the database runtime's disk (`--runtime`, default `small`; see `flynn-host db-runtime`), or from a raw `--disk` when a cluster admin has run `flynn-host db-runtime:allow-custom`. A raw disk sent without that switch is rejected by the provider too, not only by the CLI. A follower gets its own runtime's disk or its leader's volume size, whichever is larger, so a replica always has room for the leader's data. The size is the volume's ZFS refquota, set when the volume is created. Existing volumes keep their size: instances created before this have the 20 GiB host default. There is no in-place resize.

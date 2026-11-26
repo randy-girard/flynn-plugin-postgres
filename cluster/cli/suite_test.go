@@ -194,6 +194,23 @@ func TestPostgresCLI(t *testing.T) {
 		return
 	}
 
+	// NEW-11/DATA-69: the documented upgrade command must start from the
+	// flynn CLI (it was refused with "cannot run a job on a database app").
+	t.Run("maintenance", func(t *testing.T) {
+		h.use(t)
+		out, errOut, err := h.appCmd(cmdWait, "pg:maintenance")
+		combined := out + "\n" + errOut
+		if err != nil || strings.Contains(combined, "cannot run a job") {
+			t.Fatalf("flynn pg:maintenance: %v\n%s", err, combined)
+		}
+		if !strings.Contains(combined, "already current") && !strings.Contains(combined, "maintenance task") && !strings.Contains(combined, "no instances needed maintenance") {
+			t.Fatalf("flynn pg:maintenance did not report the resource:\n%s", combined)
+		}
+	})
+	if t.Failed() {
+		return
+	}
+
 	t.Run("follow-and-replicate", func(t *testing.T) {
 		h.use(t)
 		leader := h.primary()

@@ -30,6 +30,10 @@ func main() {
 		}
 		return
 	}
+	if err := unknownSubcommand(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if dashui.DevEnabled() {
 		runDashboardDev()
 		return
