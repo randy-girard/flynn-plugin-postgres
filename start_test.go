@@ -314,7 +314,10 @@ func TestStartScriptDoesNotExecAShellFunction(t *testing.T) {
 	if !strings.Contains(src, "pg_basebackup") || !strings.Contains(src, "FLYNN_POSTGRES_PRIMARY_URL") {
 		t.Fatal("followers must pg_basebackup from POSTGRES_PRIMARY_URL")
 	}
-	backup := strings.Index(src, "pg_basebackup")
+	backup := strings.Index(src, `follower_basebackup "${primary_url}"`)
+	if backup < 0 {
+		t.Fatal("followers must seed with follower_basebackup")
+	}
 	window := src[:backup]
 	if len(window) > 600 {
 		window = window[len(window)-600:]
@@ -622,4 +625,53 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// DATA-40/NEW-40: a follower's pg_basebackup gets the primary password in
+// PGPASSWORD and a URL without it, never on argv (/proc/<pid>/cmdline is
+// readable by every process in the job).
+func TestStartScriptKeepsPrimaryPasswordOffArgv(t *testing.T) {
+	src := string(mustRead(t, "start.sh"))
+	if strings.Contains(src, `pg_basebackup" -d "${primary_url}"`) {
+		t.Fatal("start.sh passes the primary URL, password included, to pg_basebackup on argv")
+	}
+	fn := startFunction(t, "follower_basebackup")
+	if !strings.Contains(src, "\n    follower_basebackup \"${primary_url}\" /data\n") {
+		t.Fatal("start.sh must seed a follower with follower_basebackup")
+	}
+	bin := t.TempDir()
+	rec := t.TempDir()
+	fake := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + rec + "/argv\nprintf '%s' \"${PGPASSWORD:-}\" > " + rec + "/pw\n"
+	if err := os.WriteFile(bin+"/pg_basebackup", []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(url string) (argv, pw string) {
+		t.Helper()
+		script := "set -euo pipefail\nas_postgres() { \"$@\"; }\n" + fn + "\nfollower_basebackup \"$1\" \"$2\""
+		cmd := exec.Command("bash", "-c", script, "bash", url, t.TempDir())
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "PG_BIN=" + bin}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return string(mustRead(t, rec+"/argv")), string(mustRead(t, rec+"/pw"))
+	}
+	argv, pw := run("postgres://app_abc:s3cr%40t_pw@leader.pg-x.discoverd:5432/db_x?sslmode=require")
+	if strings.Contains(argv, "s3cr") {
+		t.Fatalf("password on pg_basebackup argv:\n%s", argv)
+	}
+	if !strings.Contains(argv, "-d\npostgres://app_abc@leader.pg-x.discoverd:5432/db_x?sslmode=require\n") {
+		t.Fatalf("argv does not carry the URL without its password:\n%s", argv)
+	}
+	if pw != "s3cr@t_pw" {
+		t.Fatalf("PGPASSWORD = %q", pw)
+	}
+	for _, want := range []string{"-Xs", "-R", "--checkpoint=fast", "--no-password"} {
+		if !strings.Contains(argv, want+"\n") {
+			t.Fatalf("argv lost %s:\n%s", want, argv)
+		}
+	}
+	argv, pw = run("postgres://app_abc@leader.pg-x.discoverd:5432/db_x")
+	if pw != "" || !strings.Contains(argv, "postgres://app_abc@leader.pg-x.discoverd:5432/db_x\n") {
+		t.Fatalf("URL without password: argv %q pw %q", argv, pw)
+	}
 }

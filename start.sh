@@ -16,6 +16,20 @@ as_postgres() {
   setpriv --reuid=postgres --regid=postgres --init-groups --inh-caps=-all "$@"
 }
 
+# follower_basebackup seeds a follower's data directory from the primary.
+# The password goes in PGPASSWORD and the URL loses it: pg_basebackup's argv
+# is readable by every process in the job (/proc/<pid>/cmdline). -R still
+# writes the password into primary_conninfo in postgresql.auto.conf (0600).
+follower_basebackup() {
+  local url="$1" dir="$2" pw=""
+  if [[ "${url}" =~ ^([A-Za-z][A-Za-z0-9+.-]*://)([^:@/]*):([^@/]*)@(.*)$ ]]; then
+    url="${BASH_REMATCH[1]}${BASH_REMATCH[2]}@${BASH_REMATCH[4]}"
+    pw="${BASH_REMATCH[3]}"
+    pw="$(printf '%b' "${pw//%/\\x}")"
+  fi
+  PGPASSWORD="${pw}" as_postgres "${PG_BIN}/pg_basebackup" -d "${url}" -D "${dir}" -Fp -Xs -R --checkpoint=fast --no-password
+}
+
 install -d -o postgres -g postgres -m 0700 /data
 # The API sets FLYNN_POSTGRES_PRIMARY_URL. POSTGRES_PRIMARY_URL is the older
 # name. Gating on only the old name initdb's a follower, then standby.signal
@@ -26,7 +40,7 @@ if [[ ! -s /data/PG_VERSION ]]; then
     # --checkpoint=fast: spread (the default) waits for the next scheduled
     # checkpoint, which on an idle/empty primary can be checkpoint_timeout
     # (5 minutes) because nothing fills WAL.
-    as_postgres "${PG_BIN}/pg_basebackup" -d "${primary_url}" -D /data -Fp -Xs -R --checkpoint=fast --no-password
+    follower_basebackup "${primary_url}" /data
     chown -R postgres:postgres /data
   else
     as_postgres "${PG_BIN}/initdb" -D /data --auth-local=trust --auth-host=md5

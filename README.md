@@ -278,6 +278,10 @@ name.
 Those connections never put the instance password on a command line. Every
 `psql`, `pg_dump` and `pg_restore` the plugin API runs gets the URL without
 its password and the password in `PGPASSWORD`, and error text is redacted.
+A new follower's `pg_basebackup` (`start.sh`) gets the primary URL without its
+password too, with the password in `PGPASSWORD`. `flynn pg:psql` does the
+same: the Flynn CLI moves the `DATABASE_URL` password into `PGPASSWORD`, so the
+job's argv and its "started with command" log line carry no password.
 The dashboard dump and restore target the instance's first database, with the
 same `pg_restore --clean --if-exists --exit-on-error` flags as a scheduled
 restore; an instance with no database of its own (only the catalog
