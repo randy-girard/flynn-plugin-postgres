@@ -102,7 +102,7 @@ func TestDashboardHidesOtherTenants(t *testing.T) {
 		if path == "/dashboard/replication" && strings.Contains(body, `name="replication"`) {
 			t.Fatalf("follower form still has replication mode: %s", body)
 		}
-		if path == "/dashboard/settings" && !strings.Contains(body, "Delete resource") {
+		if path == "/dashboard/settings" && !strings.Contains(body, "Destroy resource") {
 			t.Fatalf("missing delete resource: %s", body)
 		}
 	}
@@ -1050,6 +1050,7 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newHandler(store)
+	useUserClient(t, &fakeUserCtl{})
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/settings", nil)
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
 	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
@@ -1059,46 +1060,49 @@ func TestDashSettingsDeletesFollowerNotLeaderWithFollowers(t *testing.T) {
 		t.Fatalf("get %d %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Delete resource") || !strings.Contains(body, leader.App) || !strings.Contains(body, fol.App) {
+	if !strings.Contains(body, "Destroy resource") || !strings.Contains(body, leader.App) || !strings.Contains(body, fol.App) {
 		t.Fatalf("settings page: %s", body)
 	}
 	if !strings.Contains(body, "disabled") {
 		t.Fatal("primary with followers must disable delete")
 	}
-	form := strings.NewReader("action=delete&instance=" + leader.App)
+	form := strings.NewReader("action=delete&instance=" + leader.App + "&confirm=" + leader.App)
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
-	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:admin")
+	req.Header.Set("X-Flynn-Access-Token", "user-token")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code == 200 && strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
+	if rec.Code == 200 && strings.Contains(rec.Body.String(), "Destroyed resource "+leader.App) {
 		t.Fatalf("deleted primary while follower exists: %s", rec.Body.String())
 	}
 	if rec.Code == 200 && !strings.Contains(rec.Body.String(), "followers") {
 		t.Fatalf("expected followers error, got %d %s", rec.Code, rec.Body.String())
 	}
-	form = strings.NewReader("action=delete&instance=" + fol.App)
+	form = strings.NewReader("action=delete&instance=" + fol.App + "&confirm=" + fol.App)
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
-	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:admin")
+	req.Header.Set("X-Flynn-Access-Token", "user-token")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+fol.App) {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Destroyed resource "+fol.App) {
 		t.Fatalf("follower delete %d %s", rec.Code, rec.Body.String())
 	}
 	if _, err := store.Get(fol.ID); err == nil {
 		t.Fatal("follower still in store")
 	}
-	form = strings.NewReader("action=delete&instance=" + leader.App)
+	form = strings.NewReader("action=delete&instance=" + leader.App + "&confirm=" + leader.App)
 	req = httptest.NewRequest(http.MethodPost, "/dashboard/settings", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Flynn-Dashboard-App", "shop-a")
-	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:resources:write")
+	req.Header.Set("X-Flynn-Dashboard-Permissions", "app:admin")
+	req.Header.Set("X-Flynn-Access-Token", "user-token")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Deleted resource "+leader.App) {
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Destroyed resource "+leader.App) {
 		t.Fatalf("leader delete %d %s", rec.Code, rec.Body.String())
 	}
 }

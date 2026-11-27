@@ -1143,6 +1143,10 @@ func (h *handler) dashSettings(w http.ResponseWriter, r *http.Request, sess *das
 		msg, err := h.dashSettingsResult(sess, r)
 		if wantsJSON(r) {
 			if err != nil {
+				if code := dashLifecycleStatus(err); code != 0 {
+					dashui.WriteJSON(w, code, map[string]any{"ok": false, "error": err.Error()})
+					return
+				}
 				writeAPIError(w, err)
 				return
 			}
@@ -1156,10 +1160,12 @@ func (h *handler) dashSettings(w http.ResponseWriter, r *http.Request, sess *das
 		}
 	}
 	insts := h.instancesFor(sess)
+	resources := h.sessionResources(sess)
+	app := dashApp(sess.AppID, sess.AppName)
 	var b strings.Builder
 	b.WriteString(notice)
 	b.WriteString(`<div class="card"><h2>Settings</h2>`)
-	b.WriteString(`<p>Delete this Postgres resource. A follower can always be deleted. A primary can be deleted only when it has no followers.</p>`)
+	b.WriteString(`<p>Destroy a Postgres resource this app owns: the controller deletes it, like <code>flynn addons:destroy</code>, and its data is gone for every attached app. A follower can always be destroyed. A primary can be destroyed only when it has no followers. Needs Admin on the app and the instance name typed to confirm. A resource attached from another app can only be detached here, like <code>flynn addons:detach</code>; it keeps running for its owner (needs Manage or Admin).</p>`)
 	if len(insts) == 0 {
 		b.WriteString(`<p class="muted">No Postgres resource is attached to this app.</p></div>`)
 		writeDash(w, sess, "Settings", b.String())
@@ -1181,35 +1187,46 @@ func (h *handler) dashSettings(w http.ResponseWriter, r *http.Request, sess *das
 			b.WriteString(`<code>` + html.EscapeString(strings.Join(followers, ", ")) + `</code>`)
 		}
 		b.WriteString(`</td><td>`)
-		if len(blocked) == 0 {
-			esc := html.EscapeString(ref)
-			b.WriteString(`<form method="post" style="margin:0" onsubmit="return confirm('Delete Postgres resource ` + esc + `? This destroys the instance.')">`)
+		esc := html.EscapeString(ref)
+		if res := resourceForInstance(resources, inst); res != nil && !res.OwnedByApp(app) {
+			b.WriteString(`<form method="post" style="margin:0" onsubmit="return confirm('Detach Postgres resource ` + esc + ` from this app? The instance keeps running for its owner.')">`)
+			b.WriteString(`<input type="hidden" name="action" value="detach"><input type="hidden" name="instance" value="` + esc + `">`)
+			b.WriteString(`<span class="muted">Attached from another app; it keeps running for its owner.</span> <button type="submit">Detach</button></form>`)
+		} else if len(blocked) == 0 {
+			b.WriteString(`<form method="post" style="margin:0" onsubmit="return confirm('Destroy Postgres resource ` + esc + ` and all of its data for every attached app? This cannot be undone.')">`)
 			b.WriteString(`<input type="hidden" name="action" value="delete"><input type="hidden" name="instance" value="` + esc + `">`)
-			b.WriteString(`<button class="danger" type="submit">Delete resource</button></form>`)
+			b.WriteString(`<input name="confirm" required autocomplete="off" placeholder="` + esc + `" aria-label="Type ` + esc + ` to confirm">`)
+			b.WriteString(`<button class="danger" type="submit">Destroy resource</button></form>`)
 		} else {
-			b.WriteString(`<button class="danger" type="button" disabled>Delete resource</button>`)
+			b.WriteString(`<button class="danger" type="button" disabled>Destroy resource</button>`)
 		}
 		b.WriteString(`</td></tr>`)
 		if len(blocked) > 0 {
 			fmt.Fprintf(&b, `<tr><td colspan="4" class="muted">Remove or unfollow %s before deleting this primary.</td></tr>`, html.EscapeString(strings.Join(blocked, ", ")))
 		}
 	}
-	b.WriteString(`</table><p class="muted">Same as <code>flynn addons:destroy &lt;instance&gt;</code>.</p></div>`)
+	b.WriteString(`</table><p class="muted">Same as <code>flynn addons:destroy &lt;instance&gt;</code> and <code>flynn addons:detach</code>.</p></div>`)
 	writeDash(w, sess, "Settings", b.String())
 }
 
+// dashSettingsResult runs the Settings Destroy (action=delete) and Detach
+// (action=detach) with the shared dashres.go rules (dashboard_lifecycle.go).
 func (h *handler) dashSettingsResult(sess *dashui.Session, r *http.Request) (string, error) {
-	if strings.TrimSpace(r.FormValue("action")) != "delete" {
-		return "", fmt.Errorf("unknown settings action")
+	switch strings.TrimSpace(r.FormValue("action")) {
+	case "delete":
+		ref, err := h.destroyFromSettings(sess, r.FormValue("instance"), r.FormValue("confirm"))
+		if err != nil {
+			return "", err
+		}
+		return "Destroyed resource " + ref, nil
+	case "detach":
+		ref, err := h.detachFromSettings(sess, r.FormValue("instance"))
+		if err != nil {
+			return "", err
+		}
+		return "Detached resource " + ref + " from this app", nil
 	}
-	inst := h.ownedInstance(sess, r.FormValue("instance"))
-	if inst == nil {
-		return "", fmt.Errorf("choose a postgres resource to delete")
-	}
-	if err := h.deleteInstanceResource(sess, inst); err != nil {
-		return "", err
-	}
-	return "Deleted resource " + instanceRef(inst), nil
+	return "", fmt.Errorf("unknown settings action")
 }
 
 // errNotYourInstance is what a dashboard action returns when the named
@@ -1282,44 +1299,6 @@ func (h *handler) instanceFromResourceRef(sess *dashui.Session, ref string) *pos
 		}
 		return inst
 	}
-	return nil
-}
-
-func (h *handler) deleteInstanceResource(sess *dashui.Session, inst *postgres.Instance) error {
-	if err := postgres.CanDeleteResource(inst, h.followerApps(inst)); err != nil {
-		return err
-	}
-	if h.client != nil {
-		app := sessApp(sess)
-		if sess != nil && strings.TrimSpace(sess.AppID) != "" {
-			app = sess.AppID
-		}
-		p, err := h.client.GetProvider("postgres")
-		if err != nil {
-			return err
-		}
-		resources, err := h.appResources(app)
-		if err != nil {
-			return err
-		}
-		for _, r := range resources {
-			if r == nil {
-				continue
-			}
-			name := ""
-			if r.Env != nil {
-				name = strings.TrimSpace(r.Env["FLYNN_POSTGRES"])
-			}
-			if name != inst.App && r.ExternalID != inst.ID && r.ID != inst.ID && name != instanceRef(inst) {
-				continue
-			}
-			_, err = h.client.DeleteResource(p.ID, r.ID)
-			h.forgetInstance(inst)
-			return err
-		}
-	}
-	h.deleteIsolatedReplica(inst)
-	h.forgetInstance(inst)
 	return nil
 }
 

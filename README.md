@@ -218,9 +218,25 @@ is a fallback.
 
 The dashboard pages (overview, metrics, databases, users, backup, follow) are
 served by this plugin. A signed-in app sees only its own instances, and every dashboard action that
-names an instance (settings delete, replication, users, databases, progress)
-resolves it only among that app's own resources; naming another app's instance
-is refused. The Metrics
+names an instance (settings destroy and detach, replication, users,
+databases, progress) resolves it only among that app's own resources; naming
+another app's instance is refused.
+
+The Settings tab destroys or detaches a resource through the controller as
+the signed-in user (the SSO token's controller token, else the dashboard
+proxy's `X-Flynn-Access-Token`; never the plugin's `CONTROLLER_KEY`, and with
+no user token it answers 401), like `flynn addons:destroy` and
+`addons:detach`, so the controller applies its own checks too.
+**Destroy** (`action=delete`) is offered to the app that owns the resource: it
+needs Admin on the app and `confirm` set to the instance name, deletes the
+resource (`DELETE /providers/postgres/resources/<id>`, which deprovisions it
+for every attached app) and removes its env from the app. A non-owner gets
+403, a missing or wrong `confirm` 400, and a primary that still has followers
+409. **Detach** (`action=detach`) is offered to an app attached to another
+app's resource: it needs Manage or Admin, unbinds this app
+(`DELETE /providers/postgres/resources/<id>/apps/<app>`) and removes the
+attachment env from it; the instance keeps running for its owner. The owning
+app cannot Detach (409). The Metrics
 tab charts samples the API posts once a minute
 (`active_connections`, `db_size_bytes`, `index_size_bytes`, cache hit rates, `xact_commit`,
 `replay_lag_seconds`, `slow_query_count`, and related series). The dashboard

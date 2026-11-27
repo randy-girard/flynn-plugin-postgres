@@ -119,8 +119,12 @@ func TestDashOwnInstanceStillResolves(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("own user create: %d %s", rec.Code, rec.Body.String())
 	}
-	rec = dashPost(h, "shop-a", "/dashboard/settings", url.Values{"action": {"delete"}, "instance": {"controller-res-uuid"}})
-	if rec.Code != 200 {
-		t.Fatalf("own delete: %d %s", rec.Code, rec.Body.String())
+	// The delete is a Destroy as the user (Admin, typed confirm, user token).
+	user := &fakeUserCtl{}
+	useUserClient(t, user)
+	req := settingsReq("shop-a", "app:admin", url.Values{"action": {"delete"}, "instance": {"controller-res-uuid"}, "confirm": {a.App}}, true)
+	rec = serve(h, req)
+	if rec.Code != 200 || strings.Join(user.deleted, ",") != "postgres|controller-res-uuid" {
+		t.Fatalf("own delete: %d %s deleted %v", rec.Code, rec.Body.String(), user.deleted)
 	}
 }
