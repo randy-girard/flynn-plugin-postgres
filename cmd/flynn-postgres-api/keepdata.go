@@ -73,6 +73,11 @@ func ReferencingApp(src ReleaseSource, appName string) (string, error) {
 // every data plugin: a discoverd host in any URL, or an env value that is
 // exactly the app name (FLYNN_POSTGRES, FLYNN_REDIS, FLYNN_MYSQL,
 // FLYNN_MONGODB, FLYNN_KAFKA, FLYNN_CLICKHOUSE, and *_LEADER).
+//
+// A *_SERVICE_ALIAS key is not a reference. After a keep-service failover the
+// promoted primary registers under the old primary's discoverd name so clients
+// keep working, while the old primary follows it. The alias reads none of the
+// old primary's data, and counting it refused the delete of both apps.
 func References(env map[string]string, appName string) bool {
 	name := strings.TrimSpace(appName)
 	if name == "" || len(env) == 0 {
@@ -82,7 +87,10 @@ func References(env map[string]string, appName string) bool {
 		"leader." + name + ".discoverd",
 		name + ".discoverd",
 	}
-	for _, v := range env {
+	for k, v := range env {
+		if isServiceAlias(k) {
+			continue
+		}
 		v = strings.TrimSpace(v)
 		if v == "" {
 			continue
@@ -97,6 +105,11 @@ func References(env map[string]string, appName string) bool {
 		}
 	}
 	return false
+}
+
+// isServiceAlias is FLYNN_POSTGRES_SERVICE_ALIAS and the other plugins' aliases.
+func isServiceAlias(key string) bool {
+	return strings.HasSuffix(strings.ToUpper(strings.TrimSpace(key)), "_SERVICE_ALIAS")
 }
 
 func containsHost(value, host string) bool {
