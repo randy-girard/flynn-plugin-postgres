@@ -48,6 +48,31 @@ grep -q "^max_replication_slots" "${conf}" || echo "max_replication_slots = 10" 
 # segments. Without a keep size, an existing follower (upland) requests WAL
 # that is already gone: "requested WAL segment ... has already been removed".
 grep -q "^wal_keep_size" "${conf}" || echo "wal_keep_size = '1GB'" >> "${conf}"
+# The plugin derives shared_buffers and effective_cache_size from the job's
+# memory limit (FLYNN_DB_* on the release, NEW-26). Rewrite them on every
+# start: initdb wrote its own shared_buffers, and a follower copied the
+# leader's file. Unset leaves the file as it is (instances made before).
+apply_memory_settings() {
+  local conf="$1" key val tmp
+  for key in shared_buffers effective_cache_size; do
+    case "${key}" in
+      shared_buffers) val="${FLYNN_DB_SHARED_BUFFERS:-}" ;;
+      effective_cache_size) val="${FLYNN_DB_EFFECTIVE_CACHE_SIZE:-}" ;;
+    esac
+    [[ -n "${val}" ]] || continue
+    if ! [[ "${val}" =~ ^[0-9]+(kB|MB|GB)$ ]]; then
+      echo "ignoring ${key} '${val}': not a size" >&2
+      continue
+    fi
+    tmp="$(mktemp)"
+    grep -Ev "^[[:space:]]*${key}[[:space:]]*=" "${conf}" > "${tmp}" || true
+    echo "${key} = '${val}'" >> "${tmp}"
+    # cat keeps the file's owner and mode (postgres, 0600).
+    cat "${tmp}" > "${conf}"
+    rm -f "${tmp}"
+  done
+}
+apply_memory_settings "${conf}"
 if ! grep -q "0.0.0.0/0" /data/pg_hba.conf; then
   printf '%s\n' "host all all 0.0.0.0/0 md5" "host all all ::/0 md5" >> /data/pg_hba.conf
 fi

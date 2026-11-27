@@ -196,7 +196,7 @@ Upgrade) uses logical replication, promotes a new primary, then recreates
 each follower against that primary. The new follower takes over the old
 follower's name and is scaled back up to its original process count; if the
 switch fails, both apps are restored to their previous names and scale.
-Runtime sizing is a name string.
+Runtime sizing is a name string; an upgrade of a custom-sized instance keeps its CPU and memory (from the old release).
 
 The colon form (`flynn pg:psql`) is canonical. The space form (`flynn pg psql`)
 is a fallback.
@@ -334,6 +334,24 @@ of starting the API server.
 ### Volume size
 
 The `/data` volume is sized from the database runtime's disk (`--runtime`, default `small`; see `flynn-host db-runtime`), or from a raw `--disk` when a cluster admin has run `flynn-host db-runtime:allow-custom`. A raw disk sent without that switch is rejected by the provider too, not only by the CLI. A follower gets its own runtime's disk or its leader's volume size, whichever is larger, so a replica always has room for the leader's data. The size is the volume's ZFS refquota, set when the volume is created. Existing volumes keep their size: instances created before this have the 20 GiB host default. There is no in-place resize.
+
+### CPU and memory
+
+The instance job's CPU and memory limits (`processes.postgres.resources` on
+the instance app's release) come from the database runtime (`--runtime`,
+default `small`), or from raw `--cpu`/`--memory` after
+`flynn-host db-runtime:allow-custom` (`flynn addons:create postgres --cpu 300
+--memory 384MB`; the runtime is then `custom` and an omitted value comes from
+`small`). The provider checks them again with `dbruntime.ProcessResourcesFor`:
+a custom size without allow-custom and memory below 128 MB are refused (400),
+never started with the controller default. A follower, upgrade copy or
+replacement of a custom leader keeps the leader's limits.
+
+The release also carries `FLYNN_DB_SHARED_BUFFERS` (25% of the memory limit)
+and `FLYNN_DB_EFFECTIVE_CACHE_SIZE` (75%). `start.sh` writes them into
+`postgresql.conf` on every start (`apply_memory_settings`), replacing initdb's
+or the leader's copied value; check with `SHOW shared_buffers`. Instances
+created before have no such env and keep `shared_buffers = 128MB`.
 
 ## State machine
 

@@ -3,6 +3,7 @@ package postgres
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -550,4 +551,75 @@ func TestStartScriptInstallsReleaseTLS(t *testing.T) {
 	if !strings.Contains(string(main), `case "install-tls":`) || !strings.Contains(string(main), "InstallTLSFiles") {
 		t.Fatal("flynn-postgres must implement install-tls with InstallTLSFiles")
 	}
+}
+
+// startFunction is the body of a shell function defined in start.sh.
+func startFunction(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile("start.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(b)
+	i := strings.Index(src, name+"() {")
+	if i < 0 {
+		t.Fatalf("start.sh has no %s function", name)
+	}
+	j := strings.Index(src[i:], "\n}\n")
+	if j < 0 {
+		t.Fatalf("%s is not closed", name)
+	}
+	return src[i : i+j+3]
+}
+
+// start.sh sizes shared_buffers and effective_cache_size from the release
+// env (dbruntime.EngineMemoryEnv, NEW-26) on every start, replacing what
+// initdb or the leader's copied postgresql.conf had, and leaves the file
+// alone when the env is unset.
+func TestStartScriptAppliesMemorySettings(t *testing.T) {
+	fn := startFunction(t, "apply_memory_settings")
+	if !strings.Contains(string(mustRead(t, "start.sh")), "\napply_memory_settings \"${conf}\"\n") {
+		t.Fatal("start.sh must call apply_memory_settings on its postgresql.conf")
+	}
+	run := func(env map[string]string, conf string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := dir + "/postgresql.conf"
+		if err := os.WriteFile(path, []byte(conf), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+fn+"\napply_memory_settings \"$1\"", "bash", path)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		return string(mustRead(t, path))
+	}
+	initdb := "max_connections = 100\nshared_buffers = 128MB\t\t# min 128kB\n#effective_cache_size = 4GB\n"
+	got := run(map[string]string{"FLYNN_DB_SHARED_BUFFERS": "96MB", "FLYNN_DB_EFFECTIVE_CACHE_SIZE": "288MB"}, initdb)
+	if strings.Count(got, "\nshared_buffers") != 1 || !strings.Contains(got, "shared_buffers = '96MB'") || !strings.Contains(got, "effective_cache_size = '288MB'") || !strings.Contains(got, "max_connections = 100") {
+		t.Fatalf("conf after apply:\n%s", got)
+	}
+	again := run(map[string]string{"FLYNN_DB_SHARED_BUFFERS": "256MB", "FLYNN_DB_EFFECTIVE_CACHE_SIZE": "768MB"}, got)
+	if strings.Contains(again, "96MB") || strings.Count(again, "shared_buffers = ") != 1 || !strings.Contains(again, "shared_buffers = '256MB'") {
+		t.Fatalf("second start must replace the earlier lines:\n%s", again)
+	}
+	if unset := run(nil, initdb); unset != initdb {
+		t.Fatalf("no env must leave the conf as is:\n%s", unset)
+	}
+	if bad := run(map[string]string{"FLYNN_DB_SHARED_BUFFERS": "1'; drop"}, initdb); bad != initdb {
+		t.Fatalf("a malformed value must be ignored:\n%s", bad)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
