@@ -38,10 +38,8 @@ github.com/opencontainers/runtime-spec v1.0.1 h1:wY4pOY8fBdSIvs9+IDHC55thBuEulhz
 github.com/opencontainers/runtime-spec v1.0.1/go.mod h1:jwyrGlmzljRJv/Fgzds9SsS/C5hL+LL3ko9hs6T5lQ0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-github.com/randy-girard/flynn v0.0.0-20261118113855-89a7a89377c1 h1:TqrMfHSDPG2+EPsWmBO9IM50mJVvcTVpp2UEmYSivGE=
-github.com/randy-girard/flynn v0.0.0-20261118113855-89a7a89377c1/go.mod h1:rRzbcSv8neqBSqTgHROM7UkLAokJMJc2sBkdC8BQBig=
-github.com/randy-girard/flynn v0.0.0-20261120033214-ee946bf9d369 h1:+iw+JJuFod/WWAPptxscXmWNI2Rys67EsB0iVv52TJU=
-github.com/randy-girard/flynn v0.0.0-20261120033214-ee946bf9d369/go.mod h1:rRzbcSv8neqBSqTgHROM7UkLAokJMJc2sBkdC8BQBig=
+github.com/randy-girard/flynn v0.0.0-20261127055132-eb21ab065c7e h1:WzA9lyUNyG3UnwjwGowPNFc8UZAKauJwR1KyvAYlpEM=
+github.com/randy-girard/flynn v0.0.0-20261127055132-eb21ab065c7e/go.mod h1:rRzbcSv8neqBSqTgHROM7UkLAokJMJc2sBkdC8BQBig=
 github.com/shopspring/decimal v0.0.0-20180709203117-cd690d0c9e24 h1:pntxY8Ary0t43dCZ5dqY4YTJCObLY1kIXl0uzMv+7DE=
 github.com/shopspring/decimal v0.0.0-20180709203117-cd690d0c9e24/go.mod h1:M+9NzErvs504Cn4c5DxATwIqPbtswREoFCre64PpcG4=
 github.com/sirupsen/logrus v1.4.2 h1:SPIRibHv4MatM3XXNO2BJeFLZwZ2LvZgfQ5+UNI2im4=
