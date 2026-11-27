@@ -131,7 +131,29 @@ A promoted auto-failover follower claims the old primary's discoverd name,
 so `DATABASE_URL` (`leader.<original>.discoverd`) keeps working, the user
 followers are restarted against it, and a replacement replica is created.
 A plain follower's old primary keeps running as its own writable resource
-and its apps keep their URL. Running `pg:promote` or `pg:unfollow` again
+and its apps keep their URL.
+
+Automatic failover (`--auto-failover`, availability `manual`; platform
+replicas in `system`) runs the same steps when the primary job has been gone
+for 30 seconds, with one change: the primary cannot be read, so step 1 uses
+the WAL position the watch read when it last saw the primary running. Both
+API processes read it every 5 seconds (each keeps its own, so the process
+that takes the failover lease after the holder died has one), and the
+follower must have replayed it. A sighting older than 30 seconds before the
+primary job stopped does not count. A follower that is behind, or no recent
+sighting at all, leaves everything as it is and is logged once; promote by
+hand with `pg:promote --force`. Each check also loads the auto-failover
+followers and platform replicas from the controller, so the lease holder
+promotes a follower the other process created. A follower of a primary with
+no running job, or one whose job is younger than two minutes, is never
+replaced as broken. The replacement replica is owned by the tenant that owns
+the resource (not the instance app), and destroying it clears the primary's
+pending replica in its release, so neither process makes another. Host
+fits for `flynn-avoid-host-ids` count only the jobs the scheduler counts
+toward `flynn-max-processes` (not system apps), and are reused for 5 seconds
+at most on either process; an error is never reused.
+
+Running `pg:promote` or `pg:unfollow` again
 after it finished is a no-op, also on the API process that did not run it
 (it records the release and the server it finds). A second promote or
 unfollow of the same instance while one is running on that process is

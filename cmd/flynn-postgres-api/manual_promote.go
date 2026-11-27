@@ -34,6 +34,12 @@ type promoteOptions struct {
 	// Force promotes when the primary cannot be read, so the follower
 	// cannot be shown to have its last writes. Those writes are lost.
 	Force bool
+	// PrimaryDown is auto-failover (NEW-33): the primary's job is gone, so
+	// its WAL position cannot be read. Target is the position the watch
+	// read when it last saw the primary running; the follower must have
+	// replayed it. Only an auto-failover follower or platform replica.
+	PrimaryDown bool
+	Target      int64
 }
 
 // promoteFollower is pg:promote, the API and the dashboard (DATA-03):
@@ -50,15 +56,23 @@ type promoteOptions struct {
 // A failure in 2-3 puts the follower back on its previous release and
 // starts the old primary again on its own.
 func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.PromoteResult, error) {
-	if err := h.rejectPlatformReplicaControl(id); err != nil {
-		return nil, err
+	// The failover watch promotes platform replicas; users may not.
+	if !opts.PrimaryDown {
+		if err := h.rejectPlatformReplicaControl(id); err != nil {
+			return nil, err
+		}
 	}
 	if !h.live() {
-		res, err := h.promoteFenced(id)
+		res, err := h.promoteFenced(id, opts.PrimaryDown)
 		if err != nil {
 			return nil, err
 		}
-		if err := h.afterManualPromote(res); err != nil {
+		if opts.PrimaryDown {
+			err = h.recordPromotion(res, postgres.CodeFailover, "reason=auto")
+		} else {
+			err = h.afterManualPromote(res)
+		}
+		if err != nil {
 			return nil, err
 		}
 		return res, nil
@@ -89,9 +103,21 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 		return nil, fmt.Errorf("promote refused: primary %s of %s is not known to the plugin; nothing was changed", fol.LeaderID, fol.App)
 	}
 	failover := fol.AutoFailover || fol.PlatformReplica
-	target, haveTarget, err := h.followerCaughtUp(fol, leader, opts.Force)
-	if err != nil {
-		return nil, err
+	var target int64
+	var haveTarget bool
+	if opts.PrimaryDown {
+		if !failover {
+			return nil, fmt.Errorf("promote refused: %s is not an auto-failover follower; nothing was changed", fol.App)
+		}
+		if behind, why := h.failoverTargetBehind(fol, opts.Target); behind {
+			return nil, fmt.Errorf("promote refused: follower %s: %s (primary %s was last seen at WAL %d); nothing was changed", fol.App, why, leader.App, opts.Target)
+		}
+		target, haveTarget = opts.Target, true
+	} else {
+		target, haveTarget, err = h.followerCaughtUp(fol, leader, opts.Force)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var leaderPrev *ct.Release
 	fenced := false
@@ -135,7 +161,12 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 	if err != nil {
 		return nil, h.rollbackPromote(fol, leader, folPrev, leaderPrev, fenced, err)
 	}
-	if err := h.afterManualPromote(res); err != nil {
+	if opts.PrimaryDown {
+		err = h.recordPromotion(res, postgres.CodeFailover, "reason=auto")
+	} else {
+		err = h.afterManualPromote(res)
+	}
+	if err != nil {
 		return res, err
 	}
 	return res, nil
@@ -144,6 +175,10 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 // afterManualPromote records a verified promotion: topology, releases of
 // the deposed primary, resource env, and the replacement replica.
 func (h *handler) afterManualPromote(res *postgres.PromoteResult) error {
+	return h.recordPromotion(res, postgres.CodePromoted, "reason=manual")
+}
+
+func (h *handler) recordPromotion(res *postgres.PromoteResult, code, reason string) error {
 	if res == nil || res.Promoted == nil {
 		return nil
 	}
@@ -151,12 +186,12 @@ func (h *handler) afterManualPromote(res *postgres.PromoteResult) error {
 	if res.PreviousLeader != nil {
 		fromApp = res.PreviousLeader.App
 	}
-	h.emitTopology(postgres.CodePromoted, res.Promoted, fromApp, toApp, "reason=manual")
+	h.emitTopology(code, res.Promoted, fromApp, toApp, reason)
 	if err := h.stampIsolatedRole(res.Promoted); err != nil {
 		return err
 	}
 	if res.PreviousLeader != nil && res.PreviousLeader.Role == postgres.RoleDeposed {
-		h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, "reason=manual")
+		h.emitTopology(postgres.CodeDeposed, res.PreviousLeader, fromApp, toApp, reason)
 		_ = h.stampIsolatedRole(res.PreviousLeader)
 		h.syncResourceEnv(nil, res.PreviousLeader)
 		h.retargetFollowerJobs(res.Promoted)

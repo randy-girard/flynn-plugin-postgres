@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
 	ct "github.com/randy-girard/flynn/controller/types"
@@ -178,7 +179,12 @@ func (h *handler) skipFollowerReplace(fol *postgres.Instance) string {
 	}
 	leaderSwap := false
 	leaderGone := false
+	leaderDown := false
 	if primary != nil {
+		// A follower of a stopped primary is what auto-failover promotes;
+		// it must not be torn down as broken (NEW-33, as redis NEW-20).
+		down, known := primaryObservedDown(h, primary.App)
+		leaderDown = down && known
 		leaderSwap = imageSwapClaimHeld(h.client, primary.App) || imageSwapClaimHeld(h.client, fol.LeaderID)
 		if h.client != nil {
 			if _, err := h.client.GetApp(primary.App); err != nil {
@@ -186,7 +192,39 @@ func (h *handler) skipFollowerReplace(fol *postgres.Instance) string {
 			}
 		}
 	}
-	return followerReplaceSkip(fol, primary, livePostgresRole(h.client, folApp(fol)), h.upgradeInProgress(folLeader(fol)) || h.upgradeInProgress(folApp(fol)), leaderSwap, leaderGone)
+	if why := followerReplaceSkip(fol, primary, livePostgresRole(h.client, folApp(fol)), h.upgradeInProgress(folLeader(fol)) || h.upgradeInProgress(folApp(fol)), leaderSwap, leaderGone, leaderDown); why != "" {
+		return why
+	}
+	if h.followerJobStarting(fol) {
+		return "follower starting"
+	}
+	return ""
+}
+
+// followerStartGrace is how long a new follower job may take to start
+// streaming before it counts as broken.
+const followerStartGrace = 2 * time.Minute
+
+// followerJobStarting is true while the follower's newest job is younger than
+// followerStartGrace.
+func (h *handler) followerJobStarting(fol *postgres.Instance) bool {
+	if h == nil || fol == nil || strings.TrimSpace(fol.App) == "" {
+		return false
+	}
+	jobs, err := h.listAppJobs(fol.App)
+	if err != nil {
+		return false
+	}
+	now := h.now()
+	for _, j := range jobs {
+		if j == nil || !jobOccupies(j.State) || j.CreatedAt == nil {
+			continue
+		}
+		if now.Sub(*j.CreatedAt) < followerStartGrace {
+			return true
+		}
+	}
+	return false
 }
 
 func folApp(fol *postgres.Instance) string {
@@ -206,7 +244,7 @@ func folLeader(fol *postgres.Instance) string {
 // followerReplaceSkip is the replace-follower guard. liveRole is POSTGRES_ROLE
 // on the isolated app (not the in-memory store), so a just-promoted primary is
 // not torn down by another worker that still has RoleFollower in memory.
-func followerReplaceSkip(fol, primary *postgres.Instance, liveRole string, upgradeBusy, leaderSwap, leaderGone bool) string {
+func followerReplaceSkip(fol, primary *postgres.Instance, liveRole string, upgradeBusy, leaderSwap, leaderGone, leaderDown bool) string {
 	if fol == nil || fol.Role != postgres.RoleFollower {
 		return "not a follower"
 	}
@@ -228,6 +266,9 @@ func followerReplaceSkip(fol, primary *postgres.Instance, liveRole string, upgra
 	}
 	if leaderGone {
 		return "leader app gone"
+	}
+	if leaderDown {
+		return "leader down"
 	}
 	return ""
 }

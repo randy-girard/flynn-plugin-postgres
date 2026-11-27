@@ -1718,7 +1718,7 @@ func (h *handler) platformProtected(primary *postgres.Instance) bool {
 		if h.client == nil {
 			return false
 		}
-		return h.targetPromotable(fol, primary)
+		return h.replicaHealthy(fol, primary)
 	}
 	return false
 }

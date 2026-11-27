@@ -89,17 +89,14 @@ func (h *handler) loadHostFits() ([]postgres.HostFit, error) {
 	if err != nil {
 		return nil, err
 	}
-	procs := map[string]int{}
-	singletons := map[string]int{}
-	for _, j := range jobs {
-		if j == nil || j.HostID == "" || !jobOccupies(j.State) {
-			continue
-		}
-		procs[j.HostID]++
-		if len(j.VolumeIDs) > 0 {
-			singletons[j.HostID]++
-		}
+	apps, err := h.client.AppList()
+	if err != nil {
+		return nil, err
 	}
+	// Only jobs the scheduler counts toward flynn-max-processes (NEW-33):
+	// counting system jobs made busy hosts look full, so the follower got
+	// no flynn-avoid-host-ids.
+	procs, singletons := countHostJobs(jobs, apps)
 	out := make([]postgres.HostFit, 0, len(listed))
 	for _, host := range listed {
 		if strings.TrimSpace(host.ID) == "" {

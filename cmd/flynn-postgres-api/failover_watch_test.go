@@ -69,8 +69,16 @@ func stubPromotable(t *testing.T) {
 	readReplicaRecovery = func(string) (bool, int64, bool) { return true, 10, true }
 	readPrimaryWAL = func(string) (int64, bool) { return 10, true }
 	readBasebackupActive = func(string) (bool, bool) { return false, true }
+	prevSQL := runSQL
+	runSQL = func(_, query string) (string, error) {
+		if query == sqlReceiveReplay {
+			return "10|10", nil
+		}
+		return "", nil
+	}
 	t.Cleanup(func() {
 		readReplicaRecovery, readPrimaryWAL, readBasebackupActive = prevRec, prevWAL, prevBackup
+		runSQL = prevSQL
 	})
 }
 
@@ -100,7 +108,8 @@ func TestConsiderFailoverFencesBeforePromoteAndKeepsURL(t *testing.T) {
 		scaled = release
 		return nil
 	}
-	h.considerFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)}, fol)
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.considerFailover(downFor(fol.ID, time.Minute), fol)
 	if scaled != "rel-running" {
 		t.Fatalf("scaled %q", scaled)
 	}
@@ -130,7 +139,8 @@ func TestJobListErrorDoesNotPromote(t *testing.T) {
 	}
 	h := newHandler(s)
 	h.jobs = func(string) ([]*ct.Job, error) { return nil, errors.New("controller") }
-	h.considerFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)}, fol)
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.considerFailover(downFor(fol.ID, time.Minute), fol)
 	got, _ := s.Get(fol.ID)
 	if got.Role != postgres.RoleFollower {
 		t.Fatalf("role %s", got.Role)
@@ -153,7 +163,8 @@ func TestFenceFailureDoesNotPromote(t *testing.T) {
 		return []*ct.Job{{ReleaseID: "rel-running", State: ct.JobStateUp}}, nil
 	}
 	h.scaleRelease = func(string, string, ct.ScaleOptions) error { return errors.New("host down") }
-	h.considerFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)}, fol)
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.considerFailover(downFor(fol.ID, time.Minute), fol)
 	got, _ := s.Get(fol.ID)
 	if got.Role != postgres.RoleFollower {
 		t.Fatalf("role %s", got.Role)
@@ -177,7 +188,8 @@ func TestSystemWatchIgnoresUserFollower(t *testing.T) {
 	h.getRelease = func(string) (*ct.Release, error) { return &ct.Release{ID: "rel"}, nil }
 	h.scaleRelease = func(string, string, ct.ScaleOptions) error { return nil }
 	h.hostFits = func() ([]postgres.HostFit, error) { return nil, errors.New("no hosts") }
-	h.reconcileAutoFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)})
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.reconcileAutoFailover(downFor(fol.ID, time.Minute))
 	got, _ := s.Get(fol.ID)
 	if got.Role != postgres.RoleFollower {
 		t.Fatalf("user follower was promoted: %s", got.Role)
@@ -200,7 +212,8 @@ func TestManualWatchIgnoresPlatformReplica(t *testing.T) {
 	h.jobs = func(string) ([]*ct.Job, error) { return nil, nil }
 	h.getRelease = func(string) (*ct.Release, error) { return &ct.Release{ID: "rel"}, nil }
 	h.scaleRelease = func(string, string, ct.ScaleOptions) error { return nil }
-	h.reconcileAutoFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)})
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.reconcileAutoFailover(downFor(fol.ID, time.Minute))
 	got, _ := s.Get(fol.ID)
 	if got.Role != postgres.RoleFollower {
 		t.Fatalf("platform replica was promoted in manual mode: %s", got.Role)
@@ -222,7 +235,8 @@ func TestFailoverLeaseFollowerDoesNotReconcile(t *testing.T) {
 	h.failoverLeader = func() bool { return false }
 	h.availability = func() (string, error) { return postgres.AvailabilityManual, nil }
 	h.jobs = func(string) ([]*ct.Job, error) { return nil, nil }
-	h.reconcileAutoFailover(map[string]time.Time{fol.ID: time.Now().Add(-time.Minute)})
+	h.samples.record(leader.App, primarySample{WAL: 10, At: time.Now().Add(-time.Minute)})
+	h.reconcileAutoFailover(downFor(fol.ID, time.Minute))
 	got, _ := s.Get(fol.ID)
 	if got.Role != postgres.RoleFollower {
 		t.Fatalf("non-leader promoted: %s", got.Role)

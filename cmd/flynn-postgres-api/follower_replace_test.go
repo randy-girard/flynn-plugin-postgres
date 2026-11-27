@@ -149,7 +149,7 @@ func TestFollowerReplaceSkipLivePrimaryNotTornDown(t *testing.T) {
 		LeaderID: "postgresql-valley-30620",
 	}
 	valley := &postgres.Instance{App: "postgresql-valley-30620", Role: postgres.RolePrimary}
-	if got := followerReplaceSkip(fol, valley, "primary", false, false, false); got != "live role primary" {
+	if got := followerReplaceSkip(fol, valley, "primary", false, false, false, false); got != "live role primary" {
 		t.Fatalf("promoted primary must not be replaced: %q", got)
 	}
 }
@@ -161,7 +161,7 @@ func TestFollowerReplaceSkipAllowsWritableReplicaOfLivePrimary(t *testing.T) {
 		LeaderID: "postgresql-basin-73690",
 	}
 	leader := &postgres.Instance{App: "postgresql-basin-73690", Role: postgres.RolePrimary}
-	if got := followerReplaceSkip(fol, leader, "follower", false, false, false); got != "" {
+	if got := followerReplaceSkip(fol, leader, "follower", false, false, false, false); got != "" {
 		t.Fatalf("writable leftover replica of a live primary should be replaced: %q", got)
 	}
 }
@@ -173,16 +173,16 @@ func TestFollowerReplaceSkipImageSwapAndGoneLeader(t *testing.T) {
 		LeaderID: "postgresql-valley-30620",
 	}
 	leader := &postgres.Instance{App: "postgresql-valley-30620", Role: postgres.RolePrimary}
-	if got := followerReplaceSkip(fol, leader, "follower", false, true, false); got != "leader image swap" {
+	if got := followerReplaceSkip(fol, leader, "follower", false, true, false, false); got != "leader image swap" {
 		t.Fatalf("swap: %q", got)
 	}
-	if got := followerReplaceSkip(fol, leader, "follower", true, false, false); got != "upgrade in progress" {
+	if got := followerReplaceSkip(fol, leader, "follower", true, false, false, false); got != "upgrade in progress" {
 		t.Fatalf("upgrade: %q", got)
 	}
-	if got := followerReplaceSkip(fol, leader, "follower", false, false, true); got != "leader app gone" {
+	if got := followerReplaceSkip(fol, leader, "follower", false, false, true, false); got != "leader app gone" {
 		t.Fatalf("gone: %q", got)
 	}
-	if got := followerReplaceSkip(nil, leader, "", false, false, false); got != "not a follower" {
+	if got := followerReplaceSkip(nil, leader, "", false, false, false, false); got != "not a follower" {
 		t.Fatalf("nil: %q", got)
 	}
 }

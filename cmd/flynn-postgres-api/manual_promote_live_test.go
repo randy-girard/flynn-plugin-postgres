@@ -95,6 +95,10 @@ type promoteCtl struct {
 	current  map[string]string
 	scale    map[string]map[string]int // app -> release -> count
 	n        int
+	// failRelease makes CreateRelease fail for these apps.
+	failRelease map[string]error
+	// listApps makes AppList return the rig's apps (with release IDs).
+	listApps bool
 }
 
 func (c *promoteCtl) addApp(name string, env map[string]string) {
@@ -136,6 +140,10 @@ func (c *promoteCtl) GetAppRelease(app string) (*ct.Release, error) {
 
 func (c *promoteCtl) CreateRelease(app string, rel *ct.Release) error {
 	c.mu.Lock()
+	if err := c.failRelease[app]; err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	c.n++
 	rel.ID = "rel-" + app + "-" + strconv.Itoa(c.n)
 	rel.AppID = app
@@ -198,9 +206,24 @@ func (c *promoteCtl) JobList(app string) ([]*ct.Job, error) {
 
 func (c *promoteCtl) AppResourceList(string) ([]*ct.Resource, error) { return nil, nil }
 func (c *promoteCtl) ResourceListAll() ([]*ct.Resource, error)       { return nil, nil }
+func (c *promoteCtl) ResourceList(string) ([]*ct.Resource, error)    { return nil, nil }
+func (c *promoteCtl) DeleteApp(string) (*ct.AppDeletion, error)      { return nil, nil }
 func (c *promoteCtl) PutResource(*ct.Resource) error                 { return nil }
-func (c *promoteCtl) AppList() ([]*ct.App, error)                    { return nil, nil }
-func (c *promoteCtl) GetProvider(string) (*ct.Provider, error)       { return nil, controller.ErrNotFound }
+func (c *promoteCtl) AppList() ([]*ct.App, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.listApps {
+		return nil, nil
+	}
+	var out []*ct.App
+	for name, a := range c.apps {
+		cp := *a
+		cp.ReleaseID = c.current[name]
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+func (c *promoteCtl) GetProvider(string) (*ct.Provider, error) { return nil, controller.ErrNotFound }
 
 func (c *promoteCtl) runningRelease(app string) string {
 	c.mu.Lock()

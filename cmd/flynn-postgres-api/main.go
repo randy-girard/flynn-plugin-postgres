@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/inconshreveable/log15"
 	"github.com/julienschmidt/httprouter"
@@ -117,9 +118,19 @@ type handler struct {
 	scaleRelease   func(app, release string, opts ct.ScaleOptions) error
 	getRelease     func(string) (*ct.Release, error)
 	hostFits       func() ([]postgres.HostFit, error)
-	hostsCached    bool
-	hostFit        []postgres.HostFit
-	hostFitErr     error
+	// hostFitMu guards the host-fit cache. Both API processes read it from
+	// request handlers and the watch (DATA-25).
+	hostFitMu sync.Mutex
+	hostFit   []postgres.HostFit
+	hostFitAt time.Time
+	// clock replaces time.Now in tests.
+	clock func() time.Time
+	// samples is the last time each primary was seen running, with its
+	// WAL position then (failoverSamples).
+	samples failoverSamples
+	// adoptSeen is the release each instance app was last adopted from.
+	adoptSeen map[string]string
+	adoptMu   sync.Mutex
 }
 
 func newHandler(store *postgres.Store) *handler {
@@ -286,6 +297,13 @@ func (h *handler) deprovision(w http.ResponseWriter, r *http.Request, _ httprout
 	h.store.Forget(inst.ID)
 	if inst.Role == postgres.RoleFollower {
 		h.emitFollowerRemoved(inst, "reason=deleted")
+		if inst.AutoFailover && strings.TrimSpace(inst.LeaderID) != "" {
+			// Destroying the auto-failover replica turns auto-failover off
+			// for its primary: the watch must not make another (DATA-56).
+			if leader, err := h.store.Get(inst.LeaderID); err == nil && leader != nil {
+				h.clearReplicaPending(leader.ID)
+			}
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -539,7 +557,7 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string, autoF
 // promoteFenced promotes a follower. When the promotion will depose the old
 // leader (auto-failover followers), the leader is fenced first and a fence
 // failure refuses the promotion, so two writable primaries never run.
-func (h *handler) promoteFenced(id string) (*postgres.PromoteResult, error) {
+func (h *handler) promoteFenced(id string, keepService bool) (*postgres.PromoteResult, error) {
 	fol, err := h.store.Get(id)
 	if err == nil && fol != nil && fol.Role == postgres.RoleFollower && fol.LeaderID != "" && (fol.AutoFailover || fol.PlatformReplica) {
 		leader, lerr := h.store.Get(fol.LeaderID)
@@ -549,6 +567,9 @@ func (h *handler) promoteFenced(id string) (*postgres.PromoteResult, error) {
 		if err := h.fenceIsolatedApp(leader.App); err != nil {
 			return nil, fmt.Errorf("promote refused: could not fence the current primary: %w", err)
 		}
+	}
+	if keepService {
+		return h.store.PromoteKeepingService(id)
 	}
 	return h.store.Promote(id)
 }
