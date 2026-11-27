@@ -368,7 +368,12 @@ func liveFollowerAppNames(c followerAppLister, inst *postgres.Instance) ([]strin
 	var names []string
 	seen := map[string]bool{}
 	for _, app := range apps {
-		if app == nil {
+		// Only isolated instance apps replicate. A tenant app attached to a
+		// follower carries FLYNN_POSTGRES_LEADER too (an attachment key); it
+		// is not a replica. Filtering by name first also means only instance
+		// apps' releases are read, not one release per app in the cluster
+		// (NEW-36).
+		if app == nil || !postgres.IsolatedInstanceApp(app.Name) || app.Meta["flynn-plugin"] == "true" {
 			continue
 		}
 		rel, err := c.GetAppRelease(app.ID)
