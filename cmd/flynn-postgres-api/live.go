@@ -420,7 +420,10 @@ func startIsolatedInstance(c instanceControl, imageID string, inst *postgres.Ins
 		Ports:   []ct.Port{{Port: 5432, Proto: "tcp"}},
 		Volumes: []ct.VolumeReq{{Path: postgres.VolumePath, Size: volSize}},
 	}
-	applyRuntimeResources(c, dbruntime.EnginePostgres, inst.Runtime, &proc)
+	if proc.Resources, err = instanceResources(c, dbruntime.EnginePostgres, inst.Runtime, inst.CPU, inst.Memory, leaderApp); err != nil {
+		return err
+	}
+	dbruntime.ApplyEngineMemoryEnv(env, dbruntime.EnginePostgres, proc.Resources)
 	release := &ct.Release{
 		ArtifactIDs: []string{imageID},
 		Meta:        map[string]string{},
@@ -797,26 +800,6 @@ func (h *handler) reapOrphanInstances() {
 		if len(deleted) > 0 {
 			h.log.Info("reaped orphan postgres instance apps", "count", len(deleted), "apps", strings.Join(deleted, ","))
 		}
-	}
-}
-
-func applyRuntimeResources(c any, engine, name string, proc *ct.ProcessType) {
-	if proc == nil {
-		return
-	}
-	type cataloguer interface {
-		ListDBRuntimes() (*dbruntime.Catalog, error)
-	}
-	g, ok := c.(cataloguer)
-	if !ok {
-		return
-	}
-	cat, err := g.ListDBRuntimes()
-	if err != nil || cat == nil {
-		return
-	}
-	if r := dbruntime.ProcessResources(cat, engine, name); r != nil {
-		proc.Resources = r
 	}
 }
 

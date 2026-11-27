@@ -122,7 +122,13 @@ type Instance struct {
 	// Disk is the data volume size in bytes from the provider config
 	// (addons:create --disk or the runtime's disk). Zero sizes the volume
 	// from the published runtime, or the leader's volume for a follower.
-	Disk            int64
+	Disk int64
+	// CPU (milliCPU) and Memory (bytes) are the provider config cpu and
+	// memory (addons:create --cpu/--memory or the runtime's). Zero sizes
+	// the job from the published runtime, or the leader's limits for a
+	// follower of an unpublished (custom) runtime.
+	CPU             int64
+	Memory          int64
 	EngineVersion   string
 	Role            Role
 	LeaderID        string
@@ -185,6 +191,8 @@ type ProvisionRequest struct {
 	Mode            ReplicationMode
 	Runtime         string
 	Disk            int64
+	CPU             int64
+	Memory          int64
 	ForUpgrade      bool
 	AutoFailover    bool
 	PlatformReplica bool
@@ -363,6 +371,8 @@ func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, 
 		Nodes:             DefaultNodes,
 		Runtime:           defaultRuntime(req.Runtime),
 		Disk:              req.Disk,
+		CPU:               req.CPU,
+		Memory:            req.Memory,
 		EngineVersion:     EngineVersion(),
 		Role:              RolePrimary,
 	}
@@ -417,6 +427,9 @@ func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, 
 		leader.Followers = append(leader.Followers, inst.ID)
 		if strings.TrimSpace(req.Runtime) == "" {
 			inst.Runtime = leader.Runtime
+			if inst.CPU == 0 && inst.Memory == 0 {
+				inst.CPU, inst.Memory = leader.CPU, leader.Memory
+			}
 		}
 		inst.AutoFailover = req.AutoFailover
 		inst.PlatformReplica = req.PlatformReplica

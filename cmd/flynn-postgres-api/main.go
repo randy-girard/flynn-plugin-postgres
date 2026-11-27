@@ -193,6 +193,8 @@ type provisionBody struct {
 	Follow       string `json:"follow"`
 	Runtime      string `json:"runtime"`
 	Disk         int64  `json:"disk,omitempty"`
+	CPU          int64  `json:"cpu,omitempty"`
+	Memory       int64  `json:"memory,omitempty"`
 	Replication  string `json:"replication"`
 	AutoFailover bool   `json:"auto_failover"`
 	// OwnerAccount is stamped by the controller (never the caller's value).
@@ -222,6 +224,8 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		Mode:         postgres.ReplicationMode(body.Replication),
 		Runtime:      body.Runtime,
 		Disk:         body.Disk,
+		CPU:          body.CPU,
+		Memory:       body.Memory,
 		AutoFailover: body.AutoFailover,
 		OwnerAccount: body.OwnerAccount,
 	})
