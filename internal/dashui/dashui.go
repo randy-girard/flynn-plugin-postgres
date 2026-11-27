@@ -32,6 +32,10 @@ type Session struct {
 	ResourceID  string
 	Base        string
 	Theme       string
+	// ControllerToken is the user's own controller access token (the SSO
+	// controller_token, else the proxy's X-Flynn-Access-Token). Controller
+	// calls made for the user use it, never the plugin key. Never log it.
+	ControllerToken string
 }
 
 // Card is GET /card JSON for the Resources tab tile.
@@ -68,8 +72,21 @@ type FlynnEvent struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
-// FromRequest authenticates a dashboard SSO JWT or optional dev headers.
+// FromRequest authenticates the request (fromRequest) and adds the user's
+// controller token from X-Flynn-Access-Token when the SSO token has none.
 func FromRequest(r *http.Request) (*Session, error) {
+	sess, err := fromRequest(r)
+	if err != nil || sess == nil {
+		return sess, err
+	}
+	if sess.ControllerToken == "" {
+		sess.ControllerToken = strings.TrimSpace(r.Header.Get("X-Flynn-Access-Token"))
+	}
+	return sess, nil
+}
+
+// fromRequest authenticates a dashboard SSO JWT or optional dev headers.
+func fromRequest(r *http.Request) (*Session, error) {
 	base := strings.TrimSpace(r.Header.Get("X-Flynn-Dashboard-Base"))
 	if base == "" {
 		base = "/dashboard/"
@@ -192,6 +209,8 @@ func parseJWT(raw string) (*Session, error) {
 		Plugin:      c.Plugin,
 		Permissions: c.Permissions,
 		ResourceID:  c.ResourceID,
+		// The user's own controller token: dashboard writes act as the user.
+		ControllerToken: c.ControllerToken,
 	}, nil
 }
 

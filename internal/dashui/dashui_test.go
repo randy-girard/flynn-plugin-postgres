@@ -225,3 +225,16 @@ func TestWriteHTMLLoadsLiveClient(t *testing.T) {
 		t.Fatal("rejected app id still subscribed")
 	}
 }
+
+// The user's controller token reaches the session, so controller calls made
+// for the user act as the user.
+func TestFromRequestCarriesControllerToken(t *testing.T) {
+	t.Setenv("DASHBOARD_SSO_OPTIONAL", "1")
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)
+	req.Header.Set("X-Flynn-Dashboard-App", "demo")
+	req.Header.Set("X-Flynn-Access-Token", "user-token")
+	sess, err := FromRequest(req)
+	if err != nil || sess.ControllerToken != "user-token" {
+		t.Fatalf("session %+v err %v", sess, err)
+	}
+}
