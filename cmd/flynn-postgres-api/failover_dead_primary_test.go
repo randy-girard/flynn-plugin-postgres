@@ -336,3 +336,32 @@ func downFor(id string, d time.Duration) *failoverDowntime {
 	down.seen[id] = now
 	return down
 }
+
+type deposedLister struct{ rels map[string]map[string]string }
+
+func (d *deposedLister) AppList() ([]*ct.App, error) {
+	var out []*ct.App
+	for name := range d.rels {
+		out = append(out, &ct.App{ID: name, Name: name})
+	}
+	return out, nil
+}
+func (d *deposedLister) GetAppRelease(id string) (*ct.Release, error) {
+	return &ct.Release{ID: "rel-" + id, Env: d.rels[id]}, nil
+}
+
+// After a failover the deposed old primary's release names the promoted
+// primary as FLYNN_POSTGRES_LEADER. It is not a follower and must not keep
+// the promoted primary from being removed (seen live: "still has
+// followers: <old primary>").
+func TestDeposedOldPrimaryIsNotAFollower(t *testing.T) {
+	promoted := &postgres.Instance{ID: "p", App: "postgresql-basin-00001", Role: postgres.RolePrimary}
+	c := &deposedLister{rels: map[string]map[string]string{
+		"postgresql-oxbow-00002": {"FLYNN_POSTGRES_ROLE": "deposed", "FLYNN_POSTGRES_LEADER": promoted.App},
+		"postgresql-range-00003": {"FLYNN_POSTGRES_ROLE": "follower", "FLYNN_POSTGRES_LEADER": promoted.App},
+	}}
+	names, err := liveFollowerAppNames(c, promoted)
+	if err != nil || len(names) != 1 || names[0] != "postgresql-range-00003" {
+		t.Fatalf("followers %v err %v, want only the real follower", names, err)
+	}
+}

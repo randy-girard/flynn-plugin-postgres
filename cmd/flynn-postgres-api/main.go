@@ -369,6 +369,11 @@ func liveFollowerAppNames(c followerAppLister, inst *postgres.Instance) ([]strin
 		if pointsAt == "" {
 			continue
 		}
+		// A deposed old primary names the promoted one as its leader after
+		// a failover; it is not a follower (NEW-33).
+		if strings.EqualFold(strings.TrimSpace(rel.Env["FLYNN_POSTGRES_ROLE"]), "deposed") {
+			continue
+		}
 		if !strings.EqualFold(pointsAt, leader) && !strings.EqualFold(pointsAt, leaderID) {
 			continue
 		}
