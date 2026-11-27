@@ -175,6 +175,9 @@ type Info struct {
 
 // ProvisionRequest creates a primary, or a follower when Follow is set.
 type ProvisionRequest struct {
+	// OwnerAccount is the account the controller stamped on an unattached
+	// provision (no App). AccountOwns authorizes its follow.
+	OwnerAccount    string
 	Tenant          string
 	App             string
 	As              string
@@ -215,6 +218,10 @@ type Store struct {
 	// after a restart has no Tenant or Attachments). It must answer from the
 	// controller's records of the requesting app's own resources.
 	TenantOwns func(leader *Instance, app string) bool
+	// AccountOwns, when set, authorizes a follow with no requesting app
+	// (addons:create --unattached --follow): the controller resource of the
+	// leader must be owned by account.
+	AccountOwns func(leader *Instance, account string) bool
 
 	tasks           map[string]*Task
 	upgradeByLeader map[string]string
@@ -317,7 +324,12 @@ func (s *Store) provisionLocked(req ProvisionRequest, trusted bool) (*Instance, 
 		}
 		if !trusted {
 			requester := firstNonEmpty(req.Tenant, req.App)
-			if !leader.visibleTo(requester) && (requester == "" || s.TenantOwns == nil || !s.TenantOwns(leader, requester)) {
+			if requester == "" {
+				account := strings.TrimSpace(req.OwnerAccount)
+				if account == "" || s.AccountOwns == nil || !s.AccountOwns(leader, account) {
+					return nil, nil, ErrNotFound
+				}
+			} else if !leader.visibleTo(requester) && (s.TenantOwns == nil || !s.TenantOwns(leader, requester)) {
 				return nil, nil, ErrNotFound
 			}
 		}

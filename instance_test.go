@@ -951,3 +951,30 @@ func TestProvisionFollowUsesTenantOwnsForAdoptedLeader(t *testing.T) {
 		t.Fatalf("owner: %v", err)
 	}
 }
+
+// NEW-27: addons:create --unattached --follow has no app; the controller
+// stamps the owner account instead, and AccountOwns answers whether that
+// account owns the leader.
+func TestProvisionUnattachedFollowUsesAccountOwns(t *testing.T) {
+	s := NewStore()
+	s.byID["lead"] = &Instance{ID: "lead", App: "postgresql-gorge-85967", Role: RolePrimary, EngineVersion: EngineVersion()}
+	if _, _, err := s.Provision(ProvisionRequest{OwnerAccount: "user:ada", Follow: "lead"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no hook: err = %v, want ErrNotFound", err)
+	}
+	s.AccountOwns = func(l *Instance, account string) bool {
+		return account == "user:ada" && l.App == "postgresql-gorge-85967"
+	}
+	if _, _, err := s.Provision(ProvisionRequest{OwnerAccount: "user:eve", Follow: "lead"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other account: err = %v, want ErrNotFound", err)
+	}
+	if _, _, err := s.Provision(ProvisionRequest{Follow: "lead"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no account: err = %v, want ErrNotFound", err)
+	}
+	inst, _, err := s.Provision(ProvisionRequest{OwnerAccount: "user:ada", Follow: "lead"})
+	if err != nil {
+		t.Fatalf("owner account: %v", err)
+	}
+	if inst.Role != RoleFollower || inst.LeaderID != "lead" {
+		t.Fatalf("not a follower: %+v", inst)
+	}
+}

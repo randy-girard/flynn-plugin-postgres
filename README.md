@@ -32,6 +32,11 @@ flynn addons:create postgres --follow <resource>
 flynn addons:create postgres --follow <resource> --runtime perf-l
 ```
 
+A follower without `--runtime` gets the leader's runtime. `--unattached
+--follow` is allowed when the leader's controller resource is owned by the
+account the controller stamps as `owner_account` (the account that will own
+the new resource); otherwise the leader is "not found".
+
 `--as ANALYTICS` sets `ANALYTICS_URL`. A new provision also sets
 `DATABASE_URL` when the app does not already have it. Every provision and
 attach sets `FLYNN_POSTGRESQL_<COLOR>_URL` unless `--as` names the attachment.

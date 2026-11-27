@@ -58,6 +58,13 @@ func main() {
 		}
 		return false
 	}
+	store.AccountOwns = func(leader *postgres.Instance, account string) bool {
+		if leader == nil || h.client == nil {
+			return false
+		}
+		lister, _ := h.client.(resourceLister)
+		return accountOwnsLeader(lister, leader.App, account)
+	}
 	h.imageID = os.Getenv("POSTGRES_IMAGE_ID")
 	if key := os.Getenv("CONTROLLER_KEY"); key != "" && h.imageID != "" {
 		client, err := controller.NewClient("", key)
@@ -188,6 +195,8 @@ type provisionBody struct {
 	Disk         int64  `json:"disk,omitempty"`
 	Replication  string `json:"replication"`
 	AutoFailover bool   `json:"auto_failover"`
+	// OwnerAccount is stamped by the controller (never the caller's value).
+	OwnerAccount string `json:"owner_account"`
 }
 
 func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
@@ -214,6 +223,7 @@ func (h *handler) provision(w http.ResponseWriter, r *http.Request, _ httprouter
 		Runtime:      body.Runtime,
 		Disk:         body.Disk,
 		AutoFailover: body.AutoFailover,
+		OwnerAccount: body.OwnerAccount,
 	})
 	if err != nil {
 		writeAPIError(w, err)
