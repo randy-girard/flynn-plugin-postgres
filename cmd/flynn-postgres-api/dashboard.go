@@ -1580,7 +1580,7 @@ func primaryActionForms(ref string, store *postgres.Store) string {
 
 func followerActionForms(ref string, autoFailover bool) string {
 	esc := html.EscapeString(ref)
-	confirm := "Promote this follower to primary? The previous leader stays as its own resource."
+	confirm := "Promote this follower to primary? The previous primary is stopped and retired, and its apps are moved to this one."
 	if autoFailover {
 		confirm = "Promote this auto-failover follower to primary? The previous leader is fenced and a replacement replica is created."
 	}

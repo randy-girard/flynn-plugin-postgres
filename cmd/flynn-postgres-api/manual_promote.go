@@ -42,19 +42,26 @@ type promoteOptions struct {
 	Target      int64
 }
 
-// promoteFollower is pg:promote, the API and the dashboard (DATA-03):
+// promoteFollower is pg:promote, the API and the dashboard (DATA-03). A
+// manual promote is a switchover (NEW-51): the leader's apps follow the
+// promoted primary and the old primary is retired.
 //
 //  1. read the primary's WAL position and wait, bounded, until the follower
 //     has replayed it (refused, with nothing changed, if it has not; an
 //     unreadable primary needs Force);
-//  2. auto-failover follower: stop the old primary and stamp it deposed,
-//     then wait until the follower has applied every byte it received;
+//  2. stop the old primary and stamp it deposed (it never starts writable
+//     again), then wait until the follower has applied every byte it
+//     received, so no write the primary acknowledged is lost;
 //  3. restart the follower's job as a primary (its release role decides
 //     standby.signal) and verify it left recovery and accepts a write;
-//  4. only then record the new roles and update resource env.
+//  4. only then record the new roles. An auto-failover follower claims the
+//     old primary's discoverd name; a plain follower's promote rewrites the
+//     old primary's attachments to the promoted host (the leader's login,
+//     which replication copied) and deploys each attached app (Rewritten).
 //
 // A failure in 2-3 puts the follower back on its previous release and
-// starts the old primary again on its own.
+// starts the old primary again on its own. A failed app deploy in 4 is
+// reported; pg:promote again finishes it.
 func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.PromoteResult, error) {
 	// The failover watch promotes platform replicas; users may not.
 	if !opts.PrimaryDown {
@@ -83,7 +90,9 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 	}
 	if fol.Role != postgres.RoleFollower || strings.TrimSpace(fol.LeaderID) == "" {
 		if h.alreadyWritable(fol) {
-			return &postgres.PromoteResult{Promoted: fol}, nil
+			// A retry: finish moving the retired primary's apps.
+			res := &postgres.PromoteResult{Promoted: fol, PreviousLeader: h.retiredBy(fol)}
+			return res, h.switchoverApps(res)
 		}
 		return nil, postgres.ErrNotFollower
 	}
@@ -96,7 +105,11 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 		if alias != "" {
 			return h.store.PromoteKeepingService(fol.ID)
 		}
-		return h.store.Promote(fol.ID)
+		res, err := h.store.Switchover(fol.ID)
+		if err != nil {
+			return nil, err
+		}
+		return res, h.switchoverApps(res)
 	}
 	leader, err := h.store.Get(fol.LeaderID)
 	if err != nil || leader == nil {
@@ -119,9 +132,12 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 			return nil, err
 		}
 	}
+	// Every manual promote stops the old primary first (a switchover): a
+	// write it took after the catch-up check would otherwise be lost, and
+	// two writable primaries must never run.
 	var leaderPrev *ct.Release
 	fenced := false
-	if failover {
+	{
 		leaderPrev, _ = h.client.GetAppRelease(leader.App)
 		if err := h.fenceIsolatedApp(leader.App); err != nil {
 			return nil, fmt.Errorf("promote refused: could not stop the current primary %s: %w; nothing was changed", leader.App, err)
@@ -156,7 +172,7 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 	if failover {
 		res, err = h.store.PromoteKeepingService(fol.ID)
 	} else {
-		res, err = h.store.Promote(fol.ID)
+		res, err = h.store.Switchover(fol.ID)
 	}
 	if err != nil {
 		return nil, h.rollbackPromote(fol, leader, folPrev, leaderPrev, fenced, err)
@@ -173,9 +189,44 @@ func (h *handler) promoteFollower(id string, opts promoteOptions) (*postgres.Pro
 }
 
 // afterManualPromote records a verified promotion: topology, releases of
-// the deposed primary, resource env, and the replacement replica.
+// the deposed primary, resource env, the replacement replica, and (plain
+// follower) the switchover of the old primary's apps.
 func (h *handler) afterManualPromote(res *postgres.PromoteResult) error {
-	return h.recordPromotion(res, postgres.CodePromoted, "reason=manual")
+	if err := h.recordPromotion(res, postgres.CodePromoted, "reason=manual"); err != nil {
+		return err
+	}
+	return h.switchoverApps(res)
+}
+
+// switchoverApps moves the retired primary's attachments (and the promoted
+// instance's own, onto its writable login) to the promoted primary and
+// deploys each app, then sets res.Rewritten to what the controller now has.
+// A promote that kept the old discoverd name (auto-failover) has nothing to
+// move. Without a controller the store's in-memory rewrite stands.
+func (h *handler) switchoverApps(res *postgres.PromoteResult) error {
+	if res == nil || res.Promoted == nil || strings.TrimSpace(res.Promoted.ServiceAlias) != "" || !h.live() {
+		return nil
+	}
+	rewritten, err := h.cutoverAttachedAppsReport(res.PreviousLeader, res.Promoted)
+	res.Rewritten = rewritten
+	if err != nil {
+		return fmt.Errorf("%s is the primary, but its apps were not all moved: %w; run pg:promote %s again to finish", res.Promoted.App, err, res.Promoted.App)
+	}
+	return nil
+}
+
+// retiredBy is the deposed primary a switchover to inst retired, if this
+// process knows it.
+func (h *handler) retiredBy(inst *postgres.Instance) *postgres.Instance {
+	if h == nil || h.store == nil || inst == nil {
+		return nil
+	}
+	for _, cand := range h.store.All() {
+		if cand != nil && cand.Role == postgres.RoleDeposed && (cand.LeaderID == inst.ID || cand.LeaderID == inst.App) {
+			return cand
+		}
+	}
+	return nil
 }
 
 func (h *handler) recordPromotion(res *postgres.PromoteResult, code, reason string) error {

@@ -205,7 +205,7 @@ func TestPluginDocParsesPsql(t *testing.T) {
 		"Create a logical database on this instance",
 		"Create a streaming read-only follower",
 		"Print live copy progress and block until follower lag is zero",
-		"Refuse unless the follower has the primary's position, restart it as the primary and verify it accepts a write",
+		"Switchover: refuse unless the follower has the primary's position, stop and retire the primary",
 		"Restart the follower as a standalone writable copy and verify it accepts a write",
 		"Follow, wait with live progress, promote, then recreate followers",
 		"Write a custom-format dump of each database on this instance to object storage",

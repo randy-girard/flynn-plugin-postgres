@@ -99,17 +99,22 @@ func TestDashManualPromoteRefusesWhenFenceFails(t *testing.T) {
 	}
 }
 
-func TestManualPromoteOfPlainFollowerDoesNotFence(t *testing.T) {
+// NEW-51: a plain follower's promote is a switchover; the primary is
+// stopped first, and a failed stop refuses the promote.
+func TestManualPromoteOfPlainFollowerFencesPrimary(t *testing.T) {
 	s := postgres.NewStore()
 	leader, _, _ := s.Provision(postgres.ProvisionRequest{App: "shop-a", Tenant: "shop-a"})
 	fol, _, _ := s.Provision(postgres.ProvisionRequest{App: "shop-a", Follow: leader.App})
 	h := newHandler(s)
 	var scaled []string
-	stubFence(h, errors.New("must not be called"), &scaled)
+	stubFence(h, errors.New("host down"), &scaled)
 	req := httptest.NewRequest(http.MethodPost, "/databases/"+fol.ID+"/promote", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != 200 || len(scaled) != 0 {
+	if rec.Code == 200 || len(scaled) == 0 || scaled[0] != leader.App {
 		t.Fatalf("code %d scaled %v", rec.Code, scaled)
+	}
+	if got, _ := s.Get(fol.ID); got.Role != postgres.RoleFollower {
+		t.Fatalf("role %s", got.Role)
 	}
 }

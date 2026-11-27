@@ -94,11 +94,13 @@ func (h *handler) maintain(w http.ResponseWriter, r *http.Request, _ httprouter.
 	if !everything {
 		filter = only
 	}
+	scrubbed := scrubFollowerAttachmentsFn(h, filter)
 	h.refreshIsolatedImagesOnly(filter)
 	started, skipped := h.beginClusterUpgradesOnly(filter)
 	httphelper.JSON(w, http.StatusAccepted, map[string]any{
-		"tasks":   started,
-		"skipped": skipped,
+		"tasks":    started,
+		"skipped":  skipped,
+		"scrubbed": scrubbed,
 	})
 }
 

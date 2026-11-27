@@ -94,20 +94,31 @@ follower's own release: the tenant resource env has `FLYNN_POSTGRES_ROLE` and
 follower drops its role from the leader (best effort; a leader that is down
 never blocks the delete). The dashboard Users tab does not list or drop it. A
 replacement follower (`pg:upgrade`, broken-follower replacement) keeps the
-same login, so its apps' URLs keep working. Followers created before this
-change keep the leader's app role login until they are replaced.
+same login, so its apps' URLs keep working. A follower created before this
+change used the leader's app role login, and its apps' releases may still
+carry `FLYNN_POSTGRES_PRIMARY_URL` (the leader's login). `pg:maintenance`
+(and plugin start with `MAINTENANCE_AUTO=true`) repairs that once: it creates
+the follower's own read-only login on the leader, moves the follower's
+resource and each attached app's `*_URL` onto it, removes
+`FLYNN_POSTGRES_PRIMARY_URL`/`POSTGRES_PRIMARY_URL` from the resource and
+the app releases (only when the value points at the leader; a value you set
+to another host stays), and deploys each changed app. The follower's own
+instance release keeps its replication URL. Nothing in Flynn reads that key
+from a tenant app; an app that used it for writes should use the leader's
+own attachment (`DATABASE_URL`, or `flynn addons:attach <leader>`).
 
-Apps attached to the follower itself keep its read-only login after a
-promote, unfollow or failover; attach the promoted resource again for a
-writable URL. The leader's app role exists on the promoted host through
-replication.
+Apps attached to the follower itself keep its read-only login after an
+auto-failover or unfollow; attach the promoted resource again for a
+writable URL. A manual promote (below) moves them onto the writable login.
+The leader's app role exists on the promoted host through replication.
 
 A follower cannot follow another follower. Its `--as` name does not replace
 the leader URL.
 
 `pg:promote <follower>` (the CLI, the API and the dashboard run the same
-steps) restarts the follower's job as a primary; the release alone does not
-change the running process:
+steps) is a switchover: the follower becomes the primary, the leader's apps
+follow it, and the old primary is retired. It restarts the follower's job as
+a primary; the release alone does not change the running process:
 
 1. Read the primary's WAL position and wait up to 20 seconds for the
    follower to replay it. A follower that is still behind, not streaming,
@@ -115,23 +126,34 @@ change the running process:
    `pg:wait <follower>` first. If the primary cannot be read, the promote is
    refused unless you pass `--force`, which skips that proof and loses any
    write the follower has not received.
-2. An auto-failover follower: stop the current primary (scale to 0, wait
-   for the job to exit, stamp it `deposed` so it cannot start writable) and
-   wait until the follower has applied the WAL it received. If the stop
-   fails, the promote is refused and nothing changes.
+2. Stop the current primary (scale to 0, wait for the job to exit, stamp
+   it `deposed` so it cannot start writable) and wait until the follower
+   has applied the WAL it received, so no write the primary acknowledged is
+   lost. If the stop fails, the promote is refused and nothing changes. The
+   leader's apps cannot write from here until step 5 deploys them.
 3. Restart the follower's job with role `primary` (no `standby.signal`), and
    check within 3 minutes that it left recovery, accepts a write (a temp
    table dropped at commit, never a tenant table) and is at or past the
    primary's position.
-4. Only then record the new roles and update the resource env.
+4. Only then record the new roles and update the resource env. The old
+   primary's other followers replicate from the promoted one.
+5. Plain follower: rewrite the old primary's resource rows to the promoted
+   host (the leader's app role login, which replication copied) and the
+   promoted resource's own attachments onto that writable login, deploy
+   each attached app, and wait for each deploy. The JSON result's
+   `Rewritten` lists exactly those attachments, and `pg:promote` prints the
+   apps and keys it moved (never the URLs). If a deploy fails, the promote
+   reports which app; run `pg:promote <follower>` again to finish (the
+   rest is a no-op).
 
 If step 2 or 3 fails, the follower goes back to its previous release as a
-follower and an auto-failover primary is started again; the error says so.
-A promoted auto-failover follower claims the old primary's discoverd name,
-so `DATABASE_URL` (`leader.<original>.discoverd`) keeps working, the user
-followers are restarted against it, and a replacement replica is created.
-A plain follower's old primary keeps running as its own writable resource
-and its apps keep their URL.
+follower and the old primary is started again on its own release; the error
+says so. A promoted auto-failover follower claims the old primary's
+discoverd name instead of step 5, so `DATABASE_URL`
+(`leader.<original>.discoverd`) keeps working, the user followers are
+restarted against it, and a replacement replica is created. The retired old
+primary stays stopped with its volume (role `deposed`); destroying its
+resource (the one that first had `DATABASE_URL`) deletes it.
 
 Automatic failover (`--auto-failover`, availability `manual`; platform
 replicas in `system`) runs the same steps when the primary job has been gone
@@ -181,7 +203,7 @@ is a fallback.
 | `flynn pg:create <name>` | Create a logical database on this instance |
 | `flynn pg:follow` | Create a streaming read-only follower |
 | `flynn pg:wait` | Print live copy progress and block until follower lag is zero |
-| `flynn pg:promote [--force] <follower>` | Refuse unless the follower has the primary's position, restart it as the primary, verify it accepts a write (`--force`: the primary cannot be read; unreceived writes are lost) |
+| `flynn pg:promote [--force] <follower>` | Switchover: refuse unless the follower has the primary's position, stop and retire the primary, restart the follower as the primary, verify it accepts a write, then move the primary's apps to it (`--force`: the primary cannot be read; unreceived writes are lost) |
 | `flynn pg:unfollow <follower>` | Restart the follower as a standalone writable copy and verify it accepts a write |
 | `flynn pg:upgrade` | Follow, wait with live progress, promote, then recreate followers |
 | `flynn pg:dump` | When remote object storage is configured, write each logical database there and print the timestamp. While the cluster blobstore is still the built-in store, the dashboard Backup tab downloads and restores a file instead. Pass the instance name when the app has more than one Postgres resource |

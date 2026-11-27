@@ -564,7 +564,11 @@ func (h *handler) provisionFollow(appName, appRef, leader, runtime string, autoF
 // failure refuses the promotion, so two writable primaries never run.
 func (h *handler) promoteFenced(id string, keepService bool) (*postgres.PromoteResult, error) {
 	fol, err := h.store.Get(id)
-	if err == nil && fol != nil && fol.Role == postgres.RoleFollower && fol.LeaderID != "" && (fol.AutoFailover || fol.PlatformReplica) {
+	// A plain follower's promote is a switchover and stops the primary too;
+	// without a controller (local runs) there is no job to stop.
+	failover := fol != nil && (fol.AutoFailover || fol.PlatformReplica)
+	canStop := h.client != nil || h.jobs != nil
+	if err == nil && fol != nil && fol.Role == postgres.RoleFollower && fol.LeaderID != "" && (failover || canStop) {
 		leader, lerr := h.store.Get(fol.LeaderID)
 		if lerr != nil || leader == nil {
 			return nil, fmt.Errorf("promote: cannot find the current primary to fence")
@@ -576,7 +580,7 @@ func (h *handler) promoteFenced(id string, keepService bool) (*postgres.PromoteR
 	if keepService {
 		return h.store.PromoteKeepingService(id)
 	}
-	return h.store.Promote(id)
+	return h.store.Switchover(id)
 }
 
 func (h *handler) promote(w http.ResponseWriter, r *http.Request, p httprouter.Params) {

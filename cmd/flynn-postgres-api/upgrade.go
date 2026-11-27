@@ -202,6 +202,7 @@ func (h *handler) autoStartClusterUpgrades() {
 			}
 			return
 		}
+		scrubFollowerAttachmentsFn(h, nil)
 		h.refreshIsolatedImages()
 		started, skipped := h.beginClusterUpgrades()
 		if h.log != nil {

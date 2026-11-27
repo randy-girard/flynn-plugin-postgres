@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/randy-girard/flynn-plugin-postgres"
@@ -150,8 +151,19 @@ func (h *handler) cutoverResourceEnv(previous, promoted *postgres.Instance) {
 }
 
 func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) error {
+	_, err := h.cutoverAttachedAppsReport(previous, promoted)
+	return err
+}
+
+// cutoverAttachedAppsReport rewrites the controller resource rows of
+// previous and promoted to promoted, deploys each attached app with the new
+// env and waits for it, and returns the attachments it changed (one per row
+// and app, with the row's *_URL values). It stops at the first failed
+// deploy; running it again finishes the rest (rows already moved and apps
+// already deployed are no-ops).
+func (h *handler) cutoverAttachedAppsReport(previous, promoted *postgres.Instance) ([]postgres.Attachment, error) {
 	if h == nil || promoted == nil || strings.TrimSpace(promoted.App) == "" {
-		return nil
+		return nil, nil
 	}
 	var list []*ct.Resource
 	var err error
@@ -161,7 +173,7 @@ func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) err
 		list, err = h.client.ResourceListAll()
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	refs := []string{promoted.App, promoted.ID}
 	if previous != nil {
@@ -169,6 +181,7 @@ func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) err
 	}
 	seen := map[string]bool{}
 	matched := 0
+	var out []postgres.Attachment
 	for _, r := range list {
 		if r == nil || r.Env == nil {
 			continue
@@ -184,25 +197,31 @@ func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) err
 			continue
 		}
 		matched++
+		before := cloneEnv(r.Env)
 		postgres.RewriteAttachmentEnv(r.Env, previous, promoted)
+		postgres.RewriteReaderLogin(r.Env, promoted)
 		var leader *postgres.Instance
 		if promoted.Role == postgres.RoleFollower && h.store != nil && promoted.LeaderID != "" {
 			leader, _ = h.store.Get(promoted.LeaderID)
 		}
 		applyPostgresResourceEnv(promoted, r.Env, leader)
 		stripTenantPostgresCredentials(r.Env)
-		if h.client != nil {
+		changedURLs := changedURLEnv(before, r.Env)
+		if h.client != nil && !envEqual(before, r.Env) {
 			if err := h.client.PutResource(r); err != nil {
-				return fmt.Errorf("put resource %s: %w", r.ID, err)
+				return out, fmt.Errorf("put resource %s: %w", r.ID, err)
 			}
 		}
 		for _, appID := range resourceAppIDs(r) {
+			if len(changedURLs) > 0 {
+				out = append(out, rewrittenAttachment(h.resolveAppName(appID), changedURLs))
+			}
 			if seen[appID] {
 				continue
 			}
 			seen[appID] = true
 			if err := deployTenantPostgresEnv(h.client, appID, previous, promoted); err != nil {
-				return err
+				return out, fmt.Errorf("move app %s to %s: %w", h.resolveAppName(appID), promoted.App, err)
 			}
 		}
 	}
@@ -213,7 +232,35 @@ func (h *handler) cutoverAttachedApps(previous, promoted *postgres.Instance) err
 		}
 		h.log.Info("cutover attached apps", "previous", prev, "promoted", promoted.App, "matched", matched, "deployed", len(seen))
 	}
-	return nil
+	return out, nil
+}
+
+// changedURLEnv is the *_URL keys of after whose value differs from before.
+func changedURLEnv(before, after map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range after {
+		if (k == "DATABASE_URL" || strings.HasSuffix(k, "_URL")) && before[k] != v {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func rewrittenAttachment(app string, env map[string]string) postgres.Attachment {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	a := postgres.Attachment{App: app, Env: env}
+	if len(keys) > 0 {
+		a.URL = env[keys[0]]
+		if v, ok := env["DATABASE_URL"]; ok {
+			a.URL = v
+		}
+		a.As = strings.TrimSuffix(postgres.AttachmentName(keys), "_URL")
+	}
+	return a
 }
 
 func (h *handler) hydrateInstanceAttachments(inst *postgres.Instance, r *ct.Resource) {

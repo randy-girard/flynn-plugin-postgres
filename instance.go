@@ -927,19 +927,29 @@ func (s *Store) SetLag(id string, bytes int64) error {
 }
 
 // Promote makes the follower writable, ends the follow, and rewrites the
-// previous leader's attachment URLs. The old leader remains its own resource.
+// previous leader's attachment URLs. pg:upgrade uses it for its copy; the
+// old leader is handled by the upgrade.
 func (s *Store) Promote(id string) (*PromoteResult, error) {
-	return s.promote(id, false)
+	return s.promote(id, false, false)
+}
+
+// Switchover is a manual promote of a plain follower (NEW-51): the follower
+// becomes the primary, the previous leader's attachment URLs are rewritten
+// to it (Rewritten), the leader's other followers follow it, and the
+// previous leader is deposed (stopped, never writable again). The caller
+// stops the old job and moves the tenant env in the controller.
+func (s *Store) Switchover(id string) (*PromoteResult, error) {
+	return s.promote(id, false, true)
 }
 
 // PromoteKeepingService promotes without rewriting attachment URLs. The
 // promoted instance registers the previous primary's discoverd name so
 // DATABASE_URL keeps leader.<original>.discoverd.
 func (s *Store) PromoteKeepingService(id string) (*PromoteResult, error) {
-	return s.promote(id, true)
+	return s.promote(id, true, true)
 }
 
-func (s *Store) promote(id string, keepService bool) (*PromoteResult, error) {
+func (s *Store) promote(id string, keepService, retire bool) (*PromoteResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fol := s.lookupLocked(id)
@@ -976,13 +986,15 @@ func (s *Store) promote(id string, keepService bool) (*PromoteResult, error) {
 	fol.LagBytes = 0
 	fol.AutoFailover = false
 	fol.PlatformReplica = false
-	if keepService {
+	if retire {
 		s.retargetUserFollowersLocked(leader, fol)
 	}
-	if failover {
+	if retire || failover {
 		leader.Role = RoleDeposed
 		leader.ReadOnly = true
 		leader.LeaderID = fol.ID
+	}
+	if failover {
 		fol.ReplicaPending = true
 	}
 	return &PromoteResult{
@@ -1513,4 +1525,18 @@ func (s *Store) followerReaderLocked(name string) bool {
 		}
 	}
 	return false
+}
+
+// SetReaderLogin records a follower's own read-only login (NEW-52: a
+// follower made before NEW-06 gets one at maintenance). Empty values clear it.
+func (s *Store) SetReaderLogin(id, user, password string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inst := s.lookupLocked(id)
+	if inst == nil {
+		return ErrNotFound
+	}
+	inst.ReaderUser = strings.TrimSpace(user)
+	inst.ReaderPassword = strings.TrimSpace(password)
+	return nil
 }

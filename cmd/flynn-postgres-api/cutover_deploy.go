@@ -153,6 +153,7 @@ func rewriteReleasePostgresURLs(rel *ct.Release, previous, promoted *postgres.In
 		rel.Env = map[string]string{}
 	}
 	postgres.RewriteAttachmentEnv(rel.Env, previous, promoted)
+	postgres.RewriteReaderLogin(rel.Env, promoted)
 	applyPostgresResourceEnv(promoted, rel.Env, nil)
 	stripTenantPostgresCredentials(rel.Env)
 	for name, p := range rel.Processes {
@@ -160,6 +161,7 @@ func rewriteReleasePostgresURLs(rel *ct.Release, previous, promoted *postgres.In
 			continue
 		}
 		postgres.RewriteAttachmentEnv(p.Env, previous, promoted)
+		postgres.RewriteReaderLogin(p.Env, promoted)
 		rel.Processes[name] = p
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -369,7 +370,36 @@ func runInstanceActionTask(action, resource string, force bool) error {
 		return fmt.Errorf("%s %s: %s", action, resp.Status, strings.TrimSpace(string(raw)))
 	}
 	fmt.Printf("%s %s\n", action, resource)
+	if action == "promote" {
+		printMovedApps(raw)
+	}
 	return nil
+}
+
+// printMovedApps lists the apps a switchover moved and their keys (never
+// the URLs: they carry the login).
+func printMovedApps(raw []byte) {
+	var res struct {
+		PreviousLeader *struct{ App string }
+		Rewritten      []struct {
+			App string
+			Env map[string]string
+		}
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return
+	}
+	if res.PreviousLeader != nil && strings.TrimSpace(res.PreviousLeader.App) != "" {
+		fmt.Printf("retired the previous primary %s (stopped)\n", res.PreviousLeader.App)
+	}
+	for _, a := range res.Rewritten {
+		keys := make([]string, 0, len(a.Env))
+		for k := range a.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Printf("moved %s: %s\n", a.App, strings.Join(keys, ", "))
+	}
 }
 
 func runMaintenanceTask(args []string) error {

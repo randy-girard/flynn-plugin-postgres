@@ -99,6 +99,10 @@ type promoteCtl struct {
 	failRelease map[string]error
 	// listApps makes AppList return the rig's apps (with release IDs).
 	listApps bool
+	// resources are the controller resource rows (tenant attachments).
+	resources []*ct.Resource
+	// failDeploy makes DeployAppRelease fail for these apps.
+	failDeploy map[string]error
 }
 
 func (c *promoteCtl) addApp(name string, env map[string]string) {
@@ -204,11 +208,84 @@ func (c *promoteCtl) JobList(app string) ([]*ct.Job, error) {
 	return out, nil
 }
 
-func (c *promoteCtl) AppResourceList(string) ([]*ct.Resource, error) { return nil, nil }
-func (c *promoteCtl) ResourceListAll() ([]*ct.Resource, error)       { return nil, nil }
-func (c *promoteCtl) ResourceList(string) ([]*ct.Resource, error)    { return nil, nil }
-func (c *promoteCtl) DeleteApp(string) (*ct.AppDeletion, error)      { return nil, nil }
-func (c *promoteCtl) PutResource(*ct.Resource) error                 { return nil }
+func (c *promoteCtl) AppResourceList(app string) ([]*ct.Resource, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []*ct.Resource
+	for _, r := range c.resources {
+		for _, a := range r.Apps {
+			if a == app {
+				cp := *r
+				cp.Env = cloneEnv(r.Env)
+				out = append(out, &cp)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+func (c *promoteCtl) ResourceListAll() ([]*ct.Resource, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*ct.Resource, 0, len(c.resources))
+	for _, r := range c.resources {
+		cp := *r
+		cp.Env = cloneEnv(r.Env)
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+func (c *promoteCtl) ResourceList(string) ([]*ct.Resource, error) { return c.ResourceListAll() }
+func (c *promoteCtl) DeleteApp(string) (*ct.AppDeletion, error)   { return nil, nil }
+func (c *promoteCtl) PutResource(r *ct.Resource) error {
+	c.mu.Lock()
+	for i, have := range c.resources {
+		if have.ID == r.ID {
+			cp := *r
+			cp.Env = cloneEnv(r.Env)
+			c.resources[i] = &cp
+		}
+	}
+	c.mu.Unlock()
+	c.rig.op("put resource %s", r.ID)
+	return nil
+}
+func (c *promoteCtl) DeploymentList(string) ([]*ct.Deployment, error) { return nil, nil }
+func (c *promoteCtl) GetRelease(id string) (*ct.Release, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if rel := c.releases[id]; rel != nil {
+		cp := *rel
+		return &cp, nil
+	}
+	return nil, controller.ErrNotFound
+}
+func (c *promoteCtl) DeployAppRelease(app, id string, _ <-chan struct{}) error {
+	c.mu.Lock()
+	err := c.failDeploy[app]
+	if err == nil {
+		c.current[app] = id
+	}
+	c.mu.Unlock()
+	if err != nil {
+		c.rig.op("deploy %s failed", app)
+		return err
+	}
+	c.rig.op("deploy %s", app)
+	return nil
+}
+func (c *promoteCtl) resource(id string) *ct.Resource {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.resources {
+		if r.ID == id {
+			cp := *r
+			cp.Env = cloneEnv(r.Env)
+			return &cp
+		}
+	}
+	return nil
+}
 func (c *promoteCtl) AppList() ([]*ct.App, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -378,8 +455,9 @@ func TestManualPromoteBouncesFollowerJob(t *testing.T) {
 	if caught < 0 || stop < 0 || probe < 0 || !(caught < stop && stop < probe) {
 		t.Fatalf("want replay check < stop old job < write probe; ops %v", rig.ops)
 	}
-	if got := rig.opsWith("scale " + leader.App); len(got) != 0 {
-		t.Fatalf("a plain follower's promote must not stop the primary: %v", got)
+	// NEW-51: a switchover stops the old primary before the restart.
+	if fence := rig.index("scale " + leader.App); fence < 0 || fence > stop {
+		t.Fatalf("a plain follower's promote must stop the primary first; ops %v", rig.ops)
 	}
 	got, _ := rig.store.Get(fol.ID)
 	if got.Role != postgres.RolePrimary {
