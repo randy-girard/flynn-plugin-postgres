@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	ct "github.com/randy-girard/flynn/controller/types"
 	postgres "github.com/randy-girard/flynn-plugin-postgres"
+	ct "github.com/randy-girard/flynn/controller/types"
 )
 
 type countingReleases struct {
